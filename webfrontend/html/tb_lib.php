@@ -49,6 +49,35 @@ if (!function_exists('tb_e')) {
     }
 }
 
+
+/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+ *
+ * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
+ * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
+ * Installation genauso wie eine an einem anderen Ort - und es trifft auch
+ * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
+ * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
+ * abfangen muss).
+ *
+ * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
+ * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
+ */
+if (!function_exists('lb_wurzel_ermitteln')) {
+    function lb_wurzel_ermitteln()
+    {
+        $d = __DIR__;
+        for ($i = 0; $i < 8; $i++) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+                return $d;
+            }
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
+            $d = $eltern;
+        }
+        return '';
+    }
+}
+
 function tb_paths()
 {
     static $p = null;
@@ -57,10 +86,10 @@ function tb_paths()
     }
     $home = getenv('LBHOMEDIR');
     if (!$home || !is_dir($home)) {
-        foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
             if (is_dir($k)) { $home = $k; break; }
         }
-        if (!$home) { $home = '/opt/loxberry'; }
+        if (!$home) { $home = lb_wurzel_ermitteln(); }
     }
     // Der Ordnername ergibt sich aus dem Ablageort dieser Datei. Der
     // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
@@ -832,6 +861,21 @@ function tb_werte()
  * beantwortet also NICHT die Frage, ob Nachrichten ankommen koennen.
  * Massgeblich ist Gatewayautostart.
  * ================================================================== */
+/**
+ * Einen Wert fuer den UDP-Eingang des MQTT-Gateways unschaedlich machen.
+ *
+ * Das Gateway liest ZEILENWEISE. Ein Zeilenumbruch im Wert - aus einer
+ * Fehlermeldung des Betriebssystems, einem Geraetenamen oder der Ausgabe
+ * eines Systembefehls - zerlegt die Uebertragung, und aus den Bruchstuecken
+ * bildet das Gateway erfundene Themen. Ein Tabulator schadet ebenso, weil
+ * Leerzeichen Thema und Wert trennt.
+ */
+function tb_mqtt_wert_saeubern($v)
+{
+    $wert = str_replace(array("\r\n", "\r", "\n", "\t"), ' ', (string) $v);
+    return trim(preg_replace('/ {2,}/', ' ', $wert));
+}
+
 function tb_mqtt_zustand()
 {
     $p = tb_paths();
@@ -887,7 +931,7 @@ function tb_mqtt_senden(array $paare, $praefix)
     }
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') { continue; }   // fehlender Wert: nichts senden
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . $v;
+        $msg = 'publish ' . $praefix . '/' . $k . ' ' . tb_mqtt_wert_saeubern($v);
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
     }
     socket_close($s);
@@ -1019,7 +1063,7 @@ function tb_t($schluessel)
     if ($texte === null) {
         $home = getenv('LBHOMEDIR');
         if (!$home || !is_dir($home)) {
-            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
                 if (is_dir($k)) { $home = $k; break; }
             }
         }
