@@ -497,7 +497,7 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 </div>
 
 <div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= tb_e(tb_t('ALLG.SPEICHERN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= tb_e(tb_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
 

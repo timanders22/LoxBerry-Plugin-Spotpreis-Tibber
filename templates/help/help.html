@@ -1,71 +1,32 @@
-<h2>Spotpreis Tibber</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Holt die st&uuml;ndlichen Strompreise aus dem eigenen <b>Tibber-Konto</b>,
-dazu die Verbrauchshistorie und &mdash; mit einer <b>Tibber Pulse</b> &mdash;
-die Momentanleistung im Sekundentakt. Alles geht an Loxone: &uuml;ber MQTT und
-&uuml;ber einen tokengesch&uuml;tzten HTTP-Endpunkt.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<h3>Was zuerst</h3>
+<h3><TMPL_VAR HILFE.K03></h3>
 <ol>
-<li><b>Token holen.</b> Unter <span class="sm-mono">developer.tibber.com</span>
-mit dem eigenen Tibber-Konto anmelden, dann unter <i>Access Token</i> eines
-erzeugen.</li>
-<li><b>Einstellungen:</b> Token eintragen und speichern.</li>
-<li><b>Test, Knopf <i>Kontodaten pr&uuml;fen</i>.</b> Das ist der wichtigste
-Klick: Er sagt in einer Zeile, ob das Token angenommen wird, wie das Zuhause
-hei&szlig;t und ob eine Pulse angeschlossen ist.</li>
-<li><b>Test, Knopf <i>Preise sofort holen</i></b> &mdash; sonst wartet man bis
-zum n&auml;chsten Takt.</li>
-<li><b>MQTT:</b> Das Abo im Gateway eintragen. Ohne diesen Eintrag kommt am
-Miniserver nichts an.</li>
-<li><b>Einbindung in Loxone:</b> Importdatei erzeugen, Bausteine nachbauen.</li>
+<li><TMPL_VAR HILFE.K04></li>
+<li><TMPL_VAR HILFE.K05></li>
+<li><TMPL_VAR HILFE.K06></li>
+<li><TMPL_VAR HILFE.K07></li>
+<li><TMPL_VAR HILFE.K08></li>
+<li><TMPL_VAR HILFE.K09></li>
 </ol>
 
-<h3>Der Unterschied zu aWATTar und Octopus</h3>
-<p><b>Tibber liefert den Endpreis fertig</b> &mdash; inklusive Steuern und
-Abgaben. Bei einem B&ouml;rsenpreis muss man Netzentgelt, Stromsteuer, Umlagen
-und Umsatzsteuer selbst aufschlagen; hier nicht. Deshalb gibt es keinen
-Preisrechner, sondern nur einen <i>Aufschlag</i>, der ab Werk auf 0 steht.</p>
-<p>Der <b>Energieanteil</b> und der <b>Steueranteil</b> werden trotzdem einzeln
-mitgef&uuml;hrt. Das ist kein Beiwerk: <b>negativ werden kann nur der
-Energieanteil</b>, nie der Endpreis. Wer auf negative Preise reagieren will,
-wertet <span class="sm-mono">NEG</span> aus, nicht <span class="sm-mono">CUR</span>.</p>
-<p>Die Feldnamen f&uuml;r Loxone sind, wo es dieselben Gr&ouml;&szlig;en sind,
-<b>dieselben wie in den Plugins Spotpreis aWATTar und Octopus</b>. Wer den
-Anbieter wechselt, tauscht das Plugin &mdash; nicht die Bausteine.</p>
+<h3><TMPL_VAR HILFE.K10></h3>
+<p><TMPL_VAR HILFE.K11></p>
+<p><TMPL_VAR HILFE.K12></p>
+<p><TMPL_VAR HILFE.K13></p>
 
-<h3>Zwei Preisniveaus, und warum</h3>
-<p><span class="sm-mono">LEVEL</span> ist das Niveau nach <b>Ihren</b> Schwellen
-(g&uuml;nstig / normal / teuer). <span class="sm-mono">TLEVEL</span> ist das,
-was <b>Tibber selbst</b> daraus macht &mdash; Tibber vergleicht mit den letzten
-Tagen, Sie vergleichen mit einer festen Zahl. An einem durchweg teuren Tag sagt
-Tibber trotzdem irgendwann &bdquo;g&uuml;nstig&ldquo;, Ihre Schwelle nicht.
-Beides ist n&uuml;tzlich, deshalb gibt es beides.</p>
+<h3><TMPL_VAR HILFE.K14></h3>
+<p><TMPL_VAR HILFE.K15></p>
 
-<h3>Die Tibber Pulse</h3>
-<p>Die Momentanwerte kommen &uuml;ber eine <b>dauerhafte Verbindung</b>, nicht
-&uuml;ber einen Abruf. Daf&uuml;r l&auml;uft ein eigener Dienst, den man im
-Reiter <i>Einstellungen</i> startet. Ohne Pulse oder Watty gibt es diese Werte
-nicht &mdash; das ist <b>keine Fehlfunktion</b>, und der Reiter Test sagt es
-ausdr&uuml;cklich statt ein Kreuz zu setzen.</p>
-<p>Ein Pulse-Wert, der &auml;lter als zwei Minuten ist, wird <b>nicht mehr
-ausgegeben</b>. Eine Momentanleistung von vor drei Stunden ist keine
-Momentanleistung.</p>
+<h3><TMPL_VAR HILFE.K16></h3>
+<p><TMPL_VAR HILFE.K17></p>
+<p><TMPL_VAR HILFE.K18></p>
 
-<h3>Tarifvergleich</h3>
-<p>Der Durchschnittspreis des Monats wird aus <b>Kosten geteilt durch
-Verbrauch</b> gebildet, nicht als Mittelwert der Stundenpreise. Das ist der
-Unterschied zwischen &bdquo;was h&auml;tte es gekostet&ldquo; und &bdquo;was
-hat es gekostet&ldquo;: Wer nachts w&auml;scht, zahlt weniger als den
-Tagesmittelwert, und genau das soll der Vergleich zeigen.</p>
-<p>Der <b>Grundpreis geht nicht ein</b>. Verglichen werden Arbeitspreise; er
-steht nur im Monatsbericht daneben.</p>
+<h3><TMPL_VAR HILFE.K19></h3>
+<p><TMPL_VAR HILFE.K20></p>
+<p><TMPL_VAR HILFE.K21></p>
 
-<h3>Was ungepr&uuml;ft ist</h3>
-<p>Diese Fassung ist an <b>keinem</b> Tibber-Konto gemessen worden. Belegt sind
-die Rechenwege &mdash; sie laufen im Selbsttest gegen feste Pr&uuml;fwerte
-&mdash; und der WebSocket-Nachbau, dessen Rahmenbau gegen eine unabh&auml;ngige
-Umsetzung von RFC 6455 gehalten wurde. Nicht belegt ist, ob das Token
-angenommen wird und ob die Feldnamen dieser Fassung der Schnittstelle noch
-entsprechen. Der Knopf <i>Kontodaten pr&uuml;fen</i> beantwortet das in einer
-Zeile.</p>
+<h3><TMPL_VAR HILFE.K22></h3>
+<p><TMPL_VAR HILFE.K23></p>
