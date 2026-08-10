@@ -1,0 +1,69 @@
+<h2>Spotpreis Tibber</h2>
+
+<p>Fetches the hourly electricity prices from your own <b>Tibber account</b>,
+plus the consumption history and &mdash; with a <b>Tibber Pulse</b> &mdash; the
+instantaneous power second by second. Everything goes to Loxone: over MQTT and
+over a token protected HTTP endpoint.</p>
+
+<h3>First steps</h3>
+<ol>
+<li><b>Get a token.</b> At <span class="sm-mono">developer.tibber.com</span>,
+sign in with your Tibber account and create one under <i>Access Token</i>.</li>
+<li><b>Settings:</b> enter the token and save.</li>
+<li><b>Test tab, button <i>Check account data</i>.</b> This is the most
+important click: it says in one line whether the token is accepted, what the
+home is called and whether a Pulse is connected.</li>
+<li><b>Test tab, button <i>Fetch prices now</i></b> &mdash; otherwise you wait
+for the next interval.</li>
+<li><b>MQTT:</b> add the subscription in the gateway. Without it nothing
+arrives at the Miniserver.</li>
+<li><b>Loxone integration:</b> create the import file, rebuild the blocks.</li>
+</ol>
+
+<h3>The difference to aWATTar and Octopus</h3>
+<p><b>Tibber delivers the final price ready made</b> &mdash; including taxes and
+levies. With an exchange price you have to add grid fees, electricity tax,
+levies and VAT yourself; not here. That is why there is no price calculator,
+only a <i>surcharge</i> that defaults to 0.</p>
+<p>The <b>energy share</b> and the <b>tax share</b> are still carried
+separately. That is not decoration: <b>only the energy share can go
+negative</b>, never the final price. To react to negative prices, evaluate
+<span class="sm-mono">NEG</span>, not <span class="sm-mono">CUR</span>.</p>
+<p>Where they are the same quantities, the Loxone field names are <b>the same
+as in the Spotpreis aWATTar and Octopus plugins</b>. If you change supplier you
+swap the plugin &mdash; not the blocks.</p>
+
+<h3>Two price levels, and why</h3>
+<p><span class="sm-mono">LEVEL</span> is the level by <b>your</b> thresholds
+(cheap / normal / expensive). <span class="sm-mono">TLEVEL</span> is what
+<b>Tibber itself</b> makes of it &mdash; Tibber compares against recent days,
+you compare against a fixed number. On a uniformly expensive day Tibber will
+still say &bdquo;cheap&ldquo; at some point, your threshold will not. Both are
+useful, so both are provided.</p>
+
+<h3>The Tibber Pulse</h3>
+<p>The instantaneous values arrive over a <b>persistent connection</b>, not by
+polling. A separate service handles this; start it on the <i>Settings</i> tab.
+Without a Pulse or Watty these values do not exist &mdash; that is <b>not a
+malfunction</b>, and the Test tab says so explicitly instead of showing a
+cross.</p>
+<p>A Pulse value older than two minutes is <b>no longer output</b>. An
+instantaneous power from three hours ago is not an instantaneous power.</p>
+
+<h3>Tariff comparison</h3>
+<p>The monthly average price is formed from <b>cost divided by
+consumption</b>, not as the mean of the hourly prices. That is the difference
+between &bdquo;what would it have cost&ldquo; and &bdquo;what did it
+cost&ldquo;: whoever washes at night pays less than the daily mean, and that is
+exactly what the comparison should show.</p>
+<p>The <b>standing charge does not enter</b>. Unit rates are compared; the
+standing charge only appears alongside in the monthly report.</p>
+
+<h3>What is not verified</h3>
+<p>This release has not been measured against <b>any</b> Tibber account. What
+is established are the calculations &mdash; they run against fixed test values
+in the self test &mdash; and the WebSocket reimplementation, whose framing was
+checked against an independent implementation of RFC 6455. What is not
+established is whether the token is accepted and whether the field names still
+match this release. The <i>Check account data</i> button answers that in one
+line.</p>

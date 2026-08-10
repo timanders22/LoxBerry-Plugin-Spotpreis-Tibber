@@ -1,0 +1,42 @@
+#!/bin/bash
+# Spotpreis Tibber - Deinstallation
+#
+# Der Pulse-Dienst wird angehalten, und die beiden Sicherungen werden
+# ueberschrieben, bevor sie geloescht werden. In token.json steht das
+# persoenliche Zugangstoken zum Tibber-Konto - ein blosses rm liesse den
+# Inhalt auf der Karte stehen, bis der Block ueberschrieben wird.
+
+PFOLDER="${3:-spotpreistibber}"
+BASE="${5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    SELF=$(cd "$(dirname "$0")" && pwd)
+    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+fi
+
+PID="$BASE/data/plugins/$PFOLDER/pulse.pid"
+if [ -f "$PID" ]; then
+    kill "$(cat "$PID")" 2>/dev/null || true
+    sleep 2
+    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    rm -f "$PID"
+    echo "<OK> Pulse-Dienst angehalten."
+fi
+rm -f "$BASE/data/plugins/$PFOLDER/soll_laufen" 2>/dev/null
+
+for DATEI in \
+    "$BASE/config/plugins/$PFOLDER.backup.token.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.json" \
+    "$BASE/config/plugins/$PFOLDER/token.json" \
+    "$BASE/config/plugins/$PFOLDER/tibber.json"
+do
+    if [ -f "$DATEI" ]; then
+        dd if=/dev/zero of="$DATEI" bs=1k count=8 conv=notrunc >/dev/null 2>&1
+        rm -f "$DATEI" && echo "<OK> $(basename "$DATEI") ueberschrieben und entfernt."
+    fi
+done
+
+echo "<INFO> Das Zugangstoken bleibt in Ihrem Tibber-Konto gueltig. Wer es"
+echo "<INFO> endgueltig ausser Kraft setzen will, loescht es unter"
+echo "<INFO> developer.tibber.com."
+echo "<OK> Deinstallation abgeschlossen."
+exit 0

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Electricity Price Chart Baseline -->
+    <rect x="160" y="285" width="192" height="6" rx="3" fill="#ffffff" />
+
+    <!-- Dynamic Hourly Spot Price Bars -->
+    <rect x="168" y="220" width="10" height="65" rx="3" fill="#ffffff" />
+    <rect x="183" y="240" width="10" height="45" rx="3" fill="#ffffff" />
+    <rect x="198" y="260" width="10" height="25" rx="3" fill="#ffffff" />
+    <rect x="213" y="272" width="10" height="13" rx="3" fill="#ffffff" />
+    <rect x="228" y="255" width="10" height="30" rx="3" fill="#ffffff" />
+    <rect x="243" y="235" width="10" height="50" rx="3" fill="#ffffff" />
+    <rect x="258" y="210" width="10" height="75" rx="3" fill="#ffffff" />
+    <rect x="273" y="175" width="10" height="110" rx="3" fill="#ffffff" />
+    <rect x="288" y="150" width="10" height="135" rx="3" fill="#ffffff" />
+    <rect x="303" y="170" width="10" height="115" rx="3" fill="#ffffff" />
+    <rect x="318" y="195" width="10" height="90" rx="3" fill="#ffffff" />
+    <rect x="333" y="215" width="10" height="70" rx="3" fill="#ffffff" />
+
+    <!-- Energy Lightning Bolt -->
+    <polygon points="228,100 188,185 218,185 198,265 258,160 228,160" fill="#ffffff" />
+
+    <!-- Flanking Left Symbol: Currency / Euro (€) -->
+    <g transform="translate(112, 168)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <text x="0" y="7" text-anchor="middle" fill="#6dac20" font-family="Arial, sans-serif" font-weight="900" font-size="22">€</text>
+    </g>
+
+    <!-- Flanking Right Symbol: Price Trend Curve -->
+    <g transform="translate(400, 168)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -10 6 L -2 -2 L 3 3 L 10 -5 M 4 -5 L 10 -5 L 10 1" fill="none" stroke="#6dac20" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Spotpreis TIBBER</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
+</svg>

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Spotpreis Tibber - minuetlicher Lauf.
+#
+# Das Skript entscheidet SELBST, was faellig ist: Preise nach dem eingestellten
+# Takt, Verbrauch seltener, der Monatsbericht am Ersten. So laesst sich der
+# Takt in der Oberflaeche aendern, ohne eine Crontab anzufassen.
+#
+# Dazu der Waechter fuer den Pulse-Dienst.
+# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad ersetzt.
+php "REPLACELBPBINDIR/tb_cron.php" >> "REPLACELBPLOGDIR/tibber.log" 2>&1
+"REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
