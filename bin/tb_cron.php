@@ -1,4 +1,18 @@
 <?php
+/* ---- Sperre gegen Parallellaeufe (Muster fer_sperre, FerienFeiertage) ----
+ *
+ * Der Abruf bei Tibber wartet auf ein Netz. Dauert der Lauf laenger als der Cron-Takt,
+ * startet der naechste, waehrend dieser noch laeuft: doppelte Abrufe,
+ * doppelte Meldungen, im schlimmsten Fall zwei Schreibvorgaenge auf dieselbe
+ * Datei. Die Sperre ist nicht blockierend - wer nicht drankommt, geht
+ * kommentarlos wieder (der naechste Takt kommt ohnehin gleich).
+ */
+$tb_sperrdatei = sys_get_temp_dir() . '/tb_cron.lock';
+$tb_sperre = @fopen($tb_sperrdatei, 'c');
+if ($tb_sperre === false || !flock($tb_sperre, LOCK_EX | LOCK_NB)) {
+    exit(0);
+}
+
 /**
  * Spotpreis Tibber - Abruf von Preisen und Verbrauch
  *
