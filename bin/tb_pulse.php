@@ -493,8 +493,20 @@ function tb_pulse_schleife($einmal = false)
 
 /* ------------------------------------------------------------------ */
 
+/* Laeuft diese Datei DIREKT, oder wurde sie eingebunden?
+ *
+ * Verglichen werden die DATEINAMEN, nicht die aufgeloesten Pfade. Ein
+ * realpath()-Vergleich sieht plausibel aus und faellt auseinander, sobald
+ * der Aufrufpfad anders geschrieben ist als __FILE__ - unter Windows etwa
+ * in der kurzen Form (CHRIST~1). Der Waechter hielt den Lauf dann fuer ein
+ * Einbinden und kehrte zurueck: Rueckgabewert 0, keine Ausgabe, nichts
+ * getan. Am 27.08.2026 hat das eine ganze Eichung wertlos gemacht, weil
+ * jeder Rueckbau 'gruen' meldete, ohne dass etwas gelaufen waere.
+ *
+ * Der Name genuegt fuer die Frage: eingebunden wird diese Datei aus
+ * index.php oder tb_test.php, und die heissen anders. */
 $tb_direkt = !isset($_SERVER['SCRIPT_FILENAME'])
-    || realpath((string) $_SERVER['SCRIPT_FILENAME']) === realpath(__FILE__);
+    || basename((string) $_SERVER['SCRIPT_FILENAME']) === basename(__FILE__);
 if (!$tb_direkt) { return; }
 
 $tb_argv = isset($argv) ? $argv : array();

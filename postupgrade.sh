@@ -27,4 +27,15 @@ rm -f "$PDATA/stand.json" 2>/dev/null
 rm -f "$PDATA/.letzter_"* 2>/dev/null
 
 echo "<OK> Zwischenspeicher geleert - beim naechsten Minutenlauf wird neu geholt."
+
+# Der Suchtext der virtuellen Eingaenge hat bis 0.9.6 kein Trennzeichen vor
+# dem Feldnamen gehabt. Loxone sucht woertlich und nimmt den ersten Treffer:
+# ALTER las PULSE_ALTER, OK las MORGEN_OK. Das ist im Plugin behoben - aber
+# der Suchtext steckt in den SCHON IMPORTIERTEN Eingaengen, nicht hier. Wer
+# es ueberliest, behaelt zwei falsch gelesene Werte, und zwar ohne
+# Fehlermeldung: beide Felder liefern weiterhin eine plausible Zahl.
+echo "<INFO> WICHTIG: Bitte die Loxone-Importdatei neu erzeugen (Reiter"
+echo "<INFO> 'Einbindung in Loxone'), die alten virtuellen Eingaenge"
+echo "<INFO> loeschen und die Datei erneut einlesen. Ohne das lesen die"
+echo "<INFO> Felder ALTER und OK weiterhin den falschen Wert."
 exit 0

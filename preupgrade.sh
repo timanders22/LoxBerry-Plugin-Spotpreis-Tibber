@@ -22,6 +22,25 @@ fi
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 
 # Laufenden Pulse-Dienst anhalten - er haelt eine Verbindung offen.
+#
+# UND SICH MERKEN, DASS ER LIEF. Der Sollmerker liegt unter
+# data/plugins/<ordner>/soll_laufen, und genau dieses Verzeichnis raeumt der
+# Installateur beim Upgrade vollstaendig ab: plugininstall.pl ruft
+# purge_installation im UPGRADE-Zweig (:886), und die entfernt
+# data/plugins/<ordner>/ ohne Bedingung (:1631). Der minuetliche Waechter fand
+# den Merker danach nicht mehr und startete nichts - der Dienst stand nach
+# JEDEM Update still, ohne dass irgendwo etwas stand.
+#
+# Der Rettungsmerker liegt deshalb NEBEN dem Ordner. Ein Geschwister mit Punkt
+# im Namen trifft das rm -rf auf das Verzeichnis nicht. Zurueckgelegt wird in
+# postinstall.sh - das laeuft immer, postupgrade.sh waere zu spaet.
+LIEF="$BASE/data/plugins/$PFOLDER.lief_vorher"
+rm -f "$LIEF" 2>/dev/null
+if [ -f "$BASE/data/plugins/$PFOLDER/soll_laufen" ]; then
+    echo "1" > "$LIEF" 2>/dev/null \
+        && echo "<INFO> Der Pulse-Dienst lief - er wird nach dem Update neu gestartet."
+fi
+
 PID="$BASE/data/plugins/$PFOLDER/pulse.pid"
 if [ -f "$PID" ]; then
     kill "$(cat "$PID")" 2>/dev/null || true

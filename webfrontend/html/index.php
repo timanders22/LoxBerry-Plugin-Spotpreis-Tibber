@@ -19,6 +19,14 @@
  *   pulse      die Momentanwerte der Tibber Pulse
  *   json       alles als JSON
  *
+ * Dazu, ohne jede Wirkung:
+ *
+ *   ?selftest=1&token=<TOKEN>   beantwortet NUR, ob das Token stimmt
+ *
+ *       richtiges Token   HTTP 200  SELFTEST;OK=1;TOKEN=OK;FASSUNG=…
+ *       falsches Token    HTTP 403  SELFTEST;OK=0;ERR=TOKEN
+ *       keines gesetzt    HTTP 403  SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET
+ *
  * Ein Strich als Wert bedeutet: dieser Wert liegt nicht vor. Es wird bewusst
  * keine 0 gesendet - eine 0 waere eine stille Falschaussage, und Loxone
  * behaelt bei einem Strich den letzten Wert.
@@ -28,26 +36,78 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/tb_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
-$tb_cfg = tb_config();
+/* tb_config(FALSE) - hier wird nicht geschrieben.
+ *
+ * Die Lesefunktion holt eine fehlende Konfiguration aus der Zweitschrift
+ * zurueck. Das ist in der Oberflaeche richtig und hier falsch: ein einziger
+ * Aufruf OHNE Token legte damit den Konfigurationsordner samt Datei an, und
+ * zwar bevor sich jemand ausgewiesen hatte. Wer sich nicht ausweisen kann,
+ * legt nichts an - auch nichts Harmloses. */
+$tb_cfg = tb_config(false);
+
+/* Ein Parameter, der kein Skalar ist. ?token[]=x macht daraus ein Feld, und
+ * (string) auf ein Feld ist unter PHP 8 ein TypeError: die Anfrage endet mit
+ * HTTP 500 und LEEREM Rumpf, der Miniserver bekommt also gar nichts zu lesen.
+ * Unter 7.4 liefe dieselbe Anfrage mit einer Warnung mitten in der Antwort
+ * weiter. Deshalb wird EINMAL zentral eingesammelt. */
+function tb_get($name, $vorgabe = '')
+{
+    if (!isset($_GET[$name])) { return $vorgabe; }
+    $w = $_GET[$name];
+    if (!is_scalar($w)) { return null; }
+    $w = (string) $w;
+    return strlen($w) > 256 ? null : $w;
+}
+
+$tb_ist = tb_get('token');
+$tb_aktion = tb_get('aktion', 'status');
+if ($tb_ist === null || $tb_aktion === null) {
+    http_response_code(400);
+    echo "FEHLER;OK=0;GRUND=PARAMETERFORM\n";
+    exit;
+}
 
 /* ---------------- Token ---------------- */
 $tb_soll = (string) $tb_cfg['aktionstoken'];
-$tb_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+$tb_selbsttest = tb_get('selftest') === '1';
+
 if ($tb_soll === '') {
     http_response_code(403);
+    if ($tb_selbsttest) {
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        exit;
+    }
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
     exit;
 }
 if (!hash_equals($tb_soll, $tb_ist)) {
     http_response_code(403);
-    echo "FEHLER;OK=0;GRUND=TOKEN\n";
+    echo $tb_selbsttest ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
+    exit;
+}
+
+/* ---------------- Selbsttest ----------------
+ *
+ * Ein Token muss sich pruefen lassen, OHNE dass etwas passiert. Hier ist das
+ * billig, weil der Endpunkt ohnehin nur liest - der Gewinn liegt woanders:
+ * erst damit kann der Reiter Test den eigenen Endpunkt WIRKLICH abrufen,
+ * statt einen Link anzubieten. Und genau dieser Aufruf findet die Klasse, die
+ * keine Leseprüfung sieht: html/ und htmlauth/ liegen installiert in
+ * getrennten Baeumen, und ein Endpunkt, der seine Bibliothek nicht findet,
+ * antwortet mit HTTP 500 und leerem Rumpf - in Loxone sieht das aus wie
+ * "kein Wert".
+ *
+ * Er steht hinter der Tokenpruefung und vor jeder Wirkung: kein
+ * Geraetekontakt, kein Schreibzugriff, keine Aktion. */
+if ($tb_selbsttest) {
+    echo "SELFTEST;OK=1;TOKEN=OK;FASSUNG=" . tb_fassung() . "\n";
     exit;
 }
 
 /* ---------------- Aktion (Weissliste) ---------------- */
 $tb_erlaubt = array('status', 'stunden', 'verbrauch', 'pulse', 'json');
-$tb_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
+if ($tb_aktion === '') { $tb_aktion = 'status'; }
 if (!in_array($tb_aktion, $tb_erlaubt, true)) {
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
