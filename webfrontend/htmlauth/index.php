@@ -44,17 +44,6 @@ if ($tb_p['home'] !== '' && is_file($tb_p['home'] . '/libs/phplib/loxberry_syste
     require_once $tb_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
-/* Aktiver Reiter. Wer einen Reiter hinzufuegt, muss diese Positivliste
- * mitziehen - sonst springt die Seite nach jedem Absenden zurueck auf
- * Einstellungen, obwohl der Reiter sichtbar und anklickbar ist. */
-$tb_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
-$tb_tab = 'tab-settings';
-if (isset($_POST['activetab']) && preg_match($tb_muster, (string) $_POST['activetab'])) {
-    $tb_tab = (string) $_POST['activetab'];
-} elseif (isset($_GET['form']) && preg_match($tb_muster, 'tab-' . (string) $_GET['form'])) {
-    $tb_tab = 'tab-' . (string) $_GET['form'];
-}
-
 $tb_meldungen = array();
 $tb_fehler = array();      // gesammelt, nicht ueberschrieben
 $tb_testausgabe = '';
@@ -65,6 +54,65 @@ $tb_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
 function tb_saeubern($wert)
 {
     return trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $wert));
+}
+
+/* ==================================================================
+ * DER WACHPOSTEN - EINE Stelle, VOR allen Handlern
+ * ==================================================================
+ *
+ * htmlauth schuetzt gegen den unangemeldeten Aufruf. Es schuetzt NICHT
+ * dagegen, dass der Browser eines angemeldeten Bedieners ein Formular
+ * abschickt, das auf einer fremden Seite steht - die hinterlegten
+ * Zugangsdaten gehen dabei mit.
+ *
+ * Der teuerste Knopf dieses Plugins ist "Neues Merkwort erzeugen": danach
+ * beantwortet der Endpunkt jeden virtuellen Eingang mit 403, und ein
+ * virtueller Eingang wertet die Antwort nicht aus - der Ausfall bliebe still.
+ *
+ * Geprueft wird an EINER Stelle, und faellt die Pruefung durch, wird $_POST
+ * bis auf den aktiven Reiter GELEERT. Das ist mit Absicht gruendlicher als
+ * eine Abfrage vor jedem Handler: der naechste Handler, den jemand ergaenzt,
+ * ist damit von selbst mitgeschuetzt. Ein Schutz, den man beim Erweitern
+ * vergessen kann, ist keiner.
+ *
+ * Abgewiesen heisst GEMELDET: ein Formular, das wortlos nichts tut, schickt
+ * den Anwender auf die Suche nach einem Fehler, den es nicht gibt.
+ * ================================================================== */
+$tb_fmt = tb_formtoken();
+if ($tb_post) {
+    if ($tb_fmt === '') {
+        $tb_fehler[] = tb_t('EINST.WACHE_KEIN_TOKEN');
+    } elseif (!tb_formtoken_ok()) {
+        $tb_fehler[] = tb_t('EINST.WACHE_ABGEWIESEN');
+        tb_log('Ein POST ohne gueltiges Formularmerkmal wurde abgewiesen.');
+    }
+    if ($tb_fehler) {
+        $tb_behalten = isset($_POST['activetab']) && is_string($_POST['activetab'])
+                     ? (string) $_POST['activetab'] : null;
+        $_POST = array();
+        if ($tb_behalten !== null) { $_POST['activetab'] = $tb_behalten; }
+        $tb_post = false;
+    }
+}
+
+/* Aktiver Reiter - NACH dem Wachposten.
+ *
+ * Stuende die Reiterwahl davor, uebernaehme sie das activetab eines
+ * abgewiesenen POST, und ein fremdes Formular koennte wenigstens noch den
+ * Reiter umschalten.
+ *
+ * Wer einen Reiter hinzufuegt, muss diese Positivliste mitziehen - sonst
+ * springt die Seite nach jedem Absenden zurueck auf Einstellungen, obwohl der
+ * Reiter sichtbar und anklickbar ist. Der Reiter Test prueft die drei Stellen
+ * (Liste, Leiste, Bereiche) seit 0.9.7 gegeneinander. */
+$tb_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
+$tb_tab = 'tab-settings';
+if (isset($_POST['activetab']) && is_string($_POST['activetab'])
+    && preg_match($tb_muster, (string) $_POST['activetab'])) {
+    $tb_tab = (string) $_POST['activetab'];
+} elseif (isset($_GET['form']) && is_string($_GET['form'])
+          && preg_match($tb_muster, 'tab-' . (string) $_GET['form'])) {
+    $tb_tab = 'tab-' . (string) $_GET['form'];
 }
 
 /* ==================================================================
@@ -95,6 +143,34 @@ if ($tb_post && isset($_POST['vorlage'])) {
     exit;
 }
 
+/* ---------------- Verlauf herunterladen ----------------
+ *
+ * Die CSV-Dateien unter data/plugins/<ordner>/verlauf/ wurden bis 0.9.6
+ * geschrieben und von NIEMANDEM gelesen - gemessen ueber den ganzen
+ * Plugin-Ordner. Dazu gab es ein Eingabefeld "Verlauf aufbewahren (Tage)",
+ * dessen einzige Wirkung war, wie lange ungelesene Dateien liegen bleiben.
+ * Eine Datei, die niemand liest, wird nicht optimiert - sie wird entweder
+ * wirksam gemacht oder gestrichen. Hier ist sie wirksam. */
+if ($tb_post && isset($_POST['verlauf_holen'])) {
+    /* Die Konfiguration wird HIER geholt. $tb_cfg wird erst im Laden-Block
+     * weiter unten gesetzt - eine undefinierte Variable ist in PHP lautlos
+     * null, und max(1, (int) null) waere 1 Tag statt der eingestellten 90
+     * gewesen. Genau diese Klasse hat am 26.08.2026 zwoelf Linien einen
+     * Knopf gekostet, der nichts tat. */
+    $tb_vcfg = tb_config();
+    $tb_reihe = tb_verlauf_lesen(max(1, (int) $tb_vcfg['verlauf_tage']));
+    $tb_csv = "zeitpunkt;unix;ct_pro_kwh\r\n";
+    foreach ($tb_reihe as $tb_e) {
+        $tb_csv .= date('Y-m-d H:i:s', $tb_e['ts']) . ';' . $tb_e['ts'] . ';'
+                 . number_format($tb_e['ct'], 3, ',', '') . "\r\n";
+    }
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="spotpreis_tibber_verlauf_'
+           . date('Ymd_His') . '.csv"');
+    echo $tb_csv;
+    exit;
+}
+
 /* ---------------- Einstellungen speichern ---------------- */
 if ($tb_post && isset($_POST['speichern'])) {
     $tb_cfg = tb_config();
@@ -119,29 +195,35 @@ if ($tb_post && isset($_POST['speichern'])) {
         }
     }
 
+    /* Die Zuhause-Kennung wird gegen DIESELBE Funktion geprueft, die sie
+     * spaeter in die GraphQL-Abfrage einsetzt. Bis 0.9.6 gab es zwei Regeln
+     * fuer dieselbe Angabe - hier /^[0-9a-fA-F\-]{8,64}$/, in der Bibliothek
+     * /^[A-Za-z0-9-]{1,64}$/. Zwei Wahrheiten ueber denselben Wert sind eine
+     * zu viel; welche galt, entschied der Zufall des Aufrufwegs. */
     $tb_home = tb_saeubern($_POST['home_id'] ?? '');
-    if ($tb_home !== '' && !preg_match('/^[0-9a-fA-F\-]{8,64}$/', $tb_home)) {
+    if ($tb_home !== '' && tb_gql_id($tb_home) === '') {
         $tb_fehler[] = tb_t('EINST.FEHLER_HOME');
     } else {
         $tb_cfg['home_id'] = $tb_home;
     }
 
-    foreach (array(
-        'fensterstunden'      => array(1, 12),
-        'preistakt'           => array(5, 1440),
-        'verbrauchstakt'      => array(30, 1440),
-        'verlauf_tage'        => array(1, 3650),
-        'zeitueberschreitung' => array(5, 60),
-    ) as $tb_feld => $tb_grenzen) {
-        $tb_wert = isset($_POST[$tb_feld]) ? trim((string) $_POST[$tb_feld]) : '';
+    /* Die Grenzen kommen aus tb_feldregeln() - derselben Liste, gegen die
+     * auch eine zurueckgespielte Sicherung geprueft wird. Standen sie hier
+     * ein zweites Mal, liefe die eine Stelle irgendwann von der anderen weg,
+     * und ein Wert waere im Formular abgewiesen und aus einer Datei erlaubt. */
+    $tb_regeln = tb_feldregeln();
+    foreach ($tb_regeln as $tb_feld => $tb_r) {
+        if ($tb_r['art'] !== 'zahl') { continue; }
+        $tb_wert = isset($_POST[$tb_feld]) && is_string($_POST[$tb_feld])
+                 ? trim((string) $_POST[$tb_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $tb_wert)) {
             $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_ZAHL'), tb_t('EINST.L_' . strtoupper($tb_feld)));
             continue;
         }
         $tb_zahl = (int) $tb_wert;
-        if ($tb_zahl < $tb_grenzen[0] || $tb_zahl > $tb_grenzen[1]) {
+        if ($tb_zahl < $tb_r['min'] || $tb_zahl > $tb_r['max']) {
             $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_BEREICH'),
-                tb_t('EINST.L_' . strtoupper($tb_feld)), $tb_grenzen[0], $tb_grenzen[1]);
+                tb_t('EINST.L_' . strtoupper($tb_feld)), $tb_r['min'], $tb_r['max']);
             continue;
         }
         $tb_cfg[$tb_feld] = $tb_zahl;
@@ -149,22 +231,18 @@ if ($tb_post && isset($_POST['speichern'])) {
 
     // Kommazahlen. Komma und Punkt sind beide erlaubt - wer 25,5 eintippt,
     // meint 25,5 und nicht einen Fehler.
-    foreach (array(
-        'aufschlag'  => array(-50, 50),
-        'guenstig'   => array(-50, 200),
-        'teuer'      => array(-50, 200),
-        'festpreis'  => array(0, 200),
-        'grundpreis' => array(0, 500),
-    ) as $tb_feld => $tb_grenzen) {
-        $tb_wert = str_replace(',', '.', trim((string) ($_POST[$tb_feld] ?? '')));
+    foreach ($tb_regeln as $tb_feld => $tb_r) {
+        if ($tb_r['art'] !== 'komma') { continue; }
+        $tb_roh = isset($_POST[$tb_feld]) && is_string($_POST[$tb_feld]) ? $_POST[$tb_feld] : '';
+        $tb_wert = str_replace(',', '.', trim((string) $tb_roh));
         if (!preg_match('/^-?[0-9]{1,4}(\.[0-9]{1,3})?$/', $tb_wert)) {
             $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_KOMMA'), tb_t('EINST.L_' . strtoupper($tb_feld)));
             continue;
         }
         $tb_zahl = (float) $tb_wert;
-        if ($tb_zahl < $tb_grenzen[0] || $tb_zahl > $tb_grenzen[1]) {
+        if ($tb_zahl < $tb_r['min'] || $tb_zahl > $tb_r['max']) {
             $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_BEREICH'),
-                tb_t('EINST.L_' . strtoupper($tb_feld)), $tb_grenzen[0], $tb_grenzen[1]);
+                tb_t('EINST.L_' . strtoupper($tb_feld)), $tb_r['min'], $tb_r['max']);
             continue;
         }
         $tb_cfg[$tb_feld] = $tb_zahl;
@@ -239,6 +317,12 @@ if ($tb_post && isset($_POST['token_neu'])) {
     if (tb_config_speichern($tb_cfg)) {
         $tb_meldungen[] = tb_t('LOX.TOKEN_NEU');
         tb_log('Neues Merkwort fuer den Endpunkt gewuerfelt.');
+        /* Das Formularmerkmal ist aus dem Aktionstoken abgeleitet und damit
+         * ebenfalls neu. Ohne diese Zeile truegen die Formulare der frisch
+         * gerenderten Seite noch das alte - der naechste Klick des Anwenders
+         * liefe in den Wachposten, und er saehe eine Abweisung fuer etwas,
+         * das er richtig gemacht hat. */
+        $tb_fmt = tb_formtoken($tb_cfg);
     } else {
         $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), $tb_p['config']);
     }
@@ -247,7 +331,7 @@ if ($tb_post && isset($_POST['token_neu'])) {
 
 /* ---------------- Log leeren ---------------- */
 if ($tb_post && isset($_POST['log_leeren'])) {
-    @mkdir(dirname($tb_p['log']), 0775, true);
+    if (!is_dir(dirname($tb_p['log']))) { @mkdir(dirname($tb_p['log']), 0775, true); }
     @file_put_contents($tb_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . tb_t('LOG.GELEERT') . "\n");
     $tb_meldungen[] = tb_t('LOG.GELEERT');
     $tb_tab = 'tab-log';
@@ -268,9 +352,19 @@ if ($tb_post && isset($_POST['selbsttest'])) {
     $tb_tab = 'tab-test';
 }
 
-/* ---------------- Laden ---------------- */
+/* ---------------- Laden ----------------
+ *
+ * Die Konfiguration wird VERVOLLSTAENDIGT, nicht nur beim Lesen ergaenzt:
+ * fehlt ein Schluessel, wird er einmal mit seiner Vorgabe in die Datei
+ * geschrieben. Danach ist "fehlt" nie mehr von "steht auf dem Vorgabewert"
+ * zu unterscheiden - und eine Sicherung traegt wirklich alles. Geschrieben
+ * wird nur, wenn etwas fehlte; sonst aendert sich die Datei bei jedem
+ * Seitenaufruf ohne Anlass. */
+list($tb_soll_n, $tb_fehlend, $tb_fremd) = tb_config_vervollstaendigen(true);
+
 $tb_cfg     = tb_config();
 $tb_token   = tb_aktionstoken();
+$tb_fmt     = tb_formtoken($tb_cfg);
 $tb_st      = tb_stand();
 $tb_vb      = tb_verbrauch();
 $tb_werte   = tb_werte();
@@ -292,16 +386,21 @@ $tb_rahmen = class_exists('LBWeb', false);
 
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+ * Ausgegeben wird die VOLLE Konfiguration samt BEIDEN Geheimnissen: dem
+ * Aktionstoken fuer den Loxone-Endpunkt UND dem persoenlichen
+ * Tibber-Zugangstoken. Ohne das zweite stuenden nach dem Zurueckspielen alle
+ * Felder richtig, und das Plugin kaeme trotzdem nicht an die Anlage - die
+ * Datei waere fuer ihren eigentlichen Zweck, den Umzug auf einen zweiten
+ * LoxBerry, unbrauchbar. Bis 0.9.6 war genau das der Fall.
+ *
+ * Damit traegt sie ein Geheimnis, und der Warnhinweis am Knopf sagt das. Das
+ * FORMULARMERKMAL gehoert ausdruecklich nicht hinein - es lebt eine Sitzung. */
 if ($tb_post && isset($_POST['tb_sichern'])) {
-    $tb_js = json_encode(tb_config(),
+    $tb_js = json_encode(tb_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($tb_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename="spotpreis_einstellungen_'
+        header('Content-Disposition: attachment; filename="spotpreis_tibber_einstellungen_'
                . date('Ymd_His') . '.json"');
         echo $tb_js;
         exit;
@@ -322,19 +421,38 @@ if ($tb_post && isset($_POST['tb_zurueck'])) {
     } elseif ((int) $_FILES['tb_sicherung']['size'] > 262144) {
         $tb_fehler[] = tb_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($tb_neu, $tb_mangel, $tb_n) = tb_sicherung_lesen(
+        list($tb_neu, $tb_mangel, $tb_n, $tb_tok) = tb_sicherung_lesen(
             (string) @file_get_contents($_FILES['tb_sicherung']['tmp_name']));
         if ($tb_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
+             * nichts. Wer nur die erste zeigt, schickt den Anwender in eine
+             * Schleife aus je einem Fund pro Anlauf. */
             $tb_fehler[] = tb_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $tb_mangel);
         } elseif (tb_config_speichern($tb_neu)) {
             $tb_meldungen[] = sprintf(tb_t('EINST.SICH_UEBERNOMMEN'), $tb_n);
+            if ($tb_tok !== null && $tb_tok !== '' && tb_token_speichern($tb_tok)) {
+                $tb_meldungen[] = tb_t('EINST.SICH_TOKEN_UEBERNOMMEN');
+            }
+            tb_log('Einstellungen aus einer Sicherung zurueckgespielt: '
+                   . $tb_n . ' Werte.');
+            /* Nach dem Zurueckspielen wird alles NEU GELESEN.
+             *
+             * Die Anzeige weiter unten baut auf $tb_cfg, $tb_token und
+             * $tb_werte, und die standen zu diesem Zeitpunkt schon im
+             * Speicher. Ohne diese Zeilen zeigte das Formular danach die
+             * ALTEN Werte - der Anwender haelt das Zurueckspielen fuer
+             * wirkungslos und drueckt noch einmal. */
+            $tb_cfg   = tb_config();
+            $tb_token = tb_aktionstoken();
+            $tb_fmt   = tb_formtoken($tb_cfg);
+            $tb_werte = tb_werte();
+            $tb_hat_token = tb_token_lesen() !== '';
         } else {
             $tb_fehler[] = tb_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+    $tb_tab = 'tab-settings';
 }
 
 
@@ -472,20 +590,32 @@ if ($tb_lh || $tb_lm) { ?>
 <?php } ?>
 
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. So bleibt jeder
-     Reiter verlinkbar, Eingaben in anderen Reitern gehen nicht verloren, und
-     faellt das Skript aus, ist die Seite weiterhin bedienbar. -->
+     Reiter verlinkbar, und Eingaben in anderen Reitern gehen nicht verloren.
+
+     Welcher Reiter offen ist, entscheidet der SERVER: sm-active steht schon im
+     ausgelieferten HTML, an der Leiste UND am Bereich. Bis 0.9.6 setzte es an
+     der Leiste ausschliesslich das Skript - ohne JavaScript war zwar der
+     richtige Bereich offen, aber keiner der fuenf Reiter als offen markiert.
+     Das Skript richtet danach nur noch die activetab-Felder aus.
+
+     Die Leiste steht ausgeschrieben da und nicht in einer Schleife: das
+     Hauswerkzeug sucht die Reiter woertlich und meldet sonst "nicht gemessen",
+     was sich beim Ueberfliegen wie ein Haken einsammelt. Damit sie trotzdem
+     nicht auseinanderlaufen kann, misst der Reiter Test Liste, Leiste und
+     Bereiche gegeneinander. -->
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings" href="index.php?form=settings"><?= tb_e(tb_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-mqtt"     href="index.php?form=mqtt">MQTT</a>
-	<a class="sm-tab" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= tb_e(tb_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"     href="index.php?form=test"><?= tb_e(tb_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"      href="index.php?form=log"><?= tb_e(tb_t('REITER.LOG')) ?></a>
+	<a class="sm-tab<?= $tb_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= tb_e(tb_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $tb_tab === 'tab-mqtt' ? ' sm-active' : '' ?>"     data-ziel="tab-mqtt"     href="index.php?form=mqtt">MQTT</a>
+	<a class="sm-tab<?= $tb_tab === 'tab-loxone' ? ' sm-active' : '' ?>"   data-ziel="tab-loxone"   href="index.php?form=loxone"><?= tb_e(tb_t('REITER.LOXONE')) ?></a>
+	<a class="sm-tab<?= $tb_tab === 'tab-test' ? ' sm-active' : '' ?>"     data-ziel="tab-test"     href="index.php?form=test"><?= tb_e(tb_t('REITER.TEST')) ?></a>
+	<a class="sm-tab<?= $tb_tab === 'tab-log' ? ' sm-active' : '' ?>"      data-ziel="tab-log"      href="index.php?form=log"><?= tb_e(tb_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $tb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
@@ -591,14 +721,17 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="dienst" value="start"><?= tb_e(tb_t('EINST.K_START')) ?></button>
   </form>
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="restart"><?= tb_e(tb_t('EINST.K_NEUSTART')) ?></button>
   </form>
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="stop"><?= tb_e(tb_t('EINST.K_STOPP')) ?></button>
   </form>
@@ -613,10 +746,12 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="tb_sichern" value="1"><?= tb_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="tb_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="tb_zurueck" value="1"><?= tb_t('EINST.K_ZURUECK') ?></button>
@@ -629,6 +764,7 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 
 <h2>MQTT</h2>
 <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
@@ -687,6 +823,17 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 <h2><?= tb_e(tb_t('LOX.H_TITEL')) ?></h2>
 <p><?= tb_t('LOX.EINLEITUNG') ?></p>
 
+<!-- EINE gesammelte Legende oben im Reiter, und sie nennt genau die Farben,
+     die hier als Knopf vorkommen: grau fuer die Vorlage, orange fuer das neue
+     Merkwort. Bis 0.9.6 standen zwei Legenden in diesem Reiter, jede an ihrer
+     Knopfreihe - dieselbe Zeile zweimal untereinander stiftet mehr Unruhe als
+     Nutzen. Eine Legende, die eine Farbe erklaert, die hier nicht vorkommt,
+     waere genauso irrefuehrend wie eine fehlende. -->
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= tb_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= tb_t('LEGENDE.AKTION_TOKEN') ?></span>
+</div>
+
 <div class="sm-step"><b><?= tb_e(tb_t('LOX.S1_TITEL')) ?></b><br><?= tb_t('LOX.S1_TEXT') ?></div>
 
 <div class="sm-step"><b><?= tb_e(tb_t('LOX.S2_TITEL')) ?></b><br>
@@ -711,22 +858,20 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
     <th><?= tb_e(tb_t('LOX.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach (tb_status_felder() as $tb_feld => $tb_info) { ?>
 <tr><td><span class="sm-mono">TIBBER_<?= tb_e($tb_feld) ?></span></td>
-    <td><span class="sm-mono">\i<?= tb_e($tb_feld) ?>=\i\v</span></td>
-    <td><?= tb_e($tb_info[0]) ?></td>
-    <td><span class="sm-mono"><?= (int) $tb_info[2] ?> &hellip; <?= (int) $tb_info[3] ?></span></td>
-    <td><?= tb_t($tb_info[1]) ?></td></tr>
+    <td><span class="sm-mono"><?= tb_e(tb_check($tb_feld)) ?></span></td>
+    <td><?= tb_e($tb_info['einheit']) ?></td>
+    <td><span class="sm-mono"><?= (int) $tb_info['min'] ?> &hellip; <?= (int) $tb_info['max'] ?></span></td>
+    <td><?= tb_t($tb_info['text']) ?></td></tr>
 <?php } ?>
 </table>
 <div class="sm-warnung"><?= tb_t('LOX.S3_STRICH') ?></div>
 <div class="sm-warnung"><?= tb_t('LOX.IMPORT_WARNUNG') ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="1"><?= tb_e(tb_t('LOX.K_VORLAGE')) ?></button>
   </form>
-</div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= tb_t('LEGENDE.TECHNIK') ?></span>
 </div>
 </div>
 
@@ -747,12 +892,10 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 <?= tb_t('LOX.S4_TOKEN') ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= tb_e(tb_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
-</div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= tb_t('LEGENDE.AKTION_TOKEN') ?></span>
 </div>
 </div>
 
@@ -766,17 +909,40 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
  * nachgebaut, ohne nachzudenken. Loxone Config fuehrt alle Bausteine in der
  * Baustein-Suche (F5).
  */
+/**
+ * Eine Zelle mit dem Suchtext eines Feldes.
+ *
+ * Der Suchtext stand bis 0.9.6 als Fliesstext in den Sprachdateien - achtzehn
+ * Abschriften eines Musters, das der Quelltext nebenan selbst baut. Sie waren
+ * damit auch die einzige Stelle, an der das fehlende Trennzeichen NICHT
+ * mitkorrigiert worden waere: der Anwender schreibt die Tabelle ab, nicht den
+ * Quelltext. Eine berichtigte Abschrift ist immer noch eine Abschrift.
+ *
+ * Jetzt steht in der Sprachdatei nur noch der Rahmen mit einem %s, und das
+ * Muster kommt aus tb_check() - derselben Funktion, aus der auch die
+ * Importdatei und die Feldtabelle es holen.
+ *
+ * Die Rueckgabe als array('text' => …) ist Absicht: die Ausgabe erkennt
+ * daran, dass der Wert fertig ist, und schickt ihn NICHT noch einmal durch
+ * tb_t().
+ */
+function tb_muster_zelle($schluessel, $feld)
+{
+    return array('text' => sprintf(tb_t($schluessel),
+        '<span class="sm-mono">' . tb_e(tb_check($feld)) . '</span>'));
+}
+
 function tb_bausteine()
 {
     return array(
-        array(1,  'BAUSTEIN.T_VE',       'BAUSTEIN.N01', 'BAUSTEIN.P01', '&mdash;'),
-        array(2,  'BAUSTEIN.T_VE',       'BAUSTEIN.N02', 'BAUSTEIN.P02', '&mdash;'),
-        array(3,  'BAUSTEIN.T_VE',       'BAUSTEIN.N03', 'BAUSTEIN.P03', '&mdash;'),
-        array(4,  'BAUSTEIN.T_VE',       'BAUSTEIN.N04', 'BAUSTEIN.P04', '&mdash;'),
-        array(5,  'BAUSTEIN.T_VE',       'BAUSTEIN.N05', 'BAUSTEIN.P05', '&mdash;'),
-        array(6,  'BAUSTEIN.T_VE',       'BAUSTEIN.N06', 'BAUSTEIN.P06', '&mdash;'),
-        array(7,  'BAUSTEIN.T_VE',       'BAUSTEIN.N07', 'BAUSTEIN.P07', '&mdash;'),
-        array(8,  'BAUSTEIN.T_VE',       'BAUSTEIN.N08', 'BAUSTEIN.P08', '&mdash;'),
+        array(1,  'BAUSTEIN.T_VE',       'BAUSTEIN.N01', tb_muster_zelle('BAUSTEIN.P01', 'CUR'), '&mdash;'),
+        array(2,  'BAUSTEIN.T_VE',       'BAUSTEIN.N02', tb_muster_zelle('BAUSTEIN.P02', 'LEVEL'), '&mdash;'),
+        array(3,  'BAUSTEIN.T_VE',       'BAUSTEIN.N03', tb_muster_zelle('BAUSTEIN.P03', 'RANK'), '&mdash;'),
+        array(4,  'BAUSTEIN.T_VE',       'BAUSTEIN.N04', tb_muster_zelle('BAUSTEIN.P04', 'FENSTER_IN'), '&mdash;'),
+        array(5,  'BAUSTEIN.T_VE',       'BAUSTEIN.N05', tb_muster_zelle('BAUSTEIN.P05', 'FENSTER_CT'), '&mdash;'),
+        array(6,  'BAUSTEIN.T_VE',       'BAUSTEIN.N06', tb_muster_zelle('BAUSTEIN.P06', 'MIN_HEUTE'), '&mdash;'),
+        array(7,  'BAUSTEIN.T_VE',       'BAUSTEIN.N07', tb_muster_zelle('BAUSTEIN.P07', 'ALTER'), '&mdash;'),
+        array(8,  'BAUSTEIN.T_VE',       'BAUSTEIN.N08', tb_muster_zelle('BAUSTEIN.P08', 'OK'), '&mdash;'),
         array(9,  'BAUSTEIN.T_SWS',      'BAUSTEIN.N09', 'BAUSTEIN.P09', 'I &larr; #7'),
         array(10, 'BAUSTEIN.T_NICHT',    'BAUSTEIN.N10', '',             'I &larr; #8'),
         array(11, 'BAUSTEIN.T_ODER',     'BAUSTEIN.N11', '',             'I1 &larr; #9, I2 &larr; #10'),
@@ -796,7 +962,7 @@ function tb_bausteine()
         array(25, 'BAUSTEIN.T_BENACHR',  'BAUSTEIN.N25', 'BAUSTEIN.P25', 'I &larr; #24'),
         array(26, 'BAUSTEIN.T_SWS',      'BAUSTEIN.N26', 'BAUSTEIN.P26', 'I &larr; #2'),
         array(27, 'BAUSTEIN.T_STATUS',   'BAUSTEIN.N27', 'BAUSTEIN.P27', 'I1 &larr; #1, I2 &larr; #2'),
-        array(28, 'BAUSTEIN.T_VE',       'BAUSTEIN.N28', 'BAUSTEIN.P28', '&mdash;'),
+        array(28, 'BAUSTEIN.T_VE',       'BAUSTEIN.N28', tb_muster_zelle('BAUSTEIN.P28', 'PULSE'), '&mdash;'),
         array(29, 'BAUSTEIN.T_FORMEL',   'BAUSTEIN.N29', 'BAUSTEIN.P29', 'I1 &larr; #28, I2 &larr; #1'),
         array(30, 'BAUSTEIN.T_STAT',     'BAUSTEIN.N30', 'BAUSTEIN.P30', 'I &larr; #29'),
     );
@@ -810,7 +976,14 @@ function tb_bausteine()
     <th><?= tb_e(tb_t('LOX.T_PARAMETER')) ?></th><th><?= tb_e(tb_t('LOX.T_EINGAENGE')) ?></th></tr>
 <?php foreach (tb_bausteine() as $tb_b) { ?>
 <tr><td><?= (int) $tb_b[0] ?></td><td><?= tb_t($tb_b[1]) ?></td><td><?= tb_t($tb_b[2]) ?></td>
-    <td><?= $tb_b[3] !== '' ? tb_t($tb_b[3]) : '&mdash;' ?></td><td><?= $tb_b[4] ?></td></tr>
+    <td><?php
+        /* Ein fertiger Text (aus tb_muster_zelle) wird NICHT noch einmal durch
+         * tb_t() geschickt - sonst suchte die Uebersetzung einen Schluessel,
+         * der ein ganzer Satz ist, und gaebe ihn unveraendert zurueck. */
+        if (is_array($tb_b[3])) { echo $tb_b[3]['text']; }
+        elseif ($tb_b[3] !== '') { echo tb_t($tb_b[3]); }
+        else { echo '&mdash;'; }
+    ?></td><td><?= $tb_b[4] ?></td></tr>
 <?php } ?>
 </table>
 <?= tb_t('LOX.S6_ERLAEUTERUNG') ?>
@@ -836,7 +1009,11 @@ function tb_bausteine()
 <p class="sm-hilfe"><?= tb_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
 <tr><th style="width:36px;">&nbsp;</th><th><?= tb_e(tb_t('TEST.T_FRAGE')) ?></th><th><?= tb_e(tb_t('TEST.T_BEFUND')) ?></th></tr>
-<?php foreach (tb_pruefungen() as $tb_z) { ?>
+<?php
+/* Die Zeilen, die etwas kosten, laufen nur, wenn dieser Reiter serverseitig
+ * der offene ist - alle fuenf werden bei jedem Seitenaufbau mitgerendert. */
+$tb_zeilen = tb_pruefungen($tb_tab === 'tab-test');
+foreach ($tb_zeilen as $tb_z) { ?>
 <tr><td style="text-align:center;"><?php
     if ($tb_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($tb_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
@@ -844,6 +1021,18 @@ function tb_bausteine()
 ?></td><td><?= $tb_z['frage'] ?></td><td><?= $tb_z['antwort'] ?></td></tr>
 <?php } ?>
 </table>
+<?php
+/* Die Bilanz nennt die Striche AUSDRUECKLICH. Ein Strich heisst "hier konnte
+ * nichts gemessen werden" und sammelt sich beim Ueberfliegen wie ein Haken
+ * ein - eine Zusammenfassung, die ihn verschweigt, sieht besser aus als ihr
+ * schlechtester Punkt. */
+$tb_bil = tb_pruef_bilanz($tb_zeilen);
+?>
+<p class="sm-hilfe"><?= sprintf(tb_e(tb_t('TEST.BILANZ')),
+    (int) $tb_bil['haken'], count($tb_zeilen), (int) $tb_bil['kreuz'], (int) $tb_bil['strich']) ?></p>
+<?php if ($tb_tab !== 'tab-test') { ?>
+<div class="sm-hinweis"><?= tb_t('TEST.NUR_IM_REITER') ?></div>
+<?php } ?>
 
 <?php if ($tb_bericht && isset($tb_bericht['text'])) { ?>
 <h3><?= tb_e(tb_t('TEST.H_BERICHT')) ?></h3>
@@ -887,18 +1076,22 @@ foreach ($tb_liste as $tb_tag => $tb_w) {
 <p class="sm-hilfe"><?= tb_t('TEST.TECHNIK_ERKLAERUNG') ?></p>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="selbsttest" value="1"><?= tb_e(tb_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="konto"><?= tb_e(tb_t('TEST.K_KONTO')) ?></button>
   </form>
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="preise"><?= tb_e(tb_t('TEST.K_PREISE')) ?></button>
   </form>
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="verbrauch"><?= tb_e(tb_t('TEST.K_VERBRAUCH_HOLEN')) ?></button>
   </form>
@@ -907,6 +1100,42 @@ foreach ($tb_liste as $tb_tag => $tb_w) {
 <?php if ($tb_testausgabe !== '') { ?>
 <div class="sm-pre"><?= tb_e($tb_testausgabe) ?></div>
 <?php } ?>
+
+<h3><?= tb_e(tb_t('TEST.H_VERLAUF')) ?></h3>
+<?php
+/* Der Verlauf. Bis 0.9.6 schrieb der Cron diese Dateien stuendlich, und
+ * NIEMAND las sie - dazu gab es ein Eingabefeld fuer die Aufbewahrungsdauer,
+ * dessen einzige Wirkung war, wie lange ungelesene Dateien liegen bleiben.
+ * Jetzt beantworten sie die Frage, die eine feste Schwelle nicht beantworten
+ * kann: ist der Preis von jetzt gemessen an den letzten Wochen guenstig? */
+$tb_reihe = tb_verlauf_lesen(max(1, (int) $tb_cfg['verlauf_tage']));
+list($tb_avg30, $tb_rang30, $tb_n30) = tb_verlauf_kennzahlen($tb_werte['CUR']);
+?>
+<p class="sm-hilfe"><?= tb_t('TEST.VERLAUF_HILFE') ?></p>
+<?php if ($tb_avg30 === null) { ?>
+<div class="sm-hinweis"><?= sprintf(tb_t('TEST.VERLAUF_ZU_KURZ'), (int) $tb_n30) ?></div>
+<?php } else { ?>
+<div class="sm-kacheln">
+  <div class="sm-kachel"><?= tb_e(tb_t('TEST.K_AVG30')) ?>
+    <b><?= tb_e(number_format((float) $tb_avg30, 2, ',', '.')) ?> ct</b>
+    <span class="sm-hilfe"><?= sprintf(tb_e(tb_t('TEST.K_AVG30_N')), (int) $tb_n30) ?></span>
+  </div>
+  <div class="sm-kachel"><?= tb_e(tb_t('TEST.K_RANG30')) ?>
+    <b><?= $tb_rang30 === null ? '&ndash;' : (int) $tb_rang30 . ' %' ?></b>
+    <span class="sm-hilfe"><?= tb_e(tb_t('TEST.K_RANG30_H')) ?></span>
+  </div>
+</div>
+<?php
+$tb_svg = tb_verlauf_svg($tb_reihe);
+if ($tb_svg !== '') { echo '<div class="sm-hinweis">' . $tb_svg . '</div>'; }
+} ?>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="verlauf_holen" value="1"><?= tb_e(tb_t('TEST.K_VERLAUF')) ?></button>
+  </form>
+</div>
 
 <div class="sm-warnung"><b><?= tb_e(tb_t('TEST.H_UNGEPRUEFT')) ?></b><br><?= tb_t('TEST.UNGEPRUEFT') ?></div>
 </div>
@@ -927,6 +1156,7 @@ foreach ($tb_liste as $tb_tag => $tb_w) {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= tb_e(tb_t('LOG.K_LEEREN')) ?></button>
   </form>
@@ -945,6 +1175,12 @@ foreach ($tb_liste as $tb_tag => $tb_w) {
 		if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '')); }
 	}
 	reiter.forEach(function (r) {
+		/* Der Reiter Test laedt die Seite WIRKLICH neu, statt nur umzuschalten.
+		   Seine teuren Zeilen - der HTTP-Aufruf des eigenen Endpunkts - laufen
+		   nur, wenn er serverseitig der offene ist. Wuerde das Skript den Klick
+		   auch hier abfangen, bekaeme man die Selbstpruefung nie zu sehen, ohne
+		   die Seite von Hand neu zu laden. */
+		if (r.dataset.ziel === 'tab-test') { return; }
 		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
 	});
 	zeige(<?= json_encode($tb_tab) ?>);

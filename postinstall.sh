@@ -74,9 +74,33 @@ for ERW in curl openssl sockets; do
     fi
 done
 
-chmod 755 "$PBIN/dienst.sh" "$PBIN/tb_cron.php" "$PBIN/tb_pulse.php" 2>/dev/null
-chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+chmod 755 "$PBIN/dienst.sh" "$PBIN/tb_cron.php" "$PBIN/tb_pulse.php" "$PBIN/healthcheck" 2>/dev/null
 chmod 600 "$PCONFIG/tibber.json" "$PCONFIG/token.json" 2>/dev/null
+
+# Kein chown: postinstall.sh laeuft als Benutzer loxberry, und der kann keine
+# Eigentuemer aendern. Der Aufruf scheiterte hier IMMER - mit 2>/dev/null sah
+# es niemand. Ein Befehl, der genau dann nichts tut, wenn er gebraucht wuerde,
+# sieht nach Absicherung aus und ist keine. Gebraucht wird er ohnehin nicht:
+# der Installateur legt alles unter bin/, data/, config/ und log/ des Plugins
+# bereits als loxberry an.
+
+# ---------- Lief der Pulse-Dienst vor dem Update? ----------
+# Der Merker kommt aus preupgrade.sh und liegt NEBEN dem Datenordner - der
+# Ordner selbst ist beim Upgrade weg (purge_installation im Upgrade-Zweig).
+# Gestartet wird nur, wenn er wirklich lief: ein bewusst angehaltener Dienst
+# bleibt angehalten.
+LIEF="$BASE/data/plugins/$PFOLDER.lief_vorher"
+if [ -f "$LIEF" ]; then
+    rm -f "$LIEF"
+    if [ -x "$PBIN/dienst.sh" ]; then
+        if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+            echo "<OK> Der Pulse-Dienst lief vor dem Update und wurde neu gestartet."
+        else
+            echo "<INFO> Der Pulse-Dienst lief vor dem Update, liess sich aber nicht"
+            echo "<INFO> starten. Reiter Einstellungen, Knopf Dienst starten."
+        fi
+    fi
+fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Plugin installiert oder aktualisiert." \
     >> "$PLOG/tibber.log" 2>/dev/null

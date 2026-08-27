@@ -19,6 +19,18 @@
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)          # <home>/bin/plugins/<ordner>
 PNAME=$(basename "$SELF")
 LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+
+# Von root absteigen, BEVOR irgendetwas angelegt wird.
+#
+# Der minuetliche Waechter kommt aus dem Cron, und je nach Ablage laeuft der
+# als root. Danach gehoerten PID-Datei, Sollmerker und Protokoll root - die
+# Oberflaeche laeuft aber als loxberry und koennte den Dienst dann nicht mehr
+# anhalten. Ein Startskript, das als root laufen KANN, ist deshalb eine Falle;
+# gebraucht wird root hier nie, denn alles unter bin/, data/, config/ und log/
+# des Plugins gehoert loxberry.
+if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+    exec su -s /bin/bash loxberry -c "$(printf '%q ' "$0" "$@")"
+fi
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
@@ -34,8 +46,21 @@ laeuft() {
     P=$(cat "$PID" 2>/dev/null)
     [ -n "$P" ] || return 1
     kill -0 "$P" 2>/dev/null || return 1
-    # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein
-    grep -qa "tb_pulse.php" "/proc/$P/cmdline" 2>/dev/null || return 1
+    # Nummernrecycling ausschliessen - ARGUMENTWEISE.
+    #
+    # /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Ein grep darueber
+    # trifft JEDEN Prozess, der den Pfad irgendwo fuehrt - auch einen Editor,
+    # der die Datei gerade offen hat. Dann haelt der Waechter einen fremden
+    # Prozess fuer den Dienst und startet nie nach.
+    #
+    # Zwei Bedingungen, und die zweite ist noetig: argv[1] ist genau unser
+    # Skript, UND argv[0] ist ein PHP-Interpreter. Sonst wuerde "nano
+    # tb_pulse.php" als laufender Dienst gelten - der Pfad steht dort ebenfalls
+    # als argv[1].
+    ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
+    [ -n "$ARGS" ] || return 1
+    [ "$(basename "$(echo "$ARGS" | sed -n '2p')")" = "tb_pulse.php" ] || return 1
+    echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)php[0-9.]*$' || return 1
     return 0
 }
 

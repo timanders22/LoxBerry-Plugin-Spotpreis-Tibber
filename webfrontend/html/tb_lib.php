@@ -49,6 +49,60 @@ if (!function_exists('tb_e')) {
     }
 }
 
+/**
+ * Die Fassung des Plugins - GELESEN, nicht eingetragen.
+ *
+ * Sie stand bis 0.9.6 an zwei Stellen fest im Quelltext (User-Agent der
+ * GraphQL-Anfragen und des WebSocket-Handschlags) und war dort auf 0.9.0
+ * stehengeblieben, waehrend die plugin.cfg 0.9.6 fuehrte. Eine Fassungsangabe
+ * im Quelltext veraltet still; eine gelesene kann es nicht.
+ *
+ * Zwei Quellen, in dieser Reihenfolge:
+ *
+ *   1. data/system/plugindatabase.json - das ist die Auskunft von LoxBerry
+ *      SELBST und die einzige, die im INSTALLIERTEN Zustand vorliegt: die
+ *      plugin.cfg wandert bei der Installation nicht mit, sie steht nur im
+ *      Archiv. Gesucht wird ueber den ORDNERNAMEN, nie ueber den
+ *      MD5-Schluessel: der wird aus Autorenname, E-Mail und Plugin-Name
+ *      gebildet und aendert sich bei jedem Fork.
+ *   2. die plugin.cfg drei Ebenen ueber dieser Datei - das trifft das
+ *      entpackte Archiv, also den Prueffall.
+ *
+ * parse_ini_file() taugt fuer die plugin.cfg NICHT: sie kommentiert mit '#',
+ * PHPs INI-Zerleger kennt nur ';' und bricht an der ersten Kommentarzeile ab.
+ * Deshalb wird die eine Zeile selbst gesucht.
+ */
+function tb_fassung()
+{
+    static $v = null;
+    if ($v !== null) { return $v; }
+    $v = '';
+    $p = tb_paths();
+    if ($p['home'] !== '') {
+        $db = tb_json_lesen($p['home'] . '/data/system/plugindatabase.json');
+        $liste = isset($db['plugins']) && is_array($db['plugins']) ? $db['plugins'] : array();
+        foreach ($liste as $eintrag) {
+            if (is_array($eintrag) && isset($eintrag['folder'])
+                && (string) $eintrag['folder'] === $p['plugin']
+                && isset($eintrag['version'])) {
+                $v = (string) $eintrag['version'];
+                break;
+            }
+        }
+    }
+    if ($v === '') {
+        $cfg = dirname(dirname(dirname(__FILE__))) . '/plugin.cfg';
+        if (is_file($cfg)
+            && preg_match('/(?m)^VERSION=([0-9][0-9.]*)/', (string) @file_get_contents($cfg), $m)) {
+            $v = $m[1];
+        }
+    }
+    // Kein Rueckfall auf eine erfundene Nummer: eine Fassungsangabe, die
+    // niemand gemessen hat, darf nicht aussehen wie eine gemessene.
+    if ($v === '') { $v = 'unbekannt'; }
+    return $v;
+}
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -126,6 +180,17 @@ function tb_paths()
         'bindir'     => $home . '/bin/plugins/' . $dir,
         'logdir'     => $home . '/log/plugins/' . $dir,
         'log'        => $home . '/log/plugins/' . $dir . '/tibber.log',
+        /* Der Merker "der Pulse-Dienst lief vor dem Update" liegt NEBEN dem
+         * Datenordner, nicht darin.
+         *
+         * Bis 0.9.6 lag er unter data/plugins/<ordner>/soll_laufen. Das
+         * ueberlebt kein Update: plugininstall.pl ruft purge_installation im
+         * UPGRADE-Zweig (:886), und die entfernt data/plugins/<ordner>/
+         * vollstaendig (:1631). Der Waechter fand den Merker danach nicht
+         * mehr und startete nichts - der Dienst stand nach JEDEM Update
+         * still, ohne dass irgendwo etwas stand. Ein Geschwister mit Punkt
+         * im Namen trifft das rm -rf auf das Verzeichnis nicht. */
+        'lief_vorher' => $home . '/data/plugins/' . $dir . '.lief_vorher',
     );
     return $p;
 }
@@ -208,17 +273,67 @@ function tb_json_schreiben($pfad, $daten, $rechte = null)
     return true;
 }
 
-function tb_config()
+/**
+ * Die Konfiguration lesen.
+ *
+ * $erzeugen entscheidet, ob dabei geschrieben werden darf. Der unangemeldete
+ * Endpunkt ruft tb_config(false) - und zwar nicht aus Vorsicht, sondern weil
+ * er sonst schreibt, BEVOR sich jemand ausgewiesen hat: die Selbstheilung
+ * unten kopiert eine Datei, und ein einziger Aufruf ohne Token legte damit
+ * den Konfigurationsordner samt Inhalt an. Gemessen an EVCC, Govee und
+ * Saugroboter; dieselbe Klasse, dreimal.
+ */
+function tb_config($erzeugen = true)
 {
     $p = tb_paths();
     // Selbstheilung aus der Sicherung NEBEN dem Konfigurationsordner. Ein
     // Geschwister ueberlebt dessen Loeschung, ein Kind nicht.
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
+    if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
+        if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
         @copy($p['sicherung'], $p['config']);
     }
     return array_merge(tb_vorgaben(), tb_json_lesen($p['config']));
+}
+
+/**
+ * Fehlende Schluessel EINMAL in die Datei schreiben - nicht nur beim Lesen
+ * ergaenzen.
+ *
+ * Der Unterschied klingt klein und ist der ganze Punkt. Ergaenzen heisst: die
+ * Datei bleibt lueckenhaft, und "fehlt" ist von "steht auf dem Vorgabewert"
+ * nicht zu unterscheiden. Vervollstaendigen heisst: es steht da. Danach ist
+ * jede kuenftige Umbenennung harmlos, eine Sicherung traegt wirklich alles,
+ * und wer die Datei ansieht, sieht SEINE Einstellungen und nicht die Haelfte
+ * davon.
+ *
+ * Geschrieben wird nur, wenn wirklich etwas fehlte - sonst aendert sich die
+ * Datei bei jedem Lauf ohne Anlass und das Protokoll laeuft voll.
+ *
+ * Rueckgabe: array(Zahl der Schluessel, ergaenzte Namen, fremde Namen).
+ * Fremdes wird GENANNT und stehengelassen: niemand weiss, ob dort der Rest
+ * einer alten Fassung steht oder etwas, das der naechsten schon gehoert.
+ */
+function tb_config_vervollstaendigen($schreiben = true)
+{
+    $p = tb_paths();
+    $vorgaben = tb_vorgaben();
+    $ist = tb_json_lesen($p['config']);
+    $fehlend = array();
+    foreach ($vorgaben as $k => $unbenutzt) {
+        if (!array_key_exists($k, $ist)) { $fehlend[] = $k; }
+    }
+    $fremd = array();
+    foreach ($ist as $k => $unbenutzt) {
+        if (!array_key_exists($k, $vorgaben)) { $fremd[] = $k; }
+    }
+    if ($schreiben && $fehlend && is_file($p['config'])) {
+        $neu = array_merge($vorgaben, $ist);
+        if (tb_config_speichern($neu)) {
+            tb_log('Konfiguration vervollstaendigt, ergaenzt: ' . implode(', ', $fehlend));
+        }
+    }
+    return array(count($vorgaben), $fehlend, $fremd);
 }
 
 function tb_config_speichern($cfg)
@@ -297,6 +412,154 @@ function tb_aktionstoken()
     return (string) $cfg['aktionstoken'];
 }
 
+/* ---------------- Das Formularmerkmal (Wachposten) ----------------
+ *
+ * htmlauth schuetzt gegen den unangemeldeten Aufruf - nicht dagegen, dass der
+ * Browser eines ANGEMELDETEN Bedieners ein Formular abschickt, das auf einer
+ * fremden Seite steht. Der Browser schickt die hinterlegten Zugangsdaten bei
+ * einer Anfrage von aussen mit.
+ *
+ * Der teuerste Knopf dieses Plugins ist dabei "Neues Merkwort erzeugen":
+ * danach beantwortet der Endpunkt JEDEN virtuellen Eingang mit 403, und ein
+ * virtueller Eingang wertet die Antwort nicht aus - der Ausfall bliebe still.
+ * Ebenso erreichbar waeren "Protokoll leeren" (Spurenbeseitigung) und das
+ * Anhalten des Pulse-Dienstes.
+ *
+ * Das Merkmal wird aus dem Aktionstoken ABGELEITET und nicht gespeichert.
+ * Sonst haette die Konfiguration einen Schluessel mehr, den ein
+ * Speichern-Handler vergessen kann - genau daran sind am 13.08.2026 drei
+ * Aktionstoken verlorengegangen.
+ */
+function tb_formtoken($cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    $t = trim((string) $cfg['aktionstoken']);
+    return $t === '' ? '' : hash_hmac('sha256', 'formular-v1', $t);
+}
+
+/**
+ * Fail closed: ohne hinterlegtes Aktionstoken gibt es nichts zu vergleichen,
+ * und hash_equals('', '') waere WAHR - der Wachposten liesse dann ausgerechnet
+ * die Anlage offen, bei der nie jemand ein Token gesetzt hat.
+ */
+function tb_formtoken_ok($cfg = null)
+{
+    $soll = tb_formtoken($cfg);
+    if ($soll === '') { return false; }
+    $ist = isset($_POST['fmt']) && is_string($_POST['fmt']) ? (string) $_POST['fmt'] : '';
+    return $ist !== '' && hash_equals($soll, $ist);
+}
+
+/* ---------------- Der Suchtext fuer Loxone ----------------
+ *
+ * Loxone sucht WOERTLICH und nimmt den ERSTEN Treffer in der Zeile. Ohne das
+ * fuehrende Semikolon steckt 'ALTER=' auch in 'PULSE_ALTER=' und 'OK=' auch
+ * in 'MORGEN_OK=' - und weil beide frueher in der Zeile stehen, las der
+ * Miniserver bis 0.9.6 an genau diesen zwei Feldern den falschen Wert.
+ * Gemessen an der echten Statuszeile: 36 von 38 richtig, 2 falsch; mit dem
+ * Semikolon 38 von 38.
+ *
+ * Getroffen hat es die beiden Felder, an denen die Ausfallerkennung haengt:
+ * OK lieferte den Wert von MORGEN_OK (nachmittags dauerhaft 1) und ALTER das
+ * Alter des Pulse-Wertes in Sekunden statt des Preisalters in Minuten.
+ *
+ * Diese Funktion ist die EINZIGE Stelle, an der der Suchtext entsteht.
+ * Vorlage, Feldtabelle und Baustein-Liste rufen sie auf; in den Sprachdateien
+ * steht nur noch ein Platzhalter. Eine berichtigte Abschrift waere immer noch
+ * eine Abschrift und liefe beim naechsten neuen Feld wieder auseinander.
+ */
+function tb_check($feld)
+{
+    return '\i;' . $feld . '=\i\v';
+}
+
+/**
+ * Ein umlaufender Laufzaehler als Lebenszeichen.
+ *
+ * Er beantwortet, was ein Zeitstempel nicht kann: ein Raspberry hat keine
+ * Echtzeituhr, steht nach dem Booten in der Vergangenheit und springt, sobald
+ * NTP greift. Ein Alter kann danach negativ oder stundenlang sein, obwohl
+ * alles laeuft - eine umlaufende Zahl nicht.
+ *
+ * -1 heisst "noch nie gelaufen"; 0 waere ein gueltiger Stand und taugt dafuer
+ * nicht.
+ */
+function tb_zaehler_lesen()
+{
+    $f = tb_paths()['datadir'] . '/zaehler';
+    if (!is_file($f)) { return -1; }
+    $n = trim((string) @file_get_contents($f));
+    return preg_match('/^[0-9]{1,3}$/', $n) ? (int) $n : -1;
+}
+
+function tb_zaehler_weiter()
+{
+    $p = tb_paths();
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    $n = tb_zaehler_lesen();
+    $n = ($n < 0) ? 0 : (($n + 1) % 1000);
+    @file_put_contents($p['datadir'] . '/zaehler', (string) $n);
+    return $n;
+}
+
+/**
+ * Den roten Punkt am Plugin-Symbol setzen - beim WECHSEL des Befundes, nie
+ * bei jedem Durchlauf.
+ *
+ * Eine Meldung je Minute ist keine Meldung, sondern Rauschen; und wer sie
+ * abstellt, stellt auch die echte ab. Deshalb merkt sich diese Funktion den
+ * zuletzt gemeldeten Stand je Thema und schweigt, solange er gleich bleibt.
+ *
+ * notify_ext() steckt in loxberry_log.php. Ein '@' hilft gegen "undefined
+ * function" NICHT - das ist ein fataler Fehler, kein unterdrueckbarer.
+ * Deshalb function_exists() davor.
+ */
+function tb_notify($thema, $stufe, $text)
+{
+    $p = tb_paths();
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    $f = $p['datadir'] . '/.notify_' . preg_replace('/[^a-z0-9_]/i', '', $thema);
+    $neu = $stufe . '|' . md5($text);
+    $alt = is_file($f) ? trim((string) @file_get_contents($f)) : '';
+    if ($alt === $neu) { return false; }
+    @file_put_contents($f, $neu);
+    if ($stufe === 'ok') { return true; }        // Entwarnung: nur merken
+    if (!function_exists('notify_ext')) {
+        tb_log_gebremst('kein_notify', 'Der Hinweis "' . $text . '" konnte nicht an das '
+            . 'Benachrichtigungszentrum gehen: notify_ext() gibt es in dieser '
+            . 'LoxBerry-Fassung nicht.');
+        return false;
+    }
+    notify_ext(array(
+        'PACKAGE' => tb_paths()['plugin'],
+        'NAME'    => 'spotpreistibber',
+        'MESSAGE' => $text,
+        'SEVERITY' => ($stufe === 'fehler') ? 3 : 4,
+    ));
+    return true;
+}
+
+/**
+ * Laeuft unter dieser Prozessnummer wirklich UNSER Skript?
+ *
+ * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Ein grep darueber
+ * trifft JEDEN Prozess, der den Pfad irgendwo fuehrt - auch einen Editor, der
+ * die Datei gerade offen hat. Richtig sind zwei Bedingungen: argv[1] ist genau
+ * das Skript, und argv[0] ist ein Interpreter. Die zweite ist noetig, weil
+ * "nano <pfad>" den Pfad ebenfalls als argv[1] traegt.
+ */
+function tb_prozess_ist($pid, $skriptname)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0 || !is_dir('/proc/' . $pid)) { return false; }
+    $roh = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+    if ($roh === '') { return false; }
+    $teile = explode("\0", $roh);
+    if (count($teile) < 2) { return false; }
+    if (basename((string) $teile[1]) !== $skriptname) { return false; }
+    return preg_match('#(^|/)php[0-9.]*$#', (string) $teile[0]) === 1;
+}
+
 /* ---------------- Protokoll ---------------- */
 
 function tb_log($text)
@@ -342,7 +605,10 @@ function tb_kopfzeilen($token)
         'Accept: application/json',
         'Accept-Language: de-DE,de;q=0.9,en;q=0.8',
         'Accept-Encoding: identity',
-        'User-Agent: LoxBerry-Plugin-Spotpreis-Tibber/0.9.0 (+https://wiki.loxberry.de/)',
+        // Die Fassung wird GELESEN (tb_fassung), nicht eingetragen. Bis 0.9.6
+        // stand hier fest '0.9.0', waehrend die plugin.cfg laengst 0.9.6 fuehrte.
+        'User-Agent: LoxBerry-Plugin-Spotpreis-Tibber/' . tb_fassung()
+            . ' (+https://wiki.loxberry.de/)',
     );
 }
 
@@ -603,6 +869,45 @@ function tb_preisliste($roh, array $cfg)
     return $out;
 }
 
+/**
+ * Wie lang ist ein Eintrag der Preisliste - GEMESSEN, nicht angenommen.
+ *
+ * Bis 0.9.6 stand an vier Stellen die feste Zahl 3600: ein Eintrag ist eine
+ * Stunde. Das war richtig, solange Tibber Stundenpreise liefert.
+ *
+ * Seit dem 01.10.2025 werden die Boersenpreise in Deutschland und weiteren
+ * Maerkten VIERTELSTUENDLICH gestellt, und die Tibber-Schnittstelle kennt
+ * dafuer priceInfo(resolution: QUARTER_HOURLY). Ohne das Argument liefert sie
+ * weiterhin Stundenwerte - das Plugin fragt ohne, hier aendert sich also
+ * heute nichts. Tibber hat aber angekuendigt, QUARTER_HOURLY zur VORGABE zu
+ * machen. Ab dann kaemen 96 Eintraege statt 24, und jede feste 3600 waere
+ * still falsch: aus einem Drei-Stunden-Fenster wuerden 45 Minuten, und der
+ * Preis der laufenden Stunde waere der der letzten Viertelstunde darin.
+ *
+ * Die Schrittweite wird deshalb aus der Liste selbst gelesen. Genommen wird
+ * der HAEUFIGSTE Abstand zweier Eintraege, nicht der erste: um eine
+ * Zeitumstellung herum gibt es einen Ausreisser, und ein Mittelwert waere
+ * davon verzogen. Bei weniger als zwei Eintraegen gibt es nichts zu messen -
+ * dann gilt die Stunde, und das steht als Rueckfall auch so da.
+ */
+function tb_schrittweite(array $liste)
+{
+    if (count($liste) < 2) { return 3600; }
+    $zaehl = array();
+    for ($i = 1; $i < count($liste); $i++) {
+        $d = (int) ($liste[$i]['ts'] - $liste[$i - 1]['ts']);
+        if ($d <= 0 || $d > 86400) { continue; }
+        if (!isset($zaehl[$d])) { $zaehl[$d] = 0; }
+        $zaehl[$d]++;
+    }
+    if (!$zaehl) { return 3600; }
+    arsort($zaehl);
+    $haeufigster = (int) key($zaehl);
+    // Nur plausible Schrittweiten: 5 Minuten bis 1 Stunde. Alles andere ist
+    // eher eine Luecke in der Reihe als eine Aufloesung.
+    return ($haeufigster >= 300 && $haeufigster <= 3600) ? $haeufigster : 3600;
+}
+
 /** Kennzahlen einer Preisliste: Schnitt, Minimum, Maximum samt Stunde. */
 function tb_kennzahlen(array $liste)
 {
@@ -635,18 +940,24 @@ function tb_fenster(array $liste, $stunden, $ab = null)
 {
     $stunden = max(1, min(12, (int) $stunden));
     if ($ab === null) { $ab = time(); }
+    /* Wie viele EINTRAEGE sind das? Bei Stundenpreisen genau $stunden, bei
+     * Viertelstundenpreisen viermal so viele. Die feste Gleichsetzung
+     * "ein Eintrag = eine Stunde" haette aus einem Drei-Stunden-Fenster
+     * unbemerkt ein 45-Minuten-Fenster gemacht. */
+    $schritt = tb_schrittweite($liste);
+    $anzahl = max(1, (int) round($stunden * 3600 / $schritt));
     $k = array();
     foreach ($liste as $e) {
-        // Die laufende Stunde zaehlt mit, deshalb 3600 Toleranz.
-        if ($e['ts'] + 3600 > $ab) { $k[] = $e; }
+        // Der laufende Abschnitt zaehlt mit, deshalb die Schrittweite Toleranz.
+        if ($e['ts'] + $schritt > $ab) { $k[] = $e; }
     }
-    if (count($k) < $stunden) {
+    if (count($k) < $anzahl) {
         return array('ts' => null, 'h' => null, 'in' => null, 'ct' => null);
     }
     $best = null; $bestI = 0;
-    for ($i = 0; $i + $stunden <= count($k); $i++) {
+    for ($i = 0; $i + $anzahl <= count($k); $i++) {
         $s = 0.0;
-        for ($j = 0; $j < $stunden; $j++) { $s += $k[$i + $j]['ct']; }
+        for ($j = 0; $j < $anzahl; $j++) { $s += $k[$i + $j]['ct']; }
         if ($best === null || $s < $best) { $best = $s; $bestI = $i; }
     }
     $ts = $k[$bestI]['ts'];
@@ -654,7 +965,7 @@ function tb_fenster(array $liste, $stunden, $ab = null)
         'ts' => $ts,
         'h'  => (int) date('G', $ts),
         'in' => (int) max(0, round(($ts - $ab) / 3600)),
-        'ct' => round($best / $stunden, 3),
+        'ct' => round($best / $anzahl, 3),
     );
 }
 
@@ -662,9 +973,10 @@ function tb_fenster(array $liste, $stunden, $ab = null)
 function tb_rang(array $liste, $jetzt = null)
 {
     if ($jetzt === null) { $jetzt = time(); }
+    $schritt = tb_schrittweite($liste);
     $k = array();
     foreach ($liste as $e) {
-        if ($e['ts'] + 3600 > $jetzt && $e['ts'] < $jetzt + 24 * 3600) { $k[] = $e['ct']; }
+        if ($e['ts'] + $schritt > $jetzt && $e['ts'] < $jetzt + 24 * 3600) { $k[] = $e['ct']; }
     }
     if (!$k) { return array(null, 0); }
     $aktuell = tb_preis_zur_zeit($liste, $jetzt);
@@ -677,12 +989,21 @@ function tb_rang(array $liste, $jetzt = null)
     return array($rang, count($k));
 }
 
-/** Der Preis, der zu einem Zeitpunkt gilt. */
+/**
+ * Der Preis, der zu einem Zeitpunkt gilt.
+ *
+ * Die Gueltigkeitsdauer eines Eintrags ist die gemessene Schrittweite, nicht
+ * eine feste Stunde. Bei Viertelstundenpreisen passten sonst VIER Eintraege
+ * auf denselben Zeitpunkt, und genommen wuerde der letzte davon - also der
+ * Preis der letzten Viertelstunde als Preis der ganzen Stunde. Ein falscher
+ * Wert, der aussieht wie ein richtiger.
+ */
 function tb_preis_zur_zeit(array $liste, $zeit)
 {
+    $schritt = tb_schrittweite($liste);
     $treffer = null;
     foreach ($liste as $e) {
-        if ($e['ts'] <= $zeit && $zeit < $e['ts'] + 3600) { $treffer = $e['ct']; }
+        if ($e['ts'] <= $zeit && $zeit < $e['ts'] + $schritt) { $treffer = $e['ct']; }
     }
     return $treffer;
 }
@@ -724,9 +1045,7 @@ function tb_dienst_pid()
     $f = tb_paths()['datadir'] . '/pulse.pid';
     if (!is_file($f)) { return 0; }
     $pid = (int) trim((string) @file_get_contents($f));
-    if ($pid <= 0 || !is_dir('/proc/' . $pid)) { return 0; }
-    $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    return strpos($cmd, 'tb_pulse.php') !== false ? $pid : 0;
+    return tb_prozess_ist($pid, 'tb_pulse.php') ? $pid : 0;
 }
 
 function tb_dienst_soll()
@@ -757,48 +1076,157 @@ function tb_dienst($befehl)
  * Octopus, soweit es dieselben Groessen sind. Wer den Anbieter wechselt,
  * tauscht das Plugin - nicht die Bausteine.
  * ================================================================== */
+/**
+ * Die Feldtabelle - EINE Quelle fuer Statuszeile, MQTT, Importvorlage,
+ * Feldtabelle der Oberflaeche und Baustein-Liste.
+ *
+ * Je Feld:
+ *   einheit  fuer die Anzeige und fuer Unit="<v.1> …" in der Importvorlage
+ *   kurz     Sprachschluessel der BESCHRIFTUNG. Sie wird zum Comment der
+ *            Vorlage - und Loxone Config macht daraus den ANZEIGENAMEN des
+ *            Bausteins. Deshalb eine Beschriftung, kein Satz: bis 0.9.6
+ *            waren 25 von 38 Kommentaren laenger als 40 Zeichen, der
+ *            laengste hatte 149.
+ *   text     Sprachschluessel der ERKLAERUNG. Sie bleibt in der Oberflaeche,
+ *            wo Platz dafuer ist.
+ *   min/max  Grenzen, realistisch statt pauschal +/-2147483647: Loxone zieht
+ *            daraus die Reglergrenzen und die Plausibilitaetspruefung.
+ *   analog   0 = digitaler Eingang (0/1). Loxone Config schreibt Analog nur
+ *            bei den analogen Werten; bis 0.9.6 trugen ALLE Befehle
+ *            Analog="true", auch die vier Merker.
+ *
+ * NEUE FELDER GEHOEREN ANS ENDE. In der Mitte verschoeben sie die Reihenfolge
+ * der Statuszeile, und jede beim Anwender eingetragene Befehlserkennung zeigte
+ * danach auf den falschen Wert.
+ */
 function tb_status_felder()
 {
+    $f = function ($einheit, $name, $min, $max, $analog = 1) {
+        return array('einheit' => $einheit,
+                     'kurz' => 'TB_FELD_KURZ.' . $name,
+                     'text' => 'TB_FELD.' . $name,
+                     'min' => $min, 'max' => $max, 'analog' => $analog);
+    };
     return array(
-        'CUR'          => array('ct/kWh', 'TB_FELD.CUR',          0,    200),
-        'CUR_ENERGIE'  => array('ct/kWh', 'TB_FELD.CUR_ENERGIE',  -100, 200),
-        'CUR_STEUER'   => array('ct/kWh', 'TB_FELD.CUR_STEUER',   0,    100),
-        'NEXT'         => array('ct/kWh', 'TB_FELD.NEXT',         0,    200),
-        'LEVEL'        => array('',       'TB_FELD.LEVEL',        0,    2),
-        'TLEVEL'       => array('',       'TB_FELD.TLEVEL',       -1,   4),
-        'RANK'         => array('',       'TB_FELD.RANK',         0,    48),
-        'RANKD'        => array('',       'TB_FELD.RANKD',        0,    48),
-        'NEG'          => array('',       'TB_FELD.NEG',          0,    1),
-        'AVG_HEUTE'    => array('ct/kWh', 'TB_FELD.AVG_HEUTE',    0,    200),
-        'MIN_HEUTE'    => array('ct/kWh', 'TB_FELD.MIN_HEUTE',    -100, 200),
-        'MINH_HEUTE'   => array('h',      'TB_FELD.MINH_HEUTE',   0,    23),
-        'MAX_HEUTE'    => array('ct/kWh', 'TB_FELD.MAX_HEUTE',    0,    200),
-        'MAXH_HEUTE'   => array('h',      'TB_FELD.MAXH_HEUTE',   0,    23),
-        'MORGEN_OK'    => array('',       'TB_FELD.MORGEN_OK',    0,    1),
-        'AVG_MORGEN'   => array('ct/kWh', 'TB_FELD.AVG_MORGEN',   0,    200),
-        'MIN_MORGEN'   => array('ct/kWh', 'TB_FELD.MIN_MORGEN',   -100, 200),
-        'MINH_MORGEN'  => array('h',      'TB_FELD.MINH_MORGEN',  0,    23),
-        'MAX_MORGEN'   => array('ct/kWh', 'TB_FELD.MAX_MORGEN',   0,    200),
-        'MAXH_MORGEN'  => array('h',      'TB_FELD.MAXH_MORGEN',  0,    23),
-        'FENSTER_H'    => array('h',      'TB_FELD.FENSTER_H',    0,    23),
-        'FENSTER_IN'   => array('h',      'TB_FELD.FENSTER_IN',   0,    47),
-        'FENSTER_CT'   => array('ct/kWh', 'TB_FELD.FENSTER_CT',   0,    200),
-        'PULSE'        => array('W',      'TB_FELD.PULSE',        -30000, 30000),
-        'PULSE_ERZ'    => array('W',      'TB_FELD.PULSE_ERZ',    0,    30000),
-        'PULSE_TAG'    => array('kWh',    'TB_FELD.PULSE_TAG',    0,    500),
-        'PULSE_KOSTEN' => array('EUR',    'TB_FELD.PULSE_KOSTEN', 0,    500),
-        'PULSE_ALTER'  => array('s',      'TB_FELD.PULSE_ALTER',  0,    86400),
-        'VERBR_GESTERN' => array('kWh',   'TB_FELD.VERBR_GESTERN', 0,   1000),
-        'KOSTEN_GESTERN' => array('EUR',  'TB_FELD.KOSTEN_GESTERN', 0,  1000),
-        'VERBR_MONAT'  => array('kWh',    'TB_FELD.VERBR_MONAT',  0,    10000),
-        'KOSTEN_MONAT' => array('EUR',    'TB_FELD.KOSTEN_MONAT', 0,    10000),
-        'DYN_MONAT'    => array('ct/kWh', 'TB_FELD.DYN_MONAT',    0,    200),
-        'FIX'          => array('ct/kWh', 'TB_FELD.FIX',          0,    200),
-        'DIFF_MONAT'   => array('ct/kWh', 'TB_FELD.DIFF_MONAT',   -100, 100),
-        'EURO_MONAT'   => array('EUR',    'TB_FELD.EURO_MONAT',   -1000, 1000),
-        'ALTER'        => array('min',    'TB_FELD.ALTER',        0,    1440),
-        'OK'           => array('',       'TB_FELD.OK',           0,    1),
+        'CUR'            => $f('ct/kWh', 'CUR',            0,      200),
+        'CUR_ENERGIE'    => $f('ct/kWh', 'CUR_ENERGIE',    -100,   200),
+        'CUR_STEUER'     => $f('ct/kWh', 'CUR_STEUER',     0,      100),
+        'NEXT'           => $f('ct/kWh', 'NEXT',           0,      200),
+        'LEVEL'          => $f('',       'LEVEL',          0,      2),
+        'TLEVEL'         => $f('',       'TLEVEL',         -1,     4),
+        'RANK'           => $f('',       'RANK',           0,      48),
+        'RANKD'          => $f('',       'RANKD',          0,      48),
+        'NEG'            => $f('',       'NEG',            0,      1,     0),
+        'AVG_HEUTE'      => $f('ct/kWh', 'AVG_HEUTE',      0,      200),
+        'MIN_HEUTE'      => $f('ct/kWh', 'MIN_HEUTE',      -100,   200),
+        'MINH_HEUTE'     => $f('h',      'MINH_HEUTE',     0,      23),
+        'MAX_HEUTE'      => $f('ct/kWh', 'MAX_HEUTE',      0,      200),
+        'MAXH_HEUTE'     => $f('h',      'MAXH_HEUTE',     0,      23),
+        'MORGEN_OK'      => $f('',       'MORGEN_OK',      0,      1,     0),
+        'AVG_MORGEN'     => $f('ct/kWh', 'AVG_MORGEN',     0,      200),
+        'MIN_MORGEN'     => $f('ct/kWh', 'MIN_MORGEN',     -100,   200),
+        'MINH_MORGEN'    => $f('h',      'MINH_MORGEN',    0,      23),
+        'MAX_MORGEN'     => $f('ct/kWh', 'MAX_MORGEN',     0,      200),
+        'MAXH_MORGEN'    => $f('h',      'MAXH_MORGEN',    0,      23),
+        'FENSTER_H'      => $f('h',      'FENSTER_H',      0,      23),
+        'FENSTER_IN'     => $f('h',      'FENSTER_IN',     0,      47),
+        'FENSTER_CT'     => $f('ct/kWh', 'FENSTER_CT',     0,      200),
+        'PULSE'          => $f('W',      'PULSE',          -30000, 30000),
+        'PULSE_ERZ'      => $f('W',      'PULSE_ERZ',      0,      30000),
+        'PULSE_TAG'      => $f('kWh',    'PULSE_TAG',      0,      500),
+        'PULSE_KOSTEN'   => $f('EUR',    'PULSE_KOSTEN',   0,      500),
+        'PULSE_ALTER'    => $f('s',      'PULSE_ALTER',    0,      86400),
+        'VERBR_GESTERN'  => $f('kWh',    'VERBR_GESTERN',  0,      1000),
+        'KOSTEN_GESTERN' => $f('EUR',    'KOSTEN_GESTERN', 0,      1000),
+        'VERBR_MONAT'    => $f('kWh',    'VERBR_MONAT',    0,      10000),
+        'KOSTEN_MONAT'   => $f('EUR',    'KOSTEN_MONAT',   0,      10000),
+        'DYN_MONAT'      => $f('ct/kWh', 'DYN_MONAT',      0,      200),
+        'FIX'            => $f('ct/kWh', 'FIX',            0,      200),
+        'DIFF_MONAT'     => $f('ct/kWh', 'DIFF_MONAT',     -100,   100),
+        'EURO_MONAT'     => $f('EUR',    'EURO_MONAT',     -1000,  1000),
+        'ALTER'          => $f('min',    'ALTER',          0,      1440),
+        'OK'             => $f('',       'OK',             0,      1,     0),
+        /* --- ab 0.9.7, deshalb hinten --- */
+        'ZAEHLER'        => $f('',       'ZAEHLER',        -1,     999),
+        'FENSTER2_H'     => $f('h',      'FENSTER2_H',     0,      23),
+        'FENSTER2_IN'    => $f('h',      'FENSTER2_IN',    0,      47),
+        'FENSTER2_CT'    => $f('ct/kWh', 'FENSTER2_CT',    0,      200),
+        'FENSTER_MORGEN_H'  => $f('h',      'FENSTER_MORGEN_H',  0, 23),
+        'FENSTER_MORGEN_CT' => $f('ct/kWh', 'FENSTER_MORGEN_CT', 0, 200),
+        'AVG_30T'        => $f('ct/kWh', 'AVG_30T',        0,      200),
+        'RANK_30T'       => $f('%',      'RANK_30T',       0,      100),
+        'GUENSTIGANTEIL' => $f('%',      'GUENSTIGANTEIL', 0,      100),
+        'ERSPARNIS_GESTERN' => $f('EUR', 'ERSPARNIS_GESTERN', -100, 100),
     );
+}
+
+/**
+ * Die Felder der Statuszeile in ihrer Reihenfolge - und die Antwort auf die
+ * Frage, ob ein Suchtext eindeutig ist.
+ *
+ * Geprueft wird nicht der Name gegen den Namen, sondern der SUCHTEXT gegen
+ * die gebaute Zeile: Loxone sucht woertlich und nimmt den ersten Treffer.
+ * Genau das ist bis 0.9.6 bei ALTER und OK schiefgegangen.
+ *
+ * Rueckgabe: array(Zahl der Felder, Liste der Felder, die falsch treffen).
+ */
+function tb_suchtext_pruefen()
+{
+    $felder = array_keys(tb_status_felder());
+    $zeile = 'TIBBER';
+    $stelle = array();
+    foreach ($felder as $name) {
+        $stelle[$name] = strlen($zeile);       // Stelle des ';' vor dem Namen
+        $zeile .= ';' . $name . '=1';
+    }
+    $falsch = array();
+    foreach ($felder as $name) {
+        /* Der wirklich gesuchte Text kommt aus tb_check() - er wird NICHT hier
+         * noch einmal nachgebaut.
+         *
+         * Der erste Anlauf dieser Zeile hat genau das getan und ';NAME='
+         * selbst zusammengesetzt. Sie blieb damit gruen, als die Eichung das
+         * Trennzeichen aus tb_check() entfernte: die Pruefung mass ihre eigene
+         * Annahme statt des Musters, das in die Vorlage wandert. Zwei Stellen,
+         * die dasselbe zusammensetzen, laufen auseinander - auch dann, wenn
+         * die eine die andere pruefen soll.
+         *
+         * In einem Check steht der Literaltext zwischen dem ersten \i und dem
+         * naechsten; \v ist der Wert. */
+        $such = tb_check_literal(tb_check($name));
+        if ($such === '') { $falsch[] = $name; continue; }
+        $treffer = strpos($zeile, $such);
+        if ($treffer === false) { $falsch[] = $name; continue; }
+        /* Nicht die Stelle vergleichen, sondern das FELD.
+         *
+         * Gemeldet wird, wer den falschen WERT liest - nicht, wer um ein
+         * Zeichen daneben trifft. Ohne diese Unterscheidung meldete die Zeile
+         * beim Ruecknahme-Versuch alle 48 Felder als falsch, obwohl nur zwei
+         * wirklich den Wert eines anderen bekommen. Eine Zahl, die zu gross
+         * ist, wird beim naechsten Mal nicht mehr gelesen. */
+        $ende = strpos($zeile, '=', $treffer);
+        $anfang = strrpos(substr($zeile, 0, $ende), ';');
+        $getroffen = ($anfang === false) ? '' : substr($zeile, $anfang + 1, $ende - $anfang - 1);
+        if ($getroffen !== $name) {
+            $falsch[] = $name . ' (liest ' . $getroffen . ')';
+        }
+    }
+    return array(count($felder), $falsch);
+}
+
+/**
+ * Aus einem Loxone-Check den Text holen, nach dem der Miniserver WOERTLICH
+ * sucht - also alles zwischen dem ersten Steuerzeichen \i und dem naechsten.
+ */
+function tb_check_literal($check)
+{
+    $marke = chr(92) . 'i';                       // die zwei Zeichen \ und i
+    $a = strpos($check, $marke);
+    if ($a === false) { return ''; }
+    $a += strlen($marke);
+    $b = strpos($check, $marke, $a);
+    if ($b === false) { return ''; }
+    return substr($check, $a, $b - $a);
 }
 
 /** Alle Werte in einem flachen Feld, so wie sie der Endpunkt ausgibt. */
@@ -819,9 +1247,19 @@ function tb_werte()
                    'NEXT' => 'next', 'LEVEL' => 'level', 'TLEVEL' => 'tlevel',
                    'RANK' => 'rank', 'RANKD' => 'rankd', 'NEG' => 'neg',
                    'FENSTER_H' => 'fenster_h', 'FENSTER_IN' => 'fenster_in',
-                   'FENSTER_CT' => 'fenster_ct', 'MORGEN_OK' => 'morgen_ok') as $gross => $klein) {
+                   'FENSTER_CT' => 'fenster_ct', 'MORGEN_OK' => 'morgen_ok',
+                   'FENSTER2_H' => 'fenster2_h', 'FENSTER2_IN' => 'fenster2_in',
+                   'FENSTER2_CT' => 'fenster2_ct',
+                   'FENSTER_MORGEN_H' => 'fenster_morgen_h',
+                   'FENSTER_MORGEN_CT' => 'fenster_morgen_ct',
+                   'AVG_30T' => 'avg_30t', 'RANK_30T' => 'rank_30t') as $gross => $klein) {
         if (isset($st[$klein])) { $w[$gross] = $st[$klein]; }
     }
+
+    /* Der Laufzaehler wird zur LESEZEIT geholt, nicht beim Schreiben
+     * eingefroren - genauso wie ALTER. Ein eingefrorenes Lebenszeichen kann
+     * einen toten Dienst nicht von einer frischen Messung unterscheiden. */
+    $w['ZAEHLER'] = tb_zaehler_lesen();
     foreach (array('heute' => 'HEUTE', 'morgen' => 'MORGEN') as $tag => $gross) {
         if (!isset($st[$tag]) || !is_array($st[$tag])) { continue; }
         $w['AVG_' . $gross]  = $st[$tag]['avg'];
@@ -846,11 +1284,81 @@ function tb_werte()
     foreach (array('VERBR_GESTERN' => 'verbr_gestern', 'KOSTEN_GESTERN' => 'kosten_gestern',
                    'VERBR_MONAT' => 'verbr_monat', 'KOSTEN_MONAT' => 'kosten_monat',
                    'DYN_MONAT' => 'dyn_monat', 'DIFF_MONAT' => 'diff_monat',
-                   'EURO_MONAT' => 'euro_monat') as $gross => $klein) {
+                   'EURO_MONAT' => 'euro_monat',
+                   'GUENSTIGANTEIL' => 'guenstiganteil',
+                   'ERSPARNIS_GESTERN' => 'ersparnis_gestern') as $gross => $klein) {
         if (isset($vb[$klein])) { $w[$gross] = $vb[$klein]; }
     }
     $w['FIX'] = (float) $cfg['festpreis'];
     return $w;
+}
+
+/* ==================================================================
+ * Der Verlauf
+ *
+ * bin/tb_cron.php schreibt stuendlich eine Zeile nach
+ * data/plugins/<ordner>/verlauf/<JJJJMM>.csv:  ts;ct;tagesschnitt
+ *
+ * Bis 0.9.6 hat diese Dateien NIEMAND gelesen - gemessen ueber den ganzen
+ * Ordner: die Zeichenfolge 'verlauf' kam ausserhalb des Schreibens nirgends
+ * vor. Dazu gab es ein Eingabefeld "Verlauf aufbewahren (Tage)", dessen
+ * einzige Wirkung war, wie lange ungelesene Dateien liegen bleiben.
+ *
+ * Seit 0.9.7 beantworten sie die Frage, die dem Plugin bis dahin fehlte:
+ * IST 24 ct VIEL? Eine feste Schwelle kann das nicht sagen, ein Vergleich mit
+ * den letzten dreissig Tagen schon.
+ * ================================================================== */
+
+/** Alle Punkte der letzten $tage Tage. Rueckgabe: Liste aus array(ts, ct). */
+function tb_verlauf_lesen($tage = 30)
+{
+    $ordner = tb_paths()['datadir'] . '/verlauf';
+    if (!is_dir($ordner)) { return array(); }
+    $ab = time() - max(1, (int) $tage) * 86400;
+    $out = array();
+    // Der laufende und der vorige Monat genuegen fuer dreissig Tage.
+    foreach (array(date('Ym'), date('Ym', strtotime('first day of last month'))) as $m) {
+        $datei = $ordner . '/' . $m . '.csv';
+        if (!is_file($datei)) { continue; }
+        foreach ((array) @file($datei, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $z) {
+            $t = explode(';', $z);
+            if (count($t) < 2) { continue; }
+            $ts = (int) $t[0];
+            if ($ts < $ab) { continue; }
+            if (!is_numeric($t[1])) { continue; }
+            $out[] = array('ts' => $ts, 'ct' => (float) $t[1]);
+        }
+    }
+    usort($out, function ($a, $b) { return $a['ts'] - $b['ts']; });
+    return $out;
+}
+
+/**
+ * Durchschnitt und Rang der laufenden Stunde im Verlauf.
+ *
+ * Rueckgabe: array(avg, rangprozent, anzahl). avg und rangprozent sind NULL,
+ * solange die Reihe den Zeitraum nicht traegt - eine Zahl aus drei Punkten
+ * saehe aus wie ein Monatsdurchschnitt und waere keiner. Die Schranke ist
+ * bewusst grob: unter 48 Punkten (also rund zwei Tagen) gibt es nichts.
+ *
+ * rangprozent = 0 heisst "so guenstig wie nie in diesem Zeitraum",
+ * 100 heisst "so teuer wie nie". Das ist die Aussage, die eine feste
+ * Schwelle nicht liefern kann.
+ */
+function tb_verlauf_kennzahlen($jetztpreis, $tage = 30)
+{
+    $reihe = tb_verlauf_lesen($tage);
+    $n = count($reihe);
+    if ($n < 48) { return array(null, null, $n); }
+    $summe = 0.0;
+    $kleiner = 0;
+    foreach ($reihe as $e) {
+        $summe += $e['ct'];
+        if ($jetztpreis !== null && $e['ct'] < (float) $jetztpreis) { $kleiner++; }
+    }
+    $avg = round($summe / $n, 3);
+    $rang = ($jetztpreis === null) ? null : (int) round($kleiner * 100.0 / $n);
+    return array($avg, $rang, $n);
 }
 
 /* ==================================================================
@@ -937,51 +1445,147 @@ function tb_abo_text()
  * Werte ueber den UDP-Eingang des Gateways veroeffentlichen.
  * So braucht das Plugin keine Broker-Zugangsdaten zu kennen.
  */
+/**
+ * Werte ueber den UDP-Eingang des Gateways veroeffentlichen.
+ *
+ * Zwei Dinge, die bis 0.9.6 anders waren:
+ *
+ * 1. socket_create() ist raus. Die Erweiterung 'sockets' ist auf einem
+ *    LoxBerry nicht zugesichert; fehlte sie, wurde stillschweigend GAR NICHTS
+ *    veroeffentlicht, und der Hinweis stand nur gebremst im Protokoll.
+ *    stream_socket_client() gehoert zum PHP-Kern und tut dasselbe - damit
+ *    braucht das Plugin die Erweiterung ueberhaupt nicht mehr.
+ *
+ * 2. Das PRAEFIX wird gesaeubert, nicht nur der Wert. Das Gateway liest
+ *    zeilenweise; ein Zeilenumbruch im Themennamen erzeugt eine ZWEITE
+ *    publish-Zeile in ein fremdes Thema. Nachgemessen mit einem Praefix aus
+ *    einer zurueckgespielten Sicherungsdatei:
+ *
+ *        publish tibber
+ *        publish loxberry/heizung/soll 30/cur 23.4
+ *
+ *    Ueber das Formular kommt so etwas nicht herein (dort greift ein enges
+ *    Muster), ueber eine Sicherungsdatei und ueber eine von Hand bearbeitete
+ *    tibber.json aber sehr wohl. Wer eine Wache fuer die eine Haelfte einer
+ *    Zeile baut, baut sie fuer die andere gleich mit.
+ *
+ * Rueckgabe: array(versucht, gescheitert) - der Aufrufer zaehlt beides und
+ * meldet beides getrennt. Ein "n Werte versendet" ohne die Zahl der
+ * Fehlschlaege ist eine Zusammenfassung, die besser aussieht als ihr
+ * schlechtester Punkt.
+ */
 function tb_mqtt_senden(array $paare, $praefix)
 {
-    if (!function_exists('socket_create')) {
-        tb_log_gebremst('mqtt_keine_sockets',
-            'MQTT: die PHP-Erweiterung sockets fehlt - es wird nichts veroeffentlicht. '
-            . 'Abhilfe: sudo apt install php-sockets');
-        return false;
-    }
     $z = tb_mqtt_zustand();
     if (!$z['udpport']) {
         tb_log_gebremst('mqtt_kein_port',
             'MQTT: kein UDP-Eingangsport in der general.json gefunden - nichts gesendet.');
-        return false;
+        return array(0, 0);
     }
     if (!$z['autostart']) {
         tb_log_gebremst('mqtt_aus', 'MQTT: das Gateway ist nicht auf Autostart gestellt '
             . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
     }
-    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
-    if (!$s) {
-        tb_log_gebremst('mqtt_socket', 'MQTT: Socket nicht moeglich.');
-        return false;
+    $praefix = trim(tb_mqtt_wert_saeubern($praefix), '/ ');
+    if ($praefix === '' || strpos($praefix, ' ') !== false) {
+        tb_log_gebremst('mqtt_praefix', 'MQTT: das Themen-Praefix ist unbrauchbar '
+            . '(leer oder mit Leerraum) - es wird nichts veroeffentlicht.');
+        return array(0, 0);
     }
+    $fehler = 0;
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'],
+                                   $errno, $errstr, 2);
+    if (!$strom) {
+        tb_log_gebremst('mqtt_socket', 'MQTT: der UDP-Eingang des Gateways war nicht '
+            . 'erreichbar (' . $errstr . ').');
+        return array(0, count($paare));
+    }
+    $versucht = 0;
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') { continue; }   // fehlender Wert: nichts senden
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . tb_mqtt_wert_saeubern($v);
-        @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
+        $thema = tb_mqtt_wert_saeubern($k);
+        if ($thema === '' || strpos($thema, ' ') !== false) { $fehler++; continue; }
+        $msg = 'publish ' . $praefix . '/' . $thema . ' ' . tb_mqtt_wert_saeubern($v);
+        $versucht++;
+        if (@fwrite($strom, $msg) === false) { $fehler++; }
     }
-    socket_close($s);
-    return true;
+    fclose($strom);
+    return array($versucht, $fehler);
 }
 
-/** Alle Themen, die veroeffentlicht werden, mit ihrer Bedeutung. */
+/**
+ * Alle Themen, die veroeffentlicht werden, mit ihrer Bedeutung.
+ *
+ * Die drei Lebenszeichen stehen VORNE und gehen bei jedem Durchgang hinaus -
+ * auch unveraendert. Siehe tb_mqtt_signatur().
+ */
 function tb_mqtt_themen()
 {
     $out = array(
-        'ok'    => 'TB_MQTT.OK',
-        'alter' => 'TB_MQTT.ALTER',
+        'status/ok'       => 'TB_MQTT.S_OK',
+        'status/ts'       => 'TB_MQTT.S_TS',
+        'status/zaehler'  => 'TB_MQTT.S_ZAEHLER',
+        'status/pulse_ts' => 'TB_MQTT.S_PULSE_TS',
     );
     foreach (tb_status_felder() as $f => $info) {
-        if ($f === 'OK' || $f === 'ALTER') { continue; }
-        $out[strtolower($f)] = $info[1];
+        if ($f === 'OK' || $f === 'ALTER' || $f === 'PULSE_ALTER'
+            || $f === 'ZAEHLER') { continue; }
+        $out[strtolower($f)] = $info['text'];
     }
     $out['stunde/N/ct'] = 'TB_MQTT.STUNDE';
     return $out;
+}
+
+/**
+ * Die Themen, die an der Signatur VORBEIGEHEN.
+ *
+ * Ueber MQTT gibt es kein "Alter": beim Senden ist es immer null. Es geht
+ * deshalb ein ZEITSTEMPEL hinaus, und der Miniserver rechnet selbst -
+ * Alter = (Loxone-Zeit + 1230768000) - ts.
+ *
+ * Und genau diese drei duerfen NICHT in die Signatur: ALTER aendert sich jede
+ * Sekunde, und eine Signatur, die sich jede Sekunde aendert, macht den
+ * Doppelt-senden-Filter wirkungslos - dann geht bei jedem Minutenlauf wieder
+ * alles hinaus. Gemessen am Saugroboter-Plugin: Lauf 2 ohne Aenderung am
+ * Geraet schickte 48 statt 3 Datagramme.
+ */
+function tb_mqtt_lebenszeichen()
+{
+    $st = tb_stand();
+    $live = tb_live();
+    return array(
+        'status/ok'       => !empty($st['ok']) ? 1 : 0,
+        'status/ts'       => isset($st['ts']) ? (int) $st['ts'] : 0,
+        'status/zaehler'  => tb_zaehler_lesen(),
+        /* Der Zeitstempel der Pulse - aus demselben Grund wie status/ts und
+         * mit demselben Nachdruck. PULSE_ALTER stand bis 0.9.7 als gewoehnliches
+         * Feld in der Signatur, und der Pulse-Dienst schreibt live.json im
+         * Sekundentakt: damit war der Wert bei JEDEM Minutenlauf ein anderer,
+         * die Signatur damit auch, und der Doppelt-senden-Filter wirkungslos.
+         * Gemessen mit Pruefung/mqtt_gegen_http.py - Lauf 2 ohne jede
+         * Aenderung schickte 69 von 72 Themen erneut. */
+        'status/pulse_ts' => isset($live['ts']) ? (int) $live['ts'] : 0,
+    );
+}
+
+/**
+ * Die Signatur ueber die WERTE - ohne die Lebenszeichen.
+ *
+ * Gesendet wird nur, wenn sie sich geaendert hat. Bis 0.9.6 gab es keinen
+ * Filter: bei bis zu 38 Statusfeldern und 24 Stundenpreisen waren das rund
+ * 62 Datagramme je Minute, also gegen 89 000 am Tag, auch wenn sich am Preis
+ * eine Stunde lang nichts ruehrte.
+ */
+function tb_mqtt_signatur(array $paare)
+{
+    $ohne = array();
+    $lz = tb_mqtt_lebenszeichen();
+    foreach ($paare as $k => $v) {
+        if (array_key_exists($k, $lz)) { continue; }
+        $ohne[$k] = $v;
+    }
+    ksort($ohne);
+    return md5(json_encode($ohne));
 }
 
 /* ==================================================================
@@ -998,23 +1602,45 @@ function tb_x($s)
     return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
+/**
+ * Der Nachbau, gegen die Ausfuhren aus Loxone Config gehalten.
+ *
+ * Bis 0.9.6 fehlten hier vier Dinge, die jede echte Ausfuhr traegt und die
+ * 34 von 49 Plugin-Ordnern dieses Hauses setzen:
+ *
+ *   HintText=""                                 am Wurzelelement
+ *   <Info templateType="2" minVersion="…"/>     als ERSTES Kindelement
+ *   Unit="<v.1> <Einheit>"                      je Befehl
+ *   HintText=""                                 je Befehl
+ *
+ * Ohne Unit steht am virtuellen Eingang eine nackte Zahl, und die Einheit
+ * findet nur, wer den Kommentar aufklappt. Wortgleich uebernommen aus
+ * spot_lib.php des Schwesterplugins Spotpreis aWATTar 1.2.12, das alles vier
+ * bereits fuehrt.
+ *
+ * Analog/Signed kommen jetzt JE BEFEHL aus der Feldtabelle. Vorher trugen
+ * alle Befehle Analog="true", auch die vier Merker (NEG, MORGEN_OK, OK) -
+ * Loxone Config schreibt das Attribut nur bei den analogen Werten.
+ */
 function tb_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp ';
+    $o .= '<VirtualInHttp HintText="" ';
     $o .= 'Title="' . tb_x($kopf['title']) . '" ';
     $o .= 'Comment="' . tb_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . tb_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . tb_x(isset($kopf['polling']) ? $kopf['polling'] : '300') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
+        $analog = !isset($c['analog']) || $c['analog'];
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . tb_x($c['title']) . '" ';
         $o .= 'Comment="' . tb_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'Check="' . tb_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
-        $o .= 'Signed="true" ';
-        $o .= 'Analog="true" ';
+        $o .= 'Signed="' . ($analog ? 'true' : 'false') . '" ';
+        $o .= 'Analog="' . ($analog ? 'true' : 'false') . '" ';
         $o .= 'SourceValLow="0" ';
         $o .= 'DestValLow="0" ';
         $o .= 'SourceValHigh="100" ';
@@ -1023,7 +1649,9 @@ function tb_xml_virtual_in_http($kopf, $cmds)
         // Grenzen realistisch, nicht pauschal +/-2147483647: Loxone zieht
         // daraus die Reglergrenzen und die Plausibilitaetspruefung.
         $o .= 'MinVal="' . tb_x(isset($c['min']) ? $c['min'] : '-2147483647') . '" ';
-        $o .= 'MaxVal="' . tb_x(isset($c['max']) ? $c['max'] : '2147483647') . '"';
+        $o .= 'MaxVal="' . tb_x(isset($c['max']) ? $c['max'] : '2147483647') . '" ';
+        $o .= 'Unit="' . tb_x(isset($c['unit']) ? $c['unit'] : '<v.1>') . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -1048,16 +1676,24 @@ function tb_vorlage()
     $token = tb_aktionstoken();
     $cmds = array();
     foreach (tb_status_felder() as $feld => $info) {
-        // Der Text laeuft gleich durch tb_x() und wuerde dort ein zweites Mal
-        // maskiert. Deshalb erst Auszeichnung entfernen und Entitaeten
-        // aufloesen.
-        $bedeutung = trim(strip_tags(html_entity_decode(tb_t($info[1]), ENT_QUOTES, 'UTF-8')));
+        /* Der Kommentar wird in Loxone Config zum ANZEIGENAMEN des Bausteins -
+         * nicht zur Dokumentation, das Feld dort bleibt leer. Deshalb steht
+         * hier die kurze Beschriftung und nicht die Erklaerung; die bleibt in
+         * der Oberflaeche. Bis 0.9.6 stand hier der lange Text, und 25 von 38
+         * Bausteinen hiessen danach nach einem ganzen Satz.
+         *
+         * Der Text laeuft gleich durch tb_x() und wuerde dort ein zweites Mal
+         * maskiert. Deshalb erst Auszeichnung entfernen und Entitaeten
+         * aufloesen. */
+        $bezeichnung = trim(strip_tags(html_entity_decode(tb_t($info['kurz']), ENT_QUOTES, 'UTF-8')));
         $cmds[] = array(
             'title'   => 'TIBBER_' . $feld,
-            'comment' => $bedeutung . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
-            'check'   => '\i' . $feld . '=\i\v',
-            'min'     => (string) $info[2],
-            'max'     => (string) $info[3],
+            'comment' => $bezeichnung,
+            'check'   => tb_check($feld),
+            'min'     => (string) $info['min'],
+            'max'     => (string) $info['max'],
+            'analog'  => $info['analog'],
+            'unit'    => $info['einheit'] !== '' ? '<v.1> ' . $info['einheit'] : '<v.1>',
         );
     }
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
@@ -1118,6 +1754,143 @@ function tb_t($schluessel)
 }
 
 
+/* ==================================================================
+ * Zulaessige Werte - EINE Liste fuer alle, die danach fragen
+ *
+ * Das Formular, das Zurueckspielen einer Sicherung und der Dienst beurteilen
+ * dieselben Felder. Stuenden die Grenzen an drei Stellen, liefen sie
+ * auseinander - und genau das war bis 0.9.6 schon der Fall: die Oberflaeche
+ * prueft home_id gegen /^[0-9a-fA-F\-]{8,64}$/, die Bibliothek gegen
+ * /^[A-Za-z0-9-]{1,64}$/. Zwei Regeln fuer dieselbe Angabe sind eine zu viel.
+ * ================================================================== */
+
+function tb_feldregeln()
+{
+    return array(
+        'home_id'             => array('art' => 'id'),
+        'aufschlag'           => array('art' => 'komma', 'min' => -50,  'max' => 50),
+        'guenstig'            => array('art' => 'komma', 'min' => -50,  'max' => 200),
+        'teuer'               => array('art' => 'komma', 'min' => -50,  'max' => 200),
+        'festpreis'           => array('art' => 'komma', 'min' => 0,    'max' => 200),
+        'grundpreis'          => array('art' => 'komma', 'min' => 0,    'max' => 500),
+        'fensterstunden'      => array('art' => 'zahl',  'min' => 1,    'max' => 12),
+        'preistakt'           => array('art' => 'zahl',  'min' => 5,    'max' => 1440),
+        'verbrauchstakt'      => array('art' => 'zahl',  'min' => 30,   'max' => 1440),
+        'verlauf_tage'        => array('art' => 'zahl',  'min' => 1,    'max' => 3650),
+        'zeitueberschreitung' => array('art' => 'zahl',  'min' => 5,    'max' => 60),
+        'verbrauch_ein'       => array('art' => 'haken'),
+        'pulse_ein'           => array('art' => 'haken'),
+        'monatsbericht'       => array('art' => 'haken'),
+        'mqtt_ein'            => array('art' => 'haken'),
+        'mqtt_topic'          => array('art' => 'thema'),
+        'aktionstoken'        => array('art' => 'merkwort'),
+    );
+}
+
+/**
+ * Taugt der Wert ueberhaupt fuer eine Konfigurationsdatei?
+ *
+ * Die erste von zwei Wachen, und sie ist die grobe: kein Feld, kein Objekt,
+ * kein Steuerzeichen, nicht endlos lang. Sie greift auch fuer Schluessel, fuer
+ * die es keine Einzelregel gibt.
+ *
+ * Zeilenumbrueche sind hier kein Schoenheitsfehler: der Wert von mqtt_topic
+ * geht in ein UDP-Datagramm, und das MQTT-Gateway liest zeilenweise.
+ */
+function tb_wert_taugt($v)
+{
+    if (is_array($v) || is_object($v) || is_bool($v) || is_null($v)) { return false; }
+    $s = (string) $v;
+    if (strlen($s) > 4096) { return false; }
+    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
+}
+
+/**
+ * Ist der Wert fuer DIESE Einstellung zulaessig?
+ *
+ * Die zweite Wache, gegen dieselbe Positivliste, die auch das Formular
+ * benutzt. Rueckgabe: Leerstring wenn in Ordnung, sonst der Grund im Klartext.
+ */
+function tb_wert_pruefen($schluessel, $wert)
+{
+    $regeln = tb_feldregeln();
+    if (!isset($regeln[$schluessel])) { return ''; }     // keine Einzelregel
+    $r = $regeln[$schluessel];
+    $s = trim((string) $wert);
+    switch ($r['art']) {
+        case 'id':
+            return ($s === '' || tb_gql_id($s) !== '') ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_ID'), $schluessel);
+        case 'zahl':
+            if (!preg_match('/^-?[0-9]{1,7}$/', $s)) {
+                return sprintf(tb_t('EINST.SICH_WERT_ZAHL'), $schluessel);
+            }
+            $n = (int) $s;
+            return ($n >= $r['min'] && $n <= $r['max']) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_BEREICH'), $schluessel, $r['min'], $r['max']);
+        case 'komma':
+            $s = str_replace(',', '.', $s);
+            if (!preg_match('/^-?[0-9]{1,4}(\.[0-9]{1,3})?$/', $s)) {
+                return sprintf(tb_t('EINST.SICH_WERT_KOMMA'), $schluessel);
+            }
+            $n = (float) $s;
+            return ($n >= $r['min'] && $n <= $r['max']) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_BEREICH'), $schluessel, $r['min'], $r['max']);
+        case 'haken':
+            return in_array($s, array('0', '1'), true) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_HAKEN'), $schluessel);
+        case 'thema':
+            return preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $s) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_THEMA'), $schluessel);
+        case 'merkwort':
+            return ($s === '' || preg_match('/^[A-Za-z0-9]{8,64}$/', $s)) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_MERKWORT'), $schluessel);
+    }
+    return '';
+}
+
+/**
+ * Die Sicherungsdatei bauen.
+ *
+ * Sie traegt BEIDE Geheimnisse - das Aktionstoken fuer den Loxone-Endpunkt
+ * UND das persoenliche Tibber-Zugangstoken. Ohne das zweite stuenden nach dem
+ * Zurueckspielen alle Felder richtig, und das Plugin kaeme trotzdem nicht an
+ * die Anlage: bis 0.9.6 war die Datei fuer ihren eigentlichen Zweck - den
+ * UMZUG auf einen zweiten LoxBerry - damit unbrauchbar. Wer den Token
+ * auslaesst, hat kein Sicherheitsmerkmal eingebaut, sondern die Funktion
+ * halbiert.
+ *
+ * Das Formularmerkmal gehoert ausdruecklich NICHT hinein: es lebt eine
+ * Sitzung und wird aus dem Aktionstoken abgeleitet. Wer beide verwechselt,
+ * baut aus einer Umzugshilfe ein Leck.
+ *
+ * Der lesbare Kopf beginnt mit '_'. Wer die Datei in einem Jahr findet, muss
+ * erkennen koennen, was sie ist - und die Leseseite unten uebergeht genau
+ * diese Schluessel.
+ */
+function tb_sicherung_bauen()
+{
+    $daten = array(
+        '_hinweis' => 'Sicherung des LoxBerry-Plugins Spotpreis Tibber. '
+                    . 'Enthaelt das persoenliche Tibber-Zugangstoken und das Merkwort '
+                    . 'fuer den Loxone-Endpunkt - wie ein Passwort behandeln.',
+        '_stand'   => date('Y-m-d H:i:s'),
+        '_plugin'  => 'spotpreistibber',
+        '_fassung' => tb_fassung(),
+    );
+    $token = tb_token_lesen();
+    if ($token !== '') { $daten['tibber_token'] = $token; }
+    // Vollstaendig aus den Vorgaben heraus: ein Schluessel, der in der
+    // Sicherung fehlt, kaeme beim Zurueckspielen aus der Vorgabe - und das
+    // ist genau dann falsch, wenn der Anwender ihn bewusst auf den
+    // Vorgabewert gesetzt hatte und die Vorgabe sich spaeter aendert.
+    $cfg = tb_config();
+    foreach (tb_vorgaben() as $k => $vorgabe) {
+        $daten[$k] = array_key_exists($k, $cfg) ? $cfg[$k] : $vorgabe;
+    }
+    return $daten;
+}
+
 /**
  * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
  *
@@ -1130,22 +1903,62 @@ function tb_t($schluessel)
  * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
  * stammen aus einer anderen Fassung oder einem anderen Plugin.
  *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ * Der lesbare Kopf ('_hinweis', '_stand', …) wird UEBERGANGEN, nicht
+ * beanstandet. Ohne diese drei Zeilen wuerde die Funktion genau die Datei
+ * ablehnen, die tb_sicherung_bauen() zwei Zeilen weiter oben erzeugt - der
+ * Fall ist am 26.08.2026 im WiFi-Scanner-Plugin aufgetreten.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
+ *                  Tibber-Token|null).
+ *
+ * Die Reihenfolge ist die HAUSFORM, und der Zusatz steht hinten. Das ist
+ * nicht Geschmack: Werkzeuge/sicherung_wirkung.py erkennt die Bauart daran,
+ * dass an Stelle 1 die Maengelliste steht - ein Token an dieser Stelle liess
+ * es auf "andere Bauart, von Hand ansehen" fallen, und damit hatte das
+ * Werkzeug NICHT gemessen, statt etwas zu finden. Spotpreis Octopus reicht
+ * seine Zugangsdaten aus demselben Grund als VIERTEN Wert heraus.
  */
 function tb_sicherung_lesen($roh)
 {
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(tb_t('EINST.SICH_KEIN_JSON')), 0);
+        return array(null, array(tb_t('EINST.SICH_KEIN_JSON')), 0, null);
     }
     $neu = tb_vorgaben();
     $bekannt = array_keys($neu);
+    $token = null;
     $anzahl = 0;
     foreach ($daten as $k => $w) {
+        $k = (string) $k;
+        if ($k !== '' && $k[0] === '_') { continue; }    // lesbarer Kopf
+        if ($k === 'tibber_token') {
+            if (!tb_wert_taugt($w)) {
+                $mangel[] = sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'), tb_e($k));
+                continue;
+            }
+            $grund = tb_token_form((string) $w);
+            if ((string) $w !== '' && $grund !== '') {
+                $mangel[] = tb_t($grund);
+                continue;
+            }
+            $token = (string) $w;
+            $anzahl++;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(tb_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+                                 htmlspecialchars($k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        if (!tb_wert_taugt($w)) {
+            $mangel[] = sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'),
+                                 htmlspecialchars($k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $grund = tb_wert_pruefen($k, $w);
+        if ($grund !== '') {
+            $mangel[] = $grund;
             continue;
         }
         $neu[$k] = $w;
@@ -1154,5 +1967,5 @@ function tb_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = tb_t('EINST.SICH_LEER');
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    return array($mangel ? null : $neu, $mangel, $anzahl, $token);
 }

@@ -3,8 +3,16 @@
 #
 # Der Pulse-Dienst wird angehalten, und die beiden Sicherungen werden
 # ueberschrieben, bevor sie geloescht werden. In token.json steht das
-# persoenliche Zugangstoken zum Tibber-Konto - ein blosses rm liesse den
-# Inhalt auf der Karte stehen, bis der Block ueberschrieben wird.
+# persoenliche Zugangstoken zum Tibber-Konto.
+#
+# Zur Zusage, die hier bis 0.9.6 stand ("ein blosses rm liesse den Inhalt auf
+# der Karte stehen"): Das Ueberschreiben bleibt richtig, die Zusage wird
+# zurueckgenommen. Auf Speicherkarte und eMMC entscheidet der Flash-Controller
+# selbst, wohin geschrieben wird (Wear-Leveling); der alte Block kann physisch
+# stehen bleiben. Dasselbe gilt auf einem Dateisystem mit Journal. Es
+# ERSCHWERT das Wiederfinden - "loescht sicher" ist es nicht, und eine
+# unzutreffende Sicherheitszusage im Quelltext ist schlimmer als gar keine,
+# weil sie weitergegeben wird.
 
 PFOLDER="${3:-spotpreistibber}"
 BASE="${5:-$LBHOMEDIR}"
@@ -22,6 +30,9 @@ if [ -f "$PID" ]; then
     echo "<OK> Pulse-Dienst angehalten."
 fi
 rm -f "$BASE/data/plugins/$PFOLDER/soll_laufen" 2>/dev/null
+# Der Rettungsmerker liegt NEBEN dem Datenordner und ueberlebt dessen
+# Loeschung - wer neben dem Ordner ablegt, raeumt hier selbst auf.
+rm -f "$BASE/data/plugins/$PFOLDER.lief_vorher" 2>/dev/null
 
 for DATEI in \
     "$BASE/config/plugins/$PFOLDER.backup.token.json" \

@@ -1,0 +1,109 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Spotpreis Tibber - Healthcheck fuer LoxBerry
+ *
+ * Seit LoxBerry 2.2 ruft sbin/healthcheck.pl eine ausfuehrbare Datei dieses
+ * Namens im bin-Ordner des Plugins auf - einmal mit 'title', einmal mit
+ * 'check'. Die Antwort ist JSON.
+ *
+ * Der Gewinn liegt nicht nur in der Systemseite: healthcheck.pl veroeffentlicht
+ * das Ergebnis zusaetzlich RETAINED nach MQTT unter
+ * <rechnername>/healthcheck/<titel> und in die Zusammenfassung. Das Plugin
+ * bekommt damit einen zweiten, unabhaengigen Weg nach Loxone, ohne eine Zeile
+ * MQTT-Code zu schreiben.
+ *
+ * Die LoxBerry-Skala:
+ *     leer/0 unbekannt, 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis
+ *
+ * Der Befund kommt aus DERSELBEN Quelle wie die Oberflaeche und die
+ * Benachrichtigung - tb_werte() und tb_alter(). Drei Stellen, die dasselbe
+ * anders sagen, sind zwei zu viel.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+
+$tb_gefunden = false;
+foreach (array(
+    dirname(__DIR__) . '/webfrontend/html/tb_lib.php',
+    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
+    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
+) as $tb_kandidat) {
+    if (is_file($tb_kandidat)) {
+        require_once $tb_kandidat;
+        $tb_gefunden = true;
+        break;
+    }
+}
+if (!$tb_gefunden) {
+    // Auch der Fehlerfall antwortet in der vorgesehenen Form. Ein Healthcheck,
+    // der nichts ausgibt, ist von einem, der nicht laeuft, nicht zu
+    // unterscheiden.
+    echo json_encode(array(
+        'desc' => 'Spotpreis Tibber',
+        'status' => 3,
+        'result' => 'Die Bibliothek tb_lib.php wurde nicht gefunden - das Plugin '
+                  . 'ist unvollstaendig installiert.',
+    ));
+    exit(0);
+}
+
+$tb_was = isset($argv[1]) ? (string) $argv[1] : 'check';
+
+if ($tb_was === 'title') {
+    echo json_encode(array('desc' => 'Spotpreis Tibber'));
+    exit(0);
+}
+
+/* Der Befund. Die Reihenfolge ist die der Ursachen, nicht die der Wirkungen:
+ * wer bei "keine Preise" anfaengt, waehrend gar kein Token hinterlegt ist,
+ * schickt den Leser in die falsche Ecke. */
+$tb_cfg = tb_config(false);
+$tb_st = tb_stand();
+$tb_alter = tb_alter();
+$tb_status = 5;
+$tb_text = '';
+
+if (tb_token_lesen() === '') {
+    $tb_status = 3;
+    $tb_text = 'Es ist kein Tibber-Zugangstoken hinterlegt. Ohne Token werden keine '
+             . 'Preise geholt. Reiter Einstellungen.';
+} elseif ($tb_alter < 0) {
+    $tb_status = 4;
+    $tb_text = 'Es hat noch kein Preisabruf stattgefunden.';
+} elseif (empty($tb_st['ok'])) {
+    $tb_status = 3;
+    $tb_text = 'Der letzte Preisabruf ist misslungen: '
+             . (isset($tb_st['fehler']) && $tb_st['fehler'] !== ''
+                ? $tb_st['fehler'] : 'ohne Text')
+             . ' (letzter gelungener Abruf vor ' . (int) round($tb_alter / 60) . ' Minuten)';
+} elseif ($tb_alter > 7200) {
+    $tb_status = 4;
+    $tb_text = 'Der letzte gelungene Preisabruf ist ' . (int) round($tb_alter / 60)
+             . ' Minuten her. Laeuft der minuetliche Cron-Lauf?';
+} else {
+    $tb_w = tb_werte();
+    $tb_text = 'Preise sind aktuell (' . (int) round($tb_alter / 60) . ' Minuten alt)';
+    if ($tb_w['CUR'] !== null) {
+        $tb_text .= ', laufende Stunde ' . $tb_w['CUR'] . ' ct/kWh';
+    }
+    if (!empty($tb_st['morgen_ok'])) {
+        $tb_text .= ', Preise fuer morgen liegen vor';
+    }
+    $tb_text .= '.';
+    /* Der Pulse-Dienst gilt nur dann als Mangel, wenn er laufen SOLL. Ein
+     * ausgeschalteter Dienst ist kein Fehler - und ein Healthcheck, der auf
+     * jeder Anlage ohne Pulse gelb steht, wird nicht mehr gelesen. */
+    if (!empty($tb_cfg['pulse_ein']) && tb_dienst_soll() && tb_dienst_pid() === 0) {
+        $tb_status = 4;
+        $tb_text .= ' Der Pulse-Dienst soll laufen, laeuft aber nicht.';
+    }
+}
+
+echo json_encode(array(
+    'desc' => 'Spotpreis Tibber',
+    'status' => $tb_status,
+    'result' => $tb_text,
+    'logfile' => tb_paths()['log'],
+));
+exit(0);
