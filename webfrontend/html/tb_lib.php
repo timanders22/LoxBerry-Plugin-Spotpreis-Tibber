@@ -566,6 +566,7 @@ function tb_log($text)
 {
     $p = tb_paths();
     if (!is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
+    clearstatcache(true, $p['log']);
     if (is_file($p['log']) && filesize($p['log']) > 512000) {
         $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -400);
         @file_put_contents($p['log'], implode("\n", $rest) . "\n");
