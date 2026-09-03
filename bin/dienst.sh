@@ -39,9 +39,16 @@ SOLL="$PDATA/soll_laufen"
 LOGDATEI="$PLOG/tibber.log"
 SKRIPT="$SELF/tb_pulse.php"
 
-mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+if ! mkdir -p "$PDATA" "$PLOG" 2>/dev/null; then
+    echo "FEHLER: $PDATA oder $PLOG laesst sich nicht anlegen." >&2
+    exit 1
+fi
 
 laeuft() {
+    # local P: ohne das ueberschreibt laeuft() die Variable P ihres
+    # Aufrufers - anhalten() benutzt denselben Namen. Heute wertgleich,
+    # aber eine Falle fuer die naechste Aenderung.
+    local P
     [ -f "$PID" ] || return 1
     P=$(cat "$PID" 2>/dev/null)
     [ -n "$P" ] || return 1
@@ -64,7 +71,32 @@ laeuft() {
     return 0
 }
 
+# Eine Sperre um das Starten.
+#
+# Zwischen "laeuft?" und dem Schreiben der PID-Datei liegt ein Fenster ohne
+# jede Absicherung. cron.01min ruft in DERSELBEN Zeile erst tb_cron.php und
+# dann diesen Waechter; braucht der Cron laenger als eine Minute (die
+# Zeitschranke je Abruf steht bei bis zu 60 s), laufen zwei Waechter dicht
+# hintereinander. Das Ergebnis waeren zwei Pulse-Dienste, zwei WebSocket-
+# Verbindungen zu Tibber und zwei Prozesse, die live.json schreiben - die
+# PID-Datei zeigt nur auf den zweiten, der erste ist ein Waise, den niemand
+# je anhaelt. tb_cron.php begruendet seine eigene Sperre genauso.
+#
+# flock ist auf einem LoxBerry (util-linux) vorhanden; fehlt es, wird ohne
+# Sperre weitergemacht statt gar nicht zu starten - eine fehlende Sperre ist
+# schlechter als keine Sperre, aber besser als ein toter Dienst.
+sperre_holen() {
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9>"$PDATA/dienst.lock" 2>/dev/null || return 0
+    flock -n 9 || return 1
+    return 0
+}
+
 starten() {
+    if ! sperre_holen; then
+        echo "ein anderer Aufruf startet gerade - dieser Lauf tut nichts"
+        return 0
+    fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
@@ -94,6 +126,59 @@ starten() {
     echo "FEHLER: Start fehlgeschlagen - siehe $LOGDATEI"
     rm -f "$PID"
     return 1
+}
+
+# Der Waechter mit Rueckzug.
+#
+# Bis 0.9.9 versuchte der Waechter jede Minute neu und schrieb dabei je
+# Versuch mindestens zwei Zeilen ins Protokoll - unter Umgehung der Kappung,
+# denn die greift nur, wenn PHP schreibt; hier schreibt die Schale mit >>.
+# Startet der Dienst dauerhaft nicht (kaputte token.json, fehlendes PHP),
+# waren das 1440 Versuche und rund 3000 Zeilen am Tag.
+#
+# Der Abstand verdoppelt sich: 1, 2, 4 ... hoechstens 60 Minuten. Beim
+# ersten geglueckten Start faellt er auf 1 zurueck. Ist der Zaehler
+# unlesbar, gilt der GROESSTE Abstand - ein Rueckfall auf "also jede
+# Minute" waere genau die Untergrenze, die REGELN_1 verbietet.
+WARTE="$PDATA/.waechter_warte"
+waechter_lauf() {
+    [ -f "$SOLL" ] || return 0
+    if laeuft; then
+        rm -f "$WARTE"
+        return 0
+    fi
+    # Keine Datei heisst ERSTER Versuch - der laeuft sofort.
+    # Eine Datei mit Unsinn darin heisst UNLESBAR - dann gilt der GROESSTE
+    # Abstand, nicht der kleinste. Eine Untergrenze waere hier kein Fail
+    # safe, sondern ein Zuschlagen im Minutentakt (REGELN_1, Abschnitt 4).
+    if [ -f "$WARTE" ]; then
+        N=$(cat "$WARTE" 2>/dev/null)
+        case "$N" in
+            ''|*[!0-9]*) N=60 ;;
+        esac
+        [ "$N" -lt 1 ] && N=60
+        [ "$N" -gt 60 ] && N=60
+    else
+        N=1
+    fi
+    LETZTER=$(cat "$PDATA/.waechter_zeit" 2>/dev/null)
+    case "$LETZTER" in
+        ''|*[!0-9]*) LETZTER=0 ;;
+    esac
+    JETZT=$(date +%s)
+    if [ "$LETZTER" -gt 0 ] && [ $((JETZT - LETZTER)) -lt $((N * 60)) ]; then
+        return 0
+    fi
+    echo "$JETZT" > "$PDATA/.waechter_zeit"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Pulse-Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
+    if starten >> "$LOGDATEI" 2>&1; then
+        rm -f "$WARTE" "$PDATA/.waechter_zeit"
+    else
+        NEU=$((N * 2))
+        [ "$NEU" -gt 60 ] && NEU=60
+        echo "$NEU" > "$WARTE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: naechster Versuch fruehestens in $NEU Minute(n)." >> "$LOGDATEI"
+    fi
 }
 
 anhalten() {
@@ -133,11 +218,9 @@ case "$1" in
         ;;
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
-        # angehaltener Dienst bleibt angehalten.
-        if [ -f "$SOLL" ] && ! laeuft; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Pulse-Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
-            starten >> "$LOGDATEI" 2>&1
-        fi
+        # angehaltener Dienst bleibt angehalten. Der Rueckzug steckt in
+        # waechter_lauf().
+        waechter_lauf
         ;;
     *)
         echo "Aufruf: $0 {start|stop|restart|status|waechter}"

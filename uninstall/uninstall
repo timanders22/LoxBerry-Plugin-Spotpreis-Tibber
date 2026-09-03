@@ -21,11 +21,22 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+# Der Programmordner - von dort wird dienst.sh gerufen. Die Deinstallation
+# laeuft, bevor das Verzeichnis abgeraeumt wird; das Skript liegt also noch da.
+PBIN="$BASE/bin/plugins/$PFOLDER"
 PID="$BASE/data/plugins/$PFOLDER/pulse.pid"
 if [ -f "$PID" ]; then
-    kill "$(cat "$PID")" 2>/dev/null || true
-    sleep 2
-    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    # Ueber dienst.sh, nicht ueber die nackte Prozessnummer - siehe die
+    # ausfuehrliche Begruendung in preupgrade.sh. Beim Deinstallieren faellt
+    # ein falsch getroffener Prozess niemandem auf, weil ohnehin gerade
+    # etwas verschwindet.
+    if [ -x "$PBIN/dienst.sh" ]; then
+        "$PBIN/dienst.sh" stop >/dev/null 2>&1 || true
+    fi
+    if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
+        kill "$(cat "$PID")" 2>/dev/null || true
+        sleep 2
+    fi
     rm -f "$PID"
     echo "<OK> Pulse-Dienst angehalten."
 fi

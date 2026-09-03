@@ -103,12 +103,32 @@ function tb_ws_lesen($fh, $wartezeit = 1.0)
 {
     $ende = microtime(true) + $wartezeit;
     $kopf = '';
+    /* Ein ANGEFANGENER Kopf darf nicht verworfen werden.
+     *
+     * Bis 0.9.9 kehrte diese Schleife bei Zeitablauf mit array(-1, '')
+     * zurueck - auch dann, wenn das erste der beiden Kopfbytes schon gelesen
+     * war. Das Byte war damit fort, und der naechste Aufruf setzte an der
+     * falschen Byte-Grenze auf: der folgende "Rahmen" trug eine erfundene
+     * Laenge, der Dienst brach ab und verband neu, und im Protokoll stand
+     * eine Ursache, die es nicht gab. Gemessen ueber stream_socket_pair
+     * unter 7.4 und 8.4, in zwei Stuecken zugestellt.
+     *
+     * Sobald ein Byte da ist, gilt deshalb dieselbe harte Frist wie fuer die
+     * Nutzdaten unten: der Rest des Kopfes wird abgewartet. */
+    $kopffrist = null;
     while (strlen($kopf) < 2) {
         $teil = @fread($fh, 2 - strlen($kopf));
         if ($teil === false) { return array(null, 'Die Verbindung ist abgerissen.'); }
         if ($teil === '') {
             if (feof($fh)) { return array(null, 'Die Gegenstelle hat geschlossen.'); }
-            if (microtime(true) > $ende) { return array(-1, ''); }
+            if ($kopf === '') {
+                if (microtime(true) > $ende) { return array(-1, ''); }
+            } else {
+                if ($kopffrist === null) { $kopffrist = microtime(true) + 10; }
+                if (microtime(true) > $kopffrist) {
+                    return array(null, 'Der Rahmenkopf kam nur halb an.');
+                }
+            }
             usleep(20000);
             continue;
         }
@@ -270,9 +290,27 @@ function tb_ws_verbinden($url, $tmo = 15)
     return $fh;
 }
 
+/**
+ * Eine Nachricht als Textrahmen absetzen. Rueckgabe: true, wenn sie hinaus ist.
+ *
+ * Bis 0.9.9 ging json_encode() ungeprueft in tb_ws_rahmen(). Scheitert es -
+ * ein Byte in token.json, das kein gueltiges UTF-8 ist, genuegt -, baute
+ * tb_ws_rahmen(false, 1) daraus einen LEEREN Textrahmen, fwrite gelang, und
+ * die Funktion meldete Erfolg. Die teuerste Stelle dafuer ist
+ * connection_init: Tibber bestaetigt nie, nach 30 s meldet das Protokoll
+ * "die Gegenstelle hat den Verbindungsaufbau nicht bestaetigt", und das
+ * wiederholt sich endlos - ohne dass das Token je genannt wuerde.
+ */
 function tb_ws_senden($fh, array $nachricht)
 {
-    return @fwrite($fh, tb_ws_rahmen(json_encode($nachricht), 1)) !== false;
+    $json = json_encode($nachricht);
+    if ($json === false) {
+        tb_log_gebremst('pulse_kodieren', 'Pulse: eine Nachricht liess sich nicht '
+            . 'kodieren (' . json_last_error_msg() . '). Steht im Tibber-Token ein '
+            . 'Zeichen, das kein gueltiges UTF-8 ist?');
+        return false;
+    }
+    return @fwrite($fh, tb_ws_rahmen($json, 1)) !== false;
 }
 
 /* ==================================================================
@@ -389,15 +427,35 @@ function tb_pulse_schleife($einmal = false)
 
         tb_log('Pulse: verbunden mit ' . parse_url($konto['ws'], PHP_URL_HOST)
             . ' fuer Zuhause ' . ($konto['name'] !== '' ? $konto['name'] : $konto['home']) . '.');
-        $pause = 5;
+        /* $pause wird NICHT schon hier zurueckgesetzt.
+         *
+         * Bis 0.9.9 galt der Handschlag als Erfolg. Stirbt die Sitzung
+         * danach sofort - Schliessrahmen der Gegenstelle, geteilter Rahmen,
+         * 'complete' -, ging es ueber sleep(3) zurueck an den Anfang, und
+         * dort steht eine vollstaendige GraphQL-Anfrage samt neuem
+         * WebSocket-Handschlag. Das sind rund zwanzig Verbindungsversuche je
+         * Minute, dauerhaft. Der Dateikopf sagt selbst, dass jede
+         * Neuverbindung Tibber gegenueber ein Zaehlwerk kostet; gebremst
+         * haette das erst Tibbers eigene Sperre.
+         *
+         * Zurueckgesetzt wird erst, wenn die Sitzung GETRAGEN hat - also
+         * beim ersten Messwert, siehe case 'next'. */
 
         // connection_init mit dem Token im Nutzdatenteil - NICHT als
         // Kopfzeile: beim WebSocket gibt es nach dem Handschlag keine.
-        tb_ws_senden($fh, array('type' => 'connection_init',
-            'payload' => array('token' => tb_token_lesen())));
+        if (!tb_ws_senden($fh, array('type' => 'connection_init',
+            'payload' => array('token' => tb_token_lesen())))) {
+            /* Sonst wartet der Dienst die vollen 30 Sekunden auf eine
+             * Bestaetigung, die er gar nicht angefragt hat. */
+            tb_log('Pulse: der Verbindungsaufbau liess sich nicht absenden. '
+                . 'Es wird neu verbunden.');
+            if (is_resource($fh)) { fclose($fh); }
+            sleep($pause);
+            $pause = min($maxPause, $pause * 2);
+            continue;
+        }
 
         $bestaetigt = false;
-        $abonniert = false;
         $letzterWert = 0;
         $start = time();
 
@@ -411,7 +469,15 @@ function tb_pulse_schleife($einmal = false)
             if ($opcode === -1) {
                 // Nichts angekommen. Kam laenger als zwei Minuten kein Wert,
                 // ist die Verbindung tot, auch wenn sie offen aussieht.
-                if ($bestaetigt && $letzterWert > 0 && time() - $letzterWert > 120) {
+                /* $letzterWert wird beim Abonnieren gesetzt (case
+                 * 'connection_ack'), nicht erst beim ersten Messwert. Bis
+                 * 0.9.9 stand hier zusaetzlich "$letzterWert > 0": kam die
+                 * Bestaetigung, aber nie ein 'next', griff WEDER diese
+                 * Bedingung NOCH die 30-Sekunden-Frist darunter - die
+                 * Schleife lief unbegrenzt weiter. Der Dienst "lief", die
+                 * PID stand, live.json blieb leer, PULSE_ALTER wuchs ohne
+                 * Ende, und keine Selbstheilung griff. */
+                if ($bestaetigt && time() - $letzterWert > 120) {
                     tb_log('Pulse: seit ' . (time() - $letzterWert) . ' s kein Messwert - '
                         . 'die Verbindung wird erneuert.');
                     break;
@@ -440,11 +506,17 @@ function tb_pulse_schleife($einmal = false)
             switch ($n['type']) {
                 case 'connection_ack':
                     $bestaetigt = true;
-                    tb_ws_senden($fh, array(
+                    if (!tb_ws_senden($fh, array(
                         'id' => '1', 'type' => 'subscribe',
                         'payload' => array('query' => tb_pulse_abfrage($konto['home'])),
-                    ));
-                    $abonniert = true;
+                    ))) {
+                        tb_log('Pulse: das Abonnement liess sich nicht absenden. '
+                            . 'Es wird neu verbunden.');
+                        break 2;
+                    }
+                    /* Ab jetzt laeuft die Totmann-Schaltung: von hier an
+                     * muessen innerhalb von zwei Minuten Messwerte kommen. */
+                    $letzterWert = time();
                     break;
 
                 case 'ping':                            // Ping auf GraphQL-Ebene
@@ -456,8 +528,15 @@ function tb_pulse_schleife($einmal = false)
                         ? $n['payload']['data']['liveMeasurement'] : null;
                     if (!is_array($m)) { break; }
                     $letzterWert = time();
+                    /* Erst JETZT hat die Sitzung getragen - vorher war der
+                     * Handschlag nur ein Versprechen. */
+                    $pause = 5;
                     $m['ts'] = time();
-                    tb_json_schreiben(tb_paths()['datadir'] . '/live.json', $m);
+                    if (!tb_json_schreiben(tb_paths()['datadir'] . '/live.json', $m)) {
+                        tb_log_gebremst('pulse_live', 'Pulse: live.json liess sich nicht '
+                            . 'schreiben - die Echtzeitwerte kommen an, werden aber '
+                            . 'nicht abgelegt.');
+                    }
                     if ($einmal) {
                         tb_log('Pulse: erster Messwert eingegangen ('
                             . (isset($m['power']) ? (int) $m['power'] : '?') . ' W).');
@@ -469,6 +548,7 @@ function tb_pulse_schleife($einmal = false)
 
                 case 'error':
                     $txt = json_encode(isset($n['payload']) ? $n['payload'] : array());
+                    if ($txt === false) { $txt = '(nicht darstellbar: ' . json_last_error_msg() . ')'; }
                     tb_log_gebremst('pulse_fehler', 'Pulse: die Gegenstelle meldet einen '
                         . 'Fehler zum Abonnement: ' . $txt);
                     break;
@@ -484,7 +564,13 @@ function tb_pulse_schleife($einmal = false)
             fclose($fh);
         }
         if ($einmal) { return 1; }
-        if ($tb_laeuft) { sleep(3); }
+        /* Mit Rueckzug, nicht mit festen drei Sekunden: eine Sitzung, die
+         * gleich nach dem Handschlag stirbt, darf nicht zwanzigmal je Minute
+         * wiederkommen. Nach dem ersten Messwert steht $pause wieder auf 5. */
+        if ($tb_laeuft) {
+            sleep(max(3, $pause));
+            $pause = min($maxPause, $pause * 2);
+        }
     }
 
     tb_log('Pulse: Dienst beendet.');
@@ -526,7 +612,11 @@ if (in_array('--pruefen', $tb_argv, true)) {
         echo "[INFO] Ohne Tibber Pulse oder Watty gibt es keine Echtzeitwerte. Preise und\n";
         echo "[INFO] Verbrauch laufen davon unabhaengig weiter.\n";
     }
-    exit($k['echtzeit'] ? 0 : 1);
+    /* Drei Ausgaenge statt zwei: 0 = alles da, 2 = Konto in Ordnung, aber
+     * keine Tibber Pulse (der Regelfall), 1 = das Konto traegt nicht. Bis
+     * 0.9.9 galt "keine Pulse" als Misserfolg, und der Reiter Test machte
+     * daraus ein Kreuz fuer ein einwandfreies Konto. */
+    exit($k['echtzeit'] ? 0 : 2);
 }
 
 if (function_exists('pcntl_signal')) {

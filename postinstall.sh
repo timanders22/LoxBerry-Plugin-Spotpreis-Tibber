@@ -54,22 +54,33 @@ if ! command -v php >/dev/null 2>&1; then
 fi
 echo "<INFO> PHP: $(php -v 2>/dev/null | head -1)"
 
-for ERW in curl openssl sockets; do
+# sockets steht hier seit 0.9.10 nicht mehr: keine Zeile des Plugins benutzt
+# eine Funktion aus ext/sockets, der Weg zum MQTT-Gateway laeuft ueber
+# stream_socket_client() aus dem PHP-Kern.
+for ERW in curl openssl; do
     if php -r "exit(extension_loaded('$ERW') ? 0 : 1);" 2>/dev/null; then
         echo "<OK> PHP-Erweiterung $ERW vorhanden."
     else
         case "$ERW" in
+            # KEINE Handanweisung mit sudo hier.
+            #
+            # postroot.sh laeuft unmittelbar danach als root und installiert
+            # genau diese beiden selbst - unter dem gemessenen Paketnamen
+            # (php7.4-curl statt php-curl). Im Protokoll stand bis 0.9.9 erst
+            # "mach das selbst mit php-curl" und wenige Zeilen spaeter
+            # "php7.4-curl eingerichtet". Wer der ersten Anweisung folgte,
+            # installierte das Metapaket, vor dem postroot.sh ausdruecklich
+            # warnt: es zeigt auf die Vorgabefassung der Paketquelle, und die
+            # ist auf einem Debian 12 mit sury PHP 8.x - waehrend LoxBerry
+            # 7.4 faehrt.
             curl)
                 echo "<INFO> PHP-Erweiterung curl fehlt. Der Abruf laeuft dann ueber"
                 echo "<INFO> file_get_contents - das geht, ist aber der Ersatzweg."
-                echo "<INFO> Nachholen mit: sudo apt install php-curl" ;;
+                echo "<INFO> postroot versucht gleich, sie nachzuinstallieren." ;;
             openssl)
                 echo "<INFO> PHP-Erweiterung openssl fehlt. Die Echtzeitwerte der Tibber"
                 echo "<INFO> Pulse brauchen sie; Preise und Verbrauch laufen ohne sie weiter."
-                echo "<INFO> Nachholen mit: sudo apt install php-openssl" ;;
-            sockets)
-                echo "<INFO> PHP-Erweiterung sockets fehlt. Ohne sie wird nichts ueber"
-                echo "<INFO> MQTT veroeffentlicht. Nachholen mit: sudo apt install php-sockets" ;;
+                echo "<INFO> postroot versucht gleich, sie nachzuinstallieren." ;;
         esac
     fi
 done

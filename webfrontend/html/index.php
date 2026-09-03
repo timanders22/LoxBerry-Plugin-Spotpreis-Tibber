@@ -35,6 +35,11 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/tb_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
+/* Der Miniserver fragt diese Adresse im Abfragetakt ab, und die Antwort
+ * aendert sich jede Minute. Ohne diese Zeile darf ein zwischengeschalteter
+ * Rechner sie halten - und Loxone laese dann einen alten Zustand, ohne dass
+ * es irgendwo auffiele. */
+header('Cache-Control: no-store, max-age=0');
 
 /* tb_config(FALSE) - hier wird nicht geschrieben.
  *
@@ -68,7 +73,10 @@ if ($tb_ist === null || $tb_aktion === null) {
 }
 
 /* ---------------- Token ---------------- */
-$tb_soll = (string) $tb_cfg['aktionstoken'];
+/* trim wie in tb_formtoken() und tb_aktionstoken(). Ohne ihn haelt der
+ * Endpunkt ein Merkwort aus lauter Leerzeichen fuer gesetzt und vergleicht
+ * damit, waehrend die Oberflaeche es als leer behandelt. */
+$tb_soll = trim((string) $tb_cfg['aktionstoken']);
 $tb_selbsttest = tb_get('selftest') === '1';
 
 if ($tb_soll === '') {
@@ -118,7 +126,13 @@ if (!in_array($tb_aktion, $tb_erlaubt, true)) {
 /** Ein Strich statt einer erfundenen 0. */
 function tb_w($v)
 {
-    if ($v === null || $v === '' || !is_numeric($v)) { return '-'; }
+    /* is_numeric(INF) ist wahr, und '1e999' wird beim Rechnen zu INF. Ohne
+     * die Endlichkeitsprobe stuende in der Statuszeile CUR=INF - der Suchtext
+     * findet dort keine Zahl, und der Miniserver haelt anders als beim Strich
+     * auch nicht den letzten Wert. */
+    if ($v === null || $v === '' || !is_numeric($v) || !is_finite((float) $v)) {
+        return '-';
+    }
     return (string) (0 + $v);
 }
 
@@ -126,28 +140,56 @@ $tb_st = tb_stand();
 $tb_werte = tb_werte();
 
 if ($tb_aktion === 'json') {
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode(array(
+    $tb_json = json_encode(array(
         'werte'     => $tb_werte,
         'stand'     => $tb_st,
         'verbrauch' => tb_verbrauch(),
         'pulse'     => tb_live(),
         'bericht'   => tb_json_lesen(tb_paths()['datadir'] . '/bericht.json'),
     ), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($tb_json === false) {
+        /* Bis 0.9.9 stand hier ein blankes echo. Scheitert json_encode - eine
+         * ueberlaufende Zahl in einem Zwischenspeicher genuegt -, ging HTTP
+         * 200 mit Content-Type application/json und NULL Byte Rumpf hinaus.
+         * Wer das auswertet, bekommt keinen Fehler, sondern Stille. */
+        http_response_code(500);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "FEHLER;OK=0;GRUND=JSON;TEXT=" . json_last_error_msg() . "\n";
+        exit;
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    echo $tb_json;
     exit;
 }
 
 if ($tb_aktion === 'stunden') {
     $heute  = isset($tb_st['liste_heute']) ? $tb_st['liste_heute'] : array();
     $morgen = isset($tb_st['liste_morgen']) ? $tb_st['liste_morgen'] : array();
-    printf("STUNDEN;OK=%d;HEUTE=%d;MORGEN=%d;ALTER=%s\n",
-        (int) $tb_werte['OK'], count($heute), count($morgen), tb_w($tb_werte['ALTER']));
+    /* Erst zaehlen, was wirklich ausgegeben wird, dann die Kopfzeile schreiben.
+     *
+     * Bis 0.9.9 wurden die Eintraege ungeprueft indiziert. Steht in
+     * stand.json ein Eintrag, der kein Feld ist - von Hand bearbeitet, halb
+     * geschrieben -, ist $e['ts'] unter PHP 8 ein TypeError: die Antwort
+     * bricht NACH der Kopfzeile ab, HTTP 500 mit halbem Rumpf. Der Miniserver
+     * liest dann eine Ankuendigung ueber 24 Stunden und keine einzige Zeile. */
+    $tb_zeilen = array();
     foreach (array('HEUTE' => $heute, 'MORGEN' => $morgen) as $tag => $liste) {
-        foreach ($liste as $e) {
-            printf("%s;H=%d;CT=%s;ENERGIE=%s;STEUER=%s;TLEVEL=%s\n",
-                $tag, (int) date('G', $e['ts']), tb_w($e['ct']),
-                tb_w($e['energie']), tb_w($e['steuer']), tb_w($e['level']));
+        foreach ((array) $liste as $e) {
+            if (!is_array($e) || !isset($e['ts'])) { continue; }
+            $tb_zeilen[$tag][] = sprintf("%s;H=%d;CT=%s;ENERGIE=%s;STEUER=%s;TLEVEL=%s\n",
+                $tag, (int) date('G', (int) $e['ts']),
+                tb_w(isset($e['ct']) ? $e['ct'] : null),
+                tb_w(isset($e['energie']) ? $e['energie'] : null),
+                tb_w(isset($e['steuer']) ? $e['steuer'] : null),
+                tb_w(isset($e['level']) ? $e['level'] : null));
         }
+    }
+    $tb_nh = isset($tb_zeilen['HEUTE']) ? count($tb_zeilen['HEUTE']) : 0;
+    $tb_nm = isset($tb_zeilen['MORGEN']) ? count($tb_zeilen['MORGEN']) : 0;
+    printf("STUNDEN;OK=%d;HEUTE=%d;MORGEN=%d;ALTER=%s\n",
+        (int) $tb_werte['OK'], $tb_nh, $tb_nm, tb_w($tb_werte['ALTER']));
+    foreach (array('HEUTE', 'MORGEN') as $tag) {
+        foreach (isset($tb_zeilen[$tag]) ? $tb_zeilen[$tag] : array() as $z) { echo $z; }
     }
     exit;
 }
@@ -164,7 +206,10 @@ if ($tb_aktion === 'verbrauch') {
         tb_w(isset($vb['diff_monat']) ? $vb['diff_monat'] : null),
         tb_w(isset($vb['euro_monat']) ? $vb['euro_monat'] : null));
     foreach ($tage as $tag => $w) {
-        printf("TAG=%s;KWH=%s;EUR=%s\n", $tag, tb_w($w['kwh']), tb_w($w['kosten']));
+        if (!is_array($w)) { continue; }
+        printf("TAG=%s;KWH=%s;EUR=%s\n", $tag,
+            tb_w(isset($w['kwh']) ? $w['kwh'] : null),
+            tb_w(isset($w['kosten']) ? $w['kosten'] : null));
     }
     exit;
 }
