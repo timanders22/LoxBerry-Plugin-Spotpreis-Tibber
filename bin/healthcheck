@@ -23,6 +23,36 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
+/**
+ * Antworten - und zwar in JEDEM Fall.
+ *
+ * Die Datei sagt es weiter unten selbst: "Ein Healthcheck, der nichts
+ * ausgibt, ist von einem, der nicht laeuft, nicht zu unterscheiden." Bis
+ * 0.9.9 standen hier drei blanke echo json_encode(...). Scheitert das - ein
+ * Byte aus einer Tibber-Fehlermeldung, das kein gueltiges UTF-8 ist, genuegt,
+ * denn der rohe Antworttext landet ueber stand.json in $tb_text -, gibt
+ * json_encode false zurueck und echo schreibt NICHTS. sbin/healthcheck.pl
+ * bekommt einen leeren Rumpf, die Systemseite zeigt "unbekannt", und weil
+ * das Ergebnis zusaetzlich retained nach MQTT geht, behaelt auch der
+ * Miniserver seinen letzten Wert.
+ */
+function tb_hc_ausgeben(array $felder)
+{
+    $json = json_encode($felder);
+    if ($json === false) {
+        /* Ein Ersatz, der garantiert kodierbar ist: nur ASCII, keine fremden
+         * Texte. Status 3 heisst "Fehler". */
+        $json = json_encode(array(
+            'desc'   => 'Spotpreis Tibber',
+            'status' => 3,
+            'result' => 'Der Befund liess sich nicht als JSON verpacken ('
+                      . preg_replace('/[^\x20-\x7E]/', '', json_last_error_msg()) . ').',
+        ));
+    }
+    if ($json === false) { $json = '{"desc":"Spotpreis Tibber","status":3,"result":"Fehler"}'; }
+    echo $json;
+}
+
 $tb_gefunden = false;
 foreach (array(
     dirname(__DIR__) . '/webfrontend/html/tb_lib.php',
@@ -39,7 +69,7 @@ if (!$tb_gefunden) {
     // Auch der Fehlerfall antwortet in der vorgesehenen Form. Ein Healthcheck,
     // der nichts ausgibt, ist von einem, der nicht laeuft, nicht zu
     // unterscheiden.
-    echo json_encode(array(
+    tb_hc_ausgeben(array(
         'desc' => 'Spotpreis Tibber',
         'status' => 3,
         'result' => 'Die Bibliothek tb_lib.php wurde nicht gefunden - das Plugin '
@@ -51,7 +81,7 @@ if (!$tb_gefunden) {
 $tb_was = isset($argv[1]) ? (string) $argv[1] : 'check';
 
 if ($tb_was === 'title') {
-    echo json_encode(array('desc' => 'Spotpreis Tibber'));
+    tb_hc_ausgeben(array('desc' => 'Spotpreis Tibber'));
     exit(0);
 }
 
@@ -100,7 +130,24 @@ if (tb_token_lesen() === '') {
     }
 }
 
-echo json_encode(array(
+/* Und der Pulse-Dienst wird AUCH DANN genannt, wenn die Preise klemmen.
+ *
+ * Bis 0.9.9 stand die Zeile ausschliesslich im else-Zweig: sind die Preise
+ * alt oder fehlerhaft, wurde ein toter Pulse-Dienst gar nicht erst geprueft
+ * und im Text nicht erwaehnt. Zwei Stoerungen gleichzeitig sind gerade der
+ * Fall, in dem man beide nennen muss. */
+if ($tb_status !== 4 && !empty($tb_cfg['pulse_ein']) && tb_dienst_soll()
+    && tb_dienst_pid() === 0 && strpos($tb_text, 'Pulse-Dienst') === false) {
+    $tb_text .= ' Dazu: der Pulse-Dienst soll laufen, laeuft aber nicht.';
+}
+
+/* Der Text kann ueber stand.json rohen Antworttext von Tibber enthalten.
+ * Ungueltiges UTF-8 darin haette json_encode zu Fall gebracht - deshalb wird
+ * es hier ausgefiltert, bevor es dorthin geht. */
+if (function_exists('mb_convert_encoding')) {
+    $tb_text = mb_convert_encoding($tb_text, 'UTF-8', 'UTF-8');
+}
+tb_hc_ausgeben(array(
     'desc' => 'Spotpreis Tibber',
     'status' => $tb_status,
     'result' => $tb_text,

@@ -124,7 +124,12 @@ function tb_pruefungen($voll = false)
         } else {
             $zeilen[] = tb_pruefzeile(0, tb_t('TEST.F_TOKEN'), tb_t($grund));
         }
-        $r = is_file($p['token']) ? (fileperms($p['token']) & 0777) : -1;
+        /* fileperms() gibt bei einem Fehler false zurueck, und false & 0777
+         * ist 0 - daraus wurde bis 0.9.9 ein HAKEN mit der Meldung
+         * "Rechte 00". Ein gruenes Haekchen an genau der Stelle, an der die
+         * Rechte nicht ermittelt werden konnten. */
+        $tb_perm = is_file($p['token']) ? @fileperms($p['token']) : false;
+        $r = ($tb_perm === false) ? -1 : ($tb_perm & 0777);
         if ($r < 0) {
             $zeilen[] = tb_pruefzeile(0, tb_t('TEST.F_RECHTE'), tb_t('TEST.A_RECHTE_FEHLT'));
         } elseif (($r & 0077) === 0) {
@@ -206,12 +211,17 @@ function tb_pruefungen($voll = false)
         $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_MQTT'), tb_t('TEST.A_MQTT_EGAL'));
     }
 
-    // PHP-Erweiterungen
-    foreach (array('curl' => 'TEST.F_CURL', 'openssl' => 'TEST.F_OPENSSL',
-                   'sockets' => 'TEST.F_SOCKETS') as $erw => $frage) {
+    /* PHP-Erweiterungen.
+     *
+     * sockets steht hier seit 0.9.10 NICHT mehr. Seit 0.9.7 benutzt keine
+     * Zeile dieses Plugins eine Funktion aus ext/sockets - der Weg zum
+     * MQTT-Gateway laeuft ueber stream_socket_client() aus dem PHP-Kern.
+     * Eine Zeile "PHP-Erweiterung sockets: Nein" in einer Pruefliste
+     * bedeutet dann nichts, sieht aber wie ein Mangel aus, und der Anwender
+     * sucht dort. */
+    foreach (array('curl' => 'TEST.F_CURL', 'openssl' => 'TEST.F_OPENSSL') as $erw => $frage) {
         $da = extension_loaded($erw);
-        $noetig = ($erw === 'openssl') ? !empty($cfg['pulse_ein'])
-                : (($erw === 'sockets') ? !empty($cfg['mqtt_ein']) : false);
+        $noetig = ($erw === 'openssl') ? !empty($cfg['pulse_ein']) : false;
         $zeilen[] = tb_pruefzeile($da ? 1 : ($noetig ? 0 : -1), tb_t($frage),
             $da ? tb_t('TEST.A_ERW_DA') : tb_t('TEST.A_ERW_FEHLT_' . strtoupper($erw)));
     }
@@ -326,7 +336,15 @@ function tb_pruefungen($voll = false)
      * Themen, die der Sendecode nie veroeffentlicht hat. */
     $themen = array_keys(tb_mqtt_themen());
     $gesendet = array_map('strtolower', array_keys(tb_status_felder()));
-    $gesendet[] = 'status/ok'; $gesendet[] = 'status/ts'; $gesendet[] = 'status/zaehler';
+    /* Die Lebenszeichen kommen aus tb_mqtt_lebenszeichen() - der Funktion,
+     * die sie WIRKLICH sendet -, nicht aus einer abgeschriebenen Liste.
+     *
+     * Bis 0.9.9 standen hier drei Namen von Hand, waehrend die Funktion vier
+     * fuehrt: status/pulse_ts fehlte. Die Zeile war damit auf JEDER Anlage,
+     * in JEDEM Zustand ein Kreuz - "diese Themen werden nicht gesendet:
+     * status/pulse_ts" -, obwohl das Thema hinausgeht. Ein Kreuz, das keinen
+     * Mangel bezeichnet, macht die ganze Liste unlesbar. */
+    foreach (array_keys(tb_mqtt_lebenszeichen()) as $tb_lz) { $gesendet[] = $tb_lz; }
     $fehlt = array();
     foreach ($themen as $t) {
         if ($t === 'stunde/N/ct') { continue; }        // Platzhalter, keine Zeile
@@ -346,12 +364,24 @@ function tb_pruefungen($voll = false)
         preg_match_all('/<VirtualInHttpCmd [^>]*Comment="([^"]*)"/', $vinhalt, $mc);
         $lang = 0; $max = 0;
         foreach ((isset($mc[1]) ? $mc[1] : array()) as $k) {
-            $l = strlen(html_entity_decode($k, ENT_QUOTES, 'UTF-8'));
+            /* ZEICHEN, nicht Bytes. Die Grenze heisst "40 Zeichen", und ein
+             * deutscher Umlaut belegt in UTF-8 zwei Bytes: mit strlen schlaegt
+             * die Zeile schon bei 34 echten Zeichen an. mbstring ist auf einem
+             * LoxBerry nicht zugesichert, deshalb mit Rueckfall. */
+            $roh = html_entity_decode($k, ENT_QUOTES, 'UTF-8');
+            $l = function_exists('mb_strlen') ? mb_strlen($roh, 'UTF-8') : strlen($roh);
             if ($l > $max) { $max = $l; }
             if ($l > 40) { $lang++; }
         }
         $zeilen[] = tb_pruefzeile($lang ? 0 : 1, tb_t('TEST.F_KOMMENTAR'),
             sprintf(tb_t('TEST.A_KOMMENTAR'), count(isset($mc[1]) ? $mc[1] : array()), $lang, $max));
+    } else {
+        /* Ein Strich mit Begruendung statt einer fehlenden Zeile. Bis 0.9.9
+         * entfiel die Zeile ersatzlos, wenn die Vorlage nicht wohlgeformt
+         * war - die Liste wurde einfach um eine Zeile kuerzer, und niemand
+         * erfuhr, welche fehlt. */
+        $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_KOMMENTAR'),
+            tb_t('TEST.A_KOMMENTAR_UNGEPRUEFT'));
     }
 
     /* --- Laeuft der Dienst, obwohl er laufen soll? ---
@@ -496,6 +526,12 @@ function tb_test_aktion($aktion)
             $ausgabe = array();
             $code = 0;
             @exec('php ' . escapeshellarg($skript) . ' --pruefen 2>&1', $ausgabe, $code);
+            /* Rueckgabewert 2 heisst: Token und Zuhause tragen, nur eine
+             * Tibber Pulse gibt es nicht. Das ist der REGELFALL und kein
+             * Misserfolg - bis 0.9.9 bekam ein einwandfreies Konto ohne
+             * Pulse "misslungen", waehrend im Text darunter dreimal [OK]
+             * stand. Ein Strich statt eines Kreuzes. */
+            if ($code === 2) { return array(-1, implode("\n", $ausgabe)); }
             return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 
         default:

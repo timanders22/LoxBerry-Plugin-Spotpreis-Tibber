@@ -81,10 +81,13 @@ den Fall, dass Tibber etwas nicht mitrechnet — er steht ab Werk auf 0.
 - Ein **persönliches Zugangstoken** von `developer.tibber.com`
 - `php-curl` empfohlen (sonst Ersatzweg über `file_get_contents`, wird
   angezeigt), `php-openssl` für die Pulse
-- **`php-sockets` wird nicht gebraucht.** Bis 0.9.6 stand die Erweiterung
-  hier, ohne dass eine einzige Zeile sie benutzt hätte — der Weg zum
-  MQTT-Gateway läuft über `stream_socket_client()`, und das steckt im Kern
-  von PHP. `postroot.sh` installiert sie deshalb nicht mehr mit
+- **`php-sockets` wird nicht gebraucht.** Bis 0.9.6 hat `tb_mqtt_senden()`
+  wirklich `socket_create()` benutzt; seit 0.9.7 läuft der Weg zum
+  MQTT-Gateway über `stream_socket_client()`, und das steckt im Kern von PHP.
+  `postroot.sh` installiert die Erweiterung deshalb nicht mehr mit. Seit
+  0.9.10 ist sie auch aus der Selbstprüfung, aus dem Reiter Test, aus dem
+  MQTT-Reiter und aus `postinstall.sh` verschwunden — eine Anzeigezeile, die
+  nichts bedeutet, ist schlimmer als keine, weil der Anwender dort sucht
 - Eine **Tibber Pulse** oder **Watty** nur für die Echtzeitwerte. Preise und
   Verbrauch laufen ohne
 
@@ -143,12 +146,18 @@ gelöscht werden.
 | **WebSocket-Rahmenbau** | byteweise gegen eine unabhängige RFC-6455-Umsetzung, 2000 Proben × 4 Opcodes, alle Längengrenzen (0, 125, 126, 65535, 65536) | byteweise gleich |
 | Rundlauf Schreiben/Lesen | über dieselben Längengrenzen | gleich |
 | Loxone-Importdatei | wohlgeformt, CRLF, Tabulator, Attributreihenfolge wie `ap_xml_virtual_in_http()` | bestanden |
-| Sprachdateien | 483 Werte je Sprache, deckungsgleich, jede Wertzeile genau zwei Anführungszeichen, alle drei Lesarten gleich | vollständig |
+| Sprachdateien | 483 Werte je Sprache (gemessen am 02.09.2026 mit `parse_ini_file`), deckungsgleich, jede Wertzeile genau zwei Anführungszeichen, alle drei Lesarten gleich | vollständig |
 | Syntax | `php -l` unter **7.4 und 8.4**, jede PHP-Datei | fehlerfrei |
 | Doppelte Maskierung | `tb_e(tb_t(...))` gegen Werte mit HTML-Entitäten | keine Stelle |
 | **Eindeutigkeit der Suchtexte** | jeder der 48 Feldnamen gegen die echte Statuszeile — welches Feld liest welchen Wert | eindeutig, geeicht |
 | **Sicherung, Rundlauf** | die eigene Datei zurückspielen, 19 Fälle: Kopf, beide Geheimnisse, halb gültig, fremd, kein JSON, Zeilenumbruch im Thema | 19/19 |
-| **Eichung** | jede neue Prüfung wird in einer Kopie einzeln zerbrochen und **muss** rot werden — an der richtigen Zeile | 5/5 und 4/4 |
+| **Eichung** | jede neue Prüfung wird in einer Kopie einzeln zerbrochen und **muss** rot werden — an der richtigen Zeile | bestanden |
+
+Die Prüfstücke selbst gehören **nicht** ins Plugin-Paket. Sie liegen im
+Arbeitsordner daneben, unter `Pruefung-Spotpreis-Tibber-<Fassung>/`, samt
+einer eigenen `README.md`, die zu jeder Prüfung den Aufruf **und ihre
+Grenzen** nennt. Wer die Zeilen dieser Tabelle nachmessen will, findet sie
+dort — aus dem Plugin-Ordner allein sind sie nicht belegbar.
 
 ## Umstieg von 0.9.6 — die Importdatei muss neu eingelesen werden
 
@@ -188,6 +197,104 @@ Die öffentliche Tibber-Beschreibung (`developer.tibber.com`), gegengelesen an
 zwei unabhängigen Umsetzungen: `github.com/terjesannum/tibber-exporter` und der
 Node-RED-Erweiterung `node-red-contrib-tibber-api`. Felder, die dort nicht
 stehen, stehen auch hier nicht.
+
+## Fassung 0.9.10 — was sich geändert hat
+
+Eine Durchsicht Zeile für Zeile, mit vier unabhängigen Prüfern. Das Wichtigste
+in der Reihenfolge dessen, was der Anwender davon merkt:
+
+**Rechenwege**
+
+- **Der eigene Aufschlag fehlte in allen Kostenkennzahlen.** `CUR` trug ihn,
+  `DYN_MONAT`, `DIFF_MONAT`, `EURO_MONAT` und `ERSPARNIS_GESTERN` nicht — bei
+  3 ct Aufschlag und 300 kWh wies das Plugin damit rund 9 Euro Ersparnis je
+  Monat aus, die es nicht gab.
+- **`FENSTER2_IN` wurde gegen das Ende des ersten Fensters gerechnet**, nicht
+  gegen jetzt. Gemessen: um 11:01 stand dort 0, während das zweite Fenster
+  wirklich in 17 Stunden begann. Eine Loxone-Regel „laden, wenn
+  `FENSTER2_IN` = 0" löste damit mittags aus.
+- **Keine Zeile setzte eine Zeitzone.** Debian liefert `php.ini` mit
+  auskommentiertem `date.timezone`; PHP fällt dann still auf UTC zurück, und
+  alle Stundenfelder stehen ein bis zwei Stunden daneben. Gesetzt wird jetzt
+  aus `/etc/timezone`, aber **nur**, wenn keine eingestellt ist.
+- **Tage mit Kosten, aber ohne Verbrauch** verzerrten den Durchschnittspreis:
+  Kosten aus mehr Tagen geteilt durch Verbrauch aus weniger.
+- **`NEXT`** rechnete mit einer festen Stunde statt mit der gemessenen
+  Schrittweite.
+
+**Was das Plugin über sich selbst sagte**
+
+- **`OK` blieb auf 1**, wenn der Abruf an zwei von drei Stellen scheiterte —
+  „kein laufender Vertrag" und „null Preisstunden" fassten `stand.json` gar
+  nicht an. Über MQTT ging weiter eine 1 hinaus.
+- **`ALTER` konnte 9999 senden, während die Importvorlage `MaxVal="1440"`
+  zusagte.** Genau im Ausfall lag das Feld außerhalb des Bereichs, an dem die
+  Ausfallerkennung hängt. Beides ist jetzt aufeinander abgestimmt und wird
+  aus **einer** Quelle gedeckelt.
+- **Die Themenzeile im Reiter Test konnte nie grün werden**: die Positivliste
+  zählte drei Lebenszeichen auf, gesendet werden vier. Sie kommt jetzt aus
+  der Funktion, die sie wirklich sendet.
+- **Der Monatsbericht erfand einen Satz**, wenn Tageszeilen ohne Verbrauch
+  vorlagen: „0.0 kWh an 31 Tagen … draufgezahlt 0.00 Euro."
+
+**Speichern und Oberfläche**
+
+- **Ein einziger Tippfehler verwarf alle übrigen Eingaben.** Jetzt gilt, was
+  der Hausstandard verlangt: die beanstandete Zeile wird übergangen, alles
+  Übrige gespeichert.
+- **Ein gescheitertes Speichern im MQTT-Reiter blieb stumm**, ebenso ein
+  gescheitertes „Protokoll leeren" — beides meldete Erfolg.
+- **Eine beschädigte Konfiguration riss die Zweitschrift mit.** Ein einziges
+  Öffnen der Seite nach einem Stromausfall genügte: Einstellungen auf Werk,
+  Merkwort neu, und der Rettungsanker daneben ebenfalls überschrieben. Eine
+  unlesbare Datei wird jetzt als `tibber.json.kaputt.<Zeit>` beiseitegelegt.
+- **Die Sicherung eines Schwesterplugins wurde ohne Beanstandung
+  übernommen** — aWATTar und Octopus benutzen dieselben Feldnamen. Der
+  lesbare Kopf `_plugin` wird jetzt geprüft.
+- **`tb_aktionstoken()` gab ein Merkwort zurück, das nie gespeichert wurde**,
+  und beim nächsten Aufruf ein anderes. Jetzt fail closed.
+- **Das Formularmerkmal blieb leer, wenn das Merkwort gerade erst entstand.**
+  Bei einer `tibber.json` mit Schlüsseln, aber ohne `aktionstoken` — dem
+  Zustand jeder Anlage, die aus einer älteren Sicherung kommt — trugen alle
+  15 Formulare `value=""`. Der erste Klick lief danach in den Wachposten
+  („kein gültiges Merkmal"), obwohl der Anwender alles richtig gemacht hatte;
+  erst ein Neuladen half.
+- Die Legende steht oben im Reiter Einstellungen, nicht in seiner Mitte.
+
+**Dienst und Installation**
+
+- **Der Pulse-Dienst hatte keine Totmann-Schaltung für den Fall, dass die
+  Verbindung bestätigt und nie liefert** — die Schleife lief unbegrenzt
+  weiter, während `live.json` leer blieb.
+- **Ein halb gelesener WebSocket-Rahmenkopf ging verloren**; der nächste
+  Aufruf setzte an der falschen Byte-Grenze auf.
+- **Nach einer Sitzung, die gleich nach dem Handschlag starb, gab es keinen
+  Rückzug**: rund zwanzig Verbindungsversuche je Minute, jeder mit einer
+  GraphQL-Anfrage davor.
+- **`preupgrade.sh` und die Deinstallation schickten `kill -9` an eine nackte
+  Prozessnummer.** Bei veralteter PID-Datei traf das einen fremden Prozess.
+  Beide gehen jetzt über `bin/dienst.sh stop`, das argumentweise prüft.
+- **Der Wächter hatte keine Obergrenze**: startete der Dienst dauerhaft
+  nicht, versuchte er es jede Minute neu und schrieb dabei an der
+  Protokollkappung vorbei. Jetzt mit Rückzug 1, 2, 4 … 60 Minuten.
+- **Die Sperre des Cron wurde gezogen, bevor die Schalter ausgewertet
+  waren.** „Selbsttest" lieferte während eines laufenden Minutentakts ein
+  leeres Feld, und „Preise jetzt holen" meldete danach den **alten** Stand
+  als Erfolg.
+- **Der Umstiegshinweis aus 0.9.6 erschien bei jedem Update.** Er hängt jetzt
+  an der Vorgängerfassung aus der Plugin-Datenbank.
+
+**Kleineres**
+
+`json_encode` wird an neun Stellen geprüft (der Endpunkt `aktion=json` gab
+sonst HTTP 200 mit leerem Rumpf; die MQTT-Signatur fiel auf `md5('')`
+zusammen und hätte den Doppelt-senden-Filter eingefroren); `INF` und `NAN`
+gehen als Strich hinaus statt als Wert; die Themen-Ausschlussliste, die
+Fensterlänge, die Mindestpunktzahl des Verlaufs, die Altersschranke und die
+Endpunktadresse stehen jetzt an je **einer** Stelle statt an zwei bis drei;
+der Verlauf liest alle Monatsdateien des eingestellten Zeitraums statt nur
+zwei; `Cache-Control: no-store` am Endpunkt; drei tote Sprachschlüssel
+entfernt.
 
 ## Fassung 0.9.8 — der Stat-Zwischenspeicher
 Die Protokollkappung (512 000 Byte) stand in

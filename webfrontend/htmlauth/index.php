@@ -159,6 +159,13 @@ if ($tb_post && isset($_POST['verlauf_holen'])) {
      * Knopf gekostet, der nichts tat. */
     $tb_vcfg = tb_config();
     $tb_reihe = tb_verlauf_lesen(max(1, (int) $tb_vcfg['verlauf_tage']));
+    if (!$tb_reihe) {
+        /* Bis 0.9.9 kam hier eine Datei mit 27 Byte heraus - nur die
+         * Kopfzeile. Der Anwender hielt den Knopf fuer funktionierend und
+         * suchte den Fehler in seinem Tabellenprogramm. */
+        $tb_fehler[] = tb_t('EINST.VERLAUF_LEER');
+        $tb_tab = 'tab-settings';
+    } else {
     $tb_csv = "zeitpunkt;unix;ct_pro_kwh\r\n";
     foreach ($tb_reihe as $tb_e) {
         $tb_csv .= date('Y-m-d H:i:s', $tb_e['ts']) . ';' . $tb_e['ts'] . ';'
@@ -169,19 +176,30 @@ if ($tb_post && isset($_POST['verlauf_holen'])) {
            . date('Ymd_His') . '.csv"');
     echo $tb_csv;
     exit;
+    }
 }
 
 /* ---------------- Einstellungen speichern ---------------- */
 if ($tb_post && isset($_POST['speichern'])) {
     $tb_cfg = tb_config();
+    /* Der Ausgangsstand, um einzelne Felder zurueckzunehmen. Siehe unten:
+     * beanstandet wird die ZEILE, gespeichert wird alles Uebrige. */
+    $tb_alt = $tb_cfg;
 
     /* Das Tibber-Token. Ein LEERES Feld loescht nichts - sonst stuende
      * irgendwann ein leeres Token in der Datei, ohne dass es jemand merkt.
      * Zum Loeschen gibt es einen eigenen Haken. */
     $tb_neu = isset($_POST['tibber_token']) ? trim((string) $_POST['tibber_token']) : '';
     if (isset($_POST['token_loeschen'])) {
-        tb_token_speichern('');
-        $tb_meldungen[] = tb_t('EINST.TOKEN_GELOESCHT');
+        /* Haken UND Eingabe zusammen: das ist ein Widerspruch, kein Vorrang.
+         * Bis 0.9.9 gewann der Haken stillschweigend, und das eingetippte
+         * Token war weg, ohne dass irgendwo etwas stand. */
+        if ($tb_neu !== '') {
+            $tb_fehler[] = tb_t('EINST.TOKEN_KONFLIKT');
+        } else {
+            tb_token_speichern('');
+            $tb_meldungen[] = tb_t('EINST.TOKEN_GELOESCHT');
+        }
     } elseif ($tb_neu !== '') {
         $tb_grund = tb_token_form($tb_neu);
         if ($tb_grund !== '') {
@@ -200,7 +218,12 @@ if ($tb_post && isset($_POST['speichern'])) {
      * fuer dieselbe Angabe - hier /^[0-9a-fA-F\-]{8,64}$/, in der Bibliothek
      * /^[A-Za-z0-9-]{1,64}$/. Zwei Wahrheiten ueber denselben Wert sind eine
      * zu viel; welche galt, entschied der Zufall des Aufrufwegs. */
-    $tb_home = tb_saeubern($_POST['home_id'] ?? '');
+    /* is_string vor jedem (string)-Cast. Ein POST mit home_id[]=x erzeugte
+     * sonst "Array to string conversion" - fachlich harmlos (die Weisslisten
+     * greifen), aber die Warnung steht bei display_errors=On im Seitenkopf
+     * und kann ein spaeteres header() verhindern. */
+    $tb_home = tb_saeubern(isset($_POST['home_id']) && is_string($_POST['home_id'])
+                           ? $_POST['home_id'] : '');
     if ($tb_home !== '' && tb_gql_id($tb_home) === '') {
         $tb_fehler[] = tb_t('EINST.FEHLER_HOME');
     } else {
@@ -249,6 +272,11 @@ if ($tb_post && isset($_POST['speichern'])) {
     }
     if ((float) $tb_cfg['guenstig'] >= (float) $tb_cfg['teuer']) {
         $tb_fehler[] = tb_t('EINST.FEHLER_SCHWELLEN');
+        /* Nur die BEIDEN Schwellen bleiben stehen, wie sie waren. Alles
+         * Uebrige wird trotzdem gespeichert - sonst muesste der Anwender
+         * wegen einer Zeile acht Felder neu eintippen. */
+        $tb_cfg['guenstig'] = $tb_alt['guenstig'];
+        $tb_cfg['teuer']    = $tb_alt['teuer'];
     }
 
     $tb_cfg['verbrauch_ein'] = isset($_POST['verbrauch_ein']) ? 1 : 0;
@@ -256,13 +284,24 @@ if ($tb_post && isset($_POST['speichern'])) {
     $tb_cfg['monatsbericht'] = isset($_POST['monatsbericht']) ? 1 : 0;
 
 
-    if (!$tb_fehler) {
-        if (tb_config_speichern($tb_cfg)) {
-            $tb_meldungen[] = tb_t('EINST.GESPEICHERT');
-            tb_log('Einstellungen gespeichert.');
-        } else {
-            $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), $tb_p['config']);
-        }
+    /* Gespeichert wird IMMER - nicht nur, wenn nichts beanstandet wurde.
+     *
+     * REGELN_2, "Beanstandungen melden, nicht das ganze Speichern verhindern":
+     * was sich zurechtruecken laesst, wird zurechtgerueckt, die betroffene
+     * Zeile uebergangen, und alles Uebrige gespeichert. Bis 0.9.9 verwarf ein
+     * einziger Tippfehler ALLE uebrigen Eingaben: der Anwender aenderte acht
+     * Felder, vertippte sich in einem und musste alle acht neu eintippen.
+     * Die beanstandeten Felder sind oben per continue uebersprungen worden,
+     * stehen also noch auf ihrem alten Wert. */
+    if (tb_config_speichern($tb_cfg)) {
+        $tb_meldungen[] = $tb_fehler ? tb_t('EINST.GESPEICHERT_TEILWEISE')
+                                     : tb_t('EINST.GESPEICHERT');
+        tb_log($tb_fehler
+            ? 'Einstellungen gespeichert; ' . count($tb_fehler) . ' Feld(er) beanstandet '
+              . 'und unveraendert gelassen.'
+            : 'Einstellungen gespeichert.');
+    } else {
+        $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), $tb_p['config']);
     }
     $tb_tab = 'tab-settings';
 
@@ -286,23 +325,32 @@ if ($tb_post && isset($_POST['save_mqtt'])) {
     $tb_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
         (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
     if ($tb_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $tb_mtopic)) {
+        /* Nur das THEMA wird beanstandet. Der Haken ist fuer sich genommen
+         * gueltig und bleibt erhalten - bis 0.9.9 warf ein falsch getipptes
+         * Thema den frisch gesetzten Haken mit weg. */
         $tb_fehler[] = tb_t('EINST.FEHLER_TOPIC');
     } else {
         $tb_mcfg['mqtt_topic'] = trim($tb_mtopic, '/');
     }
-    if (!$tb_fehler) {
-        if (tb_config_speichern($tb_mcfg)) {
-        $tb_meldungen[] = tb_t('EINST.GESPEICHERT');
-        }
+    /* Und der Fehlschlag wird GEMELDET. Bis 0.9.9 gab es hier keinen
+     * else-Zweig: die Seite kam wortlos zurueck, das Feld zeigte wieder den
+     * alten Wert, und der Anwender hielt es fuer einen Bedienfehler. */
+    if (tb_config_speichern($tb_mcfg)) {
+        $tb_meldungen[] = $tb_fehler ? tb_t('EINST.GESPEICHERT_TEILWEISE')
+                                     : tb_t('EINST.GESPEICHERT');
+    } else {
+        $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), $tb_p['config']);
     }
     $tb_tab = 'tab-mqtt';
 }
 
 /* ---------------- Pulse-Dienst ---------------- */
 if ($tb_post && isset($_POST['dienst'])) {
-    list($tb_ok, $tb_ausgabe) = tb_dienst((string) $_POST['dienst']);
+    list($tb_ok, $tb_ausgabe) = tb_dienst(is_string($_POST['dienst'])
+                                          ? (string) $_POST['dienst'] : '');
     if ($tb_ok) {
-        $tb_meldungen[] = tb_t('EINST.DIENST_' . strtoupper((string) $_POST['dienst']))
+        $tb_meldungen[] = tb_t('EINST.DIENST_' . strtoupper(is_string($_POST['dienst'])
+                                                            ? (string) $_POST['dienst'] : ''))
                         . ' ' . tb_e($tb_ausgabe);
     } else {
         $tb_fehler[] = tb_e($tb_ausgabe);
@@ -332,14 +380,22 @@ if ($tb_post && isset($_POST['token_neu'])) {
 /* ---------------- Log leeren ---------------- */
 if ($tb_post && isset($_POST['log_leeren'])) {
     if (!is_dir(dirname($tb_p['log']))) { @mkdir(dirname($tb_p['log']), 0775, true); }
-    @file_put_contents($tb_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . tb_t('LOG.GELEERT') . "\n");
-    $tb_meldungen[] = tb_t('LOG.GELEERT');
+    /* Der Rueckgabewert wird geprueft. Auf einer vollen Ramdisk oder bei
+     * falschen Rechten meldete die Oberflaeche bis 0.9.9 Erfolg, waehrend
+     * das Protokoll unveraendert darunter stand - eine stille Falschaussage. */
+    if (@file_put_contents($tb_p['log'], '[' . date('Y-m-d H:i:s') . '] '
+        . tb_t('LOG.GELEERT') . "\n") === false) {
+        $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), $tb_p['log']);
+    } else {
+        $tb_meldungen[] = tb_t('LOG.GELEERT');
+    }
     $tb_tab = 'tab-log';
 }
 
 /* ---------------- Reiter Test ---------------- */
 if ($tb_post && isset($_POST['test'])) {
-    list($tb_stand_erg, $tb_text) = tb_test_aktion((string) $_POST['test']);
+    list($tb_stand_erg, $tb_text) = tb_test_aktion(is_string($_POST['test'])
+                                                   ? (string) $_POST['test'] : '');
     if ($tb_stand_erg === 1) {
         $tb_meldungen[] = tb_e($tb_text);
     } else {
@@ -362,8 +418,22 @@ if ($tb_post && isset($_POST['selbsttest'])) {
  * Seitenaufruf ohne Anlass. */
 list($tb_soll_n, $tb_fehlend, $tb_fremd) = tb_config_vervollstaendigen(true);
 
-$tb_cfg     = tb_config();
+/* Erst das Merkwort, DANN die Konfiguration lesen.
+ *
+ * tb_aktionstoken() erzeugt ein fehlendes Merkwort und SCHREIBT es - aber in
+ * seine eigene frische Kopie. Bis 0.9.9 stand die Zeile hinter
+ * $tb_cfg = tb_config(), und tb_formtoken($tb_cfg) rechnete deshalb aus dem
+ * VERALTETEN Stand: das Formularmerkmal war leer.
+ *
+ * Gemessen am 02.09.2026: eine tibber.json mit Schluesseln, aber ohne
+ * aktionstoken - der Zustand jeder Anlage, die aus einer aelteren Sicherung
+ * kommt oder deren Merkwort geloescht wurde - lieferte alle 15 Formulare mit
+ * value="". Der erste Klick lief danach in den Wachposten ("kein gueltiges
+ * Merkmal"), obwohl der Anwender alles richtig gemacht hatte; erst ein
+ * Neuladen half. Bei ganz FEHLENDER Datei fiel es nicht auf, weil die
+ * Selbstheilung dort ohnehin greift - deshalb hat es niemand gesehen. */
 $tb_token   = tb_aktionstoken();
+$tb_cfg     = tb_config();
 $tb_fmt     = tb_formtoken($tb_cfg);
 $tb_st      = tb_stand();
 $tb_vb      = tb_verbrauch();
@@ -372,7 +442,9 @@ $tb_mqtt    = tb_mqtt_zustand();
 $tb_pid     = tb_dienst_pid();
 $tb_alter   = tb_alter();
 $tb_host    = tb_hostname();
-$tb_basis   = 'http://' . $tb_host . '/plugins/' . $tb_p['plugin'] . '/index.php';
+/* Dasselbe Bauteil, das auch tb_vorlage() benutzt - zwei Stellen, die
+ * dieselbe Adresse zusammensetzen, laufen auseinander. */
+$tb_basis   = tb_endpunkt_basis($tb_host);
 $tb_hat_token = tb_token_lesen() !== '';
 $tb_bericht = tb_json_lesen($tb_p['datadir'] . '/bericht.json');
 $tb_logzeilen = array();
@@ -443,8 +515,12 @@ if ($tb_post && isset($_POST['tb_zurueck'])) {
              * Speicher. Ohne diese Zeilen zeigte das Formular danach die
              * ALTEN Werte - der Anwender haelt das Zurueckspielen fuer
              * wirkungslos und drueckt noch einmal. */
-            $tb_cfg   = tb_config();
+            /* Dieselbe Reihenfolge wie im Laden-Block: erst das Merkwort,
+             * dann die Konfiguration. Eine zurueckgespielte Sicherung kann
+             * ohne Merkwort kommen - dann entsteht es hier, und $tb_cfg muss
+             * es schon tragen. */
             $tb_token = tb_aktionstoken();
+            $tb_cfg   = tb_config();
             $tb_fmt   = tb_formtoken($tb_cfg);
             $tb_werte = tb_werte();
             $tb_hat_token = tb_token_lesen() !== '';
@@ -561,7 +637,7 @@ if ($tb_rahmen) {
         : tb_e(number_format((float) $tb_werte['FENSTER_CT'], 2, ',', '.')) . ' ct' ?></span>
   </div>
   <div class="sm-kachel"><?= tb_e(tb_t('ALLG.LETZTER_ABRUF')) ?>
-    <b class="<?= ($tb_alter >= 0 && $tb_alter < 7200) ? 'sm-an' : 'sm-aus' ?>"><?= $tb_alter < 0 ? '&ndash;' : (int) round($tb_alter / 60) . ' min' ?></b>
+    <b class="<?= ($tb_alter >= 0 && $tb_alter < tb_altersschranke($tb_cfg)) ? 'sm-an' : 'sm-aus' ?>"><?= $tb_alter < 0 ? '&ndash;' : (int) round($tb_alter / 60) . ' min' ?></b>
     <span class="sm-hilfe"><?= $tb_alter < 0 ? tb_e(tb_t('ALLG.NIE')) : tb_e(date('d.m.Y H:i', time() - $tb_alter)) ?></span>
   </div>
   <div class="sm-kachel">Pulse
@@ -613,6 +689,17 @@ if ($tb_lh || $tb_lm) { ?>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $tb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+
+<?php /* Die Legende steht OBEN im Reiter, nicht in der Mitte.
+         REGELN_2: "Eine gesammelte Legende oben im Reiter, darunter folgen
+         die Knopfreihen. Keine Knopfreihe ohne erklaerende Legende ueber
+         sich." Bis 0.9.9 stand der orange Speichern-Knopf UEBER seiner
+         Legende - der erste Knopf des Reiters war damit der einzige ohne
+         Erklaerung. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= tb_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= tb_t('LEGENDE.AKTION') ?></span>
+</div>
 
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
@@ -715,10 +802,6 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 
 <h2><?= tb_e(tb_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= tb_t('EINST.DIENST_ERKLAERUNG') ?></p>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= tb_t('LEGENDE.LESEN') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= tb_t('LEGENDE.AKTION') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
@@ -737,7 +820,7 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
   </form>
 </div>
 
-<h2><?= tb_t('EINST.H_SICHERUNG') ?></h2>
+<h2><?= tb_e(tb_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= tb_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= tb_t('EINST.SICH_WARNUNG') ?></div>
 <div class="sm-knopfreihe">
@@ -748,13 +831,13 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
   <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="tb_sichern" value="1"><?= tb_t('EINST.K_SICHERN') ?></button>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="tb_sichern" value="1"><?= tb_e(tb_t('EINST.K_SICHERN')) ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
 <input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="tb_sicherung" accept=".json">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="tb_zurueck" value="1"><?= tb_t('EINST.K_ZURUECK') ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="tb_zurueck" value="1"><?= tb_e(tb_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>
 </div>
@@ -797,7 +880,6 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 <tr><td><?= tb_e(tb_t('MQTT.T_BROKER')) ?></td><td><span class="sm-mono"><?= tb_e($tb_mqtt['broker']) ?>:<?= tb_e($tb_mqtt['brokerport']) ?></span></td></tr>
 <tr><td><?= tb_e(tb_t('MQTT.T_UDP')) ?></td><td><span class="sm-mono"><?= (int) $tb_mqtt['udpport'] ?></span></td></tr>
 <tr><td><?= tb_e(tb_t('MQTT.T_PLUGIN')) ?></td><td class="<?= !empty($tb_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($tb_cfg['mqtt_ein']) ? tb_e(tb_t('ALLG.EIN')) : tb_e(tb_t('ALLG.AUS')) ?></td></tr>
-<tr><td><?= tb_e(tb_t('MQTT.T_SOCKETS')) ?></td><td class="<?= extension_loaded('sockets') ? 'sm-an' : 'sm-aus' ?>"><?= extension_loaded('sockets') ? tb_e(tb_t('ALLG.JA')) : tb_e(tb_t('ALLG.NEIN')) ?></td></tr>
 </table>
 
 <h2><?= tb_e(tb_t('MQTT.H_ABO')) ?></h2>
@@ -999,6 +1081,12 @@ function tb_bausteine()
     <td><span class="sm-mono">FEHLER;OK=0;GRUND=TOKEN</span> (HTTP 403)</td></tr>
 <tr><td><span class="sm-mono"><?= tb_e($tb_basis) ?>?token=<?= tb_e($tb_token) ?>&amp;aktion=quatsch</span></td>
     <td><span class="sm-mono">FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION</span> (HTTP 400)</td></tr>
+<?php /* Der Endpunkt beherrscht ?selftest=1 seit jeher, und der Reiter Test
+         ruft ihn intern auf - in der Oberflaeche stand die Adresse aber
+         nirgends. Wer nachsehen will, ob das Merkwort im Miniserver noch
+         stimmt, brauchte dafuer bis 0.9.9 die README. */ ?>
+<tr><td><span class="sm-mono"><?= tb_e($tb_basis) ?>?selftest=1&amp;token=<?= tb_e($tb_token) ?></span></td>
+    <td><span class="sm-mono">SELFTEST;OK=1;TOKEN=OK;FASSUNG=&hellip;</span></td></tr>
 </table>
 </div>
 </div>
@@ -1183,7 +1271,7 @@ if ($tb_svg !== '') { echo '<div class="sm-hinweis">' . $tb_svg . '</div>'; }
 		if (r.dataset.ziel === 'tab-test') { return; }
 		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
 	});
-	zeige(<?= json_encode($tb_tab) ?>);
+	zeige('<?= tb_e($tb_tab) ?>');
 })();
 </script>
 <?php

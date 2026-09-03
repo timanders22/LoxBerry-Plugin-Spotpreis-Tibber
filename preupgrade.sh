@@ -20,6 +20,10 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
 fi
 
 PCONFIG="$BASE/config/plugins/$PFOLDER"
+# Der Programmordner - von dort wird dienst.sh gerufen, wenn der
+# Pulse-Dienst angehalten werden muss. preupgrade laeuft VOR dem
+# Auspacken, das Skript liegt zu diesem Zeitpunkt also noch da.
+PBIN="$BASE/bin/plugins/$PFOLDER"
 
 # Laufenden Pulse-Dienst anhalten - er haelt eine Verbindung offen.
 #
@@ -43,9 +47,22 @@ fi
 
 PID="$BASE/data/plugins/$PFOLDER/pulse.pid"
 if [ -f "$PID" ]; then
-    kill "$(cat "$PID")" 2>/dev/null || true
-    sleep 2
-    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    # Ueber dienst.sh, nicht ueber die nackte Prozessnummer.
+    #
+    # bin/dienst.sh prueft ARGUMENTWEISE, ob die Nummer wirklich zu
+    # tb_pulse.php gehoert (argv[1] ist das Skript, argv[0] ein
+    # PHP-Interpreter), und begruendet das ueber zehn Zeilen. Genau diese
+    # Pruefung fehlte hier - bei einer veralteten PID-Datei (Stromausfall,
+    # Neustart ohne saubere Abmeldung) traf das kill -9 einen FREMDEN
+    # Prozess, dem der Kernel die Nummer neu vergeben hatte.
+    if [ -x "$PBIN/dienst.sh" ]; then
+        "$PBIN/dienst.sh" stop >/dev/null 2>&1 || true
+    fi
+    # Rueckfall, falls dienst.sh fehlt: dann wenigstens hoeflich und ohne -9.
+    if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
+        kill "$(cat "$PID")" 2>/dev/null || true
+        sleep 2
+    fi
     rm -f "$PID"
     echo "<INFO> Laufender Pulse-Dienst angehalten."
 fi

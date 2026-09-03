@@ -58,29 +58,72 @@ if (!$tb_gefunden) {
  * doppelte Abrufe, doppelte Meldungen, im schlimmsten Fall zwei
  * Schreibvorgaenge auf dieselbe Datei. Nicht blockierend - wer nicht
  * drankommt, geht kommentarlos wieder; der naechste Takt kommt gleich.
+ *
+ * ---------------------------------------------------------------------------
+ * Warum das eine FUNKTION ist und nicht mehr der Dateirumpf
+ * ---------------------------------------------------------------------------
+ * Bis 0.9.9 stand die Sperre hier oben, 740 Zeilen VOR der Auswertung der
+ * Schalter. Wer waehrend eines laufenden Minutentakts von Hand
+ * 'php tb_cron.php --selbsttest' aufrief, bekam deshalb den Ausstieg der
+ * Sperre: Rueckgabewert 0, null Byte Ausgabe. Der Knopf "Selbsttest" im
+ * Reiter Test lieferte ein leeres Feld.
+ *
+ * Schlimmer beim Knopf "Preise jetzt holen": danach sieht die Oberflaeche in
+ * stand.json nach, findet dort den ALTEN gelungenen Stand und meldet
+ * "Preise OK, 24/24 Stunden" - obwohl nichts geholt wurde. Bei einem
+ * Cron-Takt von einer Minute ist das kein seltener Fall.
+ *
+ * Der Selbsttest rechnet nur und schreibt nichts; er braucht die Sperre
+ * ueberhaupt nicht.
  */
-$tb_sperrdatei = sys_get_temp_dir() . '/tb_cron_' . tb_paths()['plugin'] . '.lock';
-$tb_sperre = @fopen($tb_sperrdatei, 'c');
-if ($tb_sperre === false) {
-    /* Die Sperrdatei laesst sich nicht einmal anlegen. Ohne Sperre weiter
-     * zu laufen waere falsch - dann holen zwei Laeufe gleichzeitig ab und
-     * schreiben auf dieselben Dateien. Aber stumm mit 0 zu enden ist
-     * schlimmer: der Cron liefe nie wieder, und niemand wuesste warum. */
-    tb_log_gebremst('sperre', 'Die Sperrdatei ' . $tb_sperrdatei . ' laesst sich '
-        . 'nicht anlegen - dieser Lauf tut nichts. Ist das Verzeichnis '
-        . 'beschreibbar?');
-    fwrite(STDERR, 'Sperrdatei nicht anlegbar: ' . $tb_sperrdatei . "\n");
-    exit(1);
-}
-if (!flock($tb_sperre, LOCK_EX | LOCK_NB)) {
-    // Ein anderer Lauf ist noch dran. Kommentarlos gehen ist hier richtig:
-    // der naechste Takt kommt in einer Minute.
-    exit(0);
+function tb_sperre_ziehen()
+{
+    $datei = sys_get_temp_dir() . '/tb_cron_' . tb_paths()['plugin'] . '.lock';
+    $griff = @fopen($datei, 'c');
+    if ($griff === false) {
+        /* Die Sperrdatei laesst sich nicht einmal anlegen. Ohne Sperre weiter
+         * zu laufen waere falsch - dann holen zwei Laeufe gleichzeitig ab und
+         * schreiben auf dieselben Dateien. Aber stumm mit 0 zu enden ist
+         * schlimmer: der Cron liefe nie wieder, und niemand wuesste warum. */
+        tb_log_gebremst('sperre', 'Die Sperrdatei ' . $datei . ' laesst sich '
+            . 'nicht anlegen - dieser Lauf tut nichts. Ist das Verzeichnis '
+            . 'beschreibbar?');
+        fwrite(STDERR, 'Sperrdatei nicht anlegbar: ' . $datei . "\n");
+        exit(1);
+    }
+    if (!flock($griff, LOCK_EX | LOCK_NB)) {
+        return null;
+    }
+    return $griff;
 }
 
 /* ==================================================================
  * Preise holen und auswerten
  * ================================================================== */
+
+/**
+ * OK auf 0 setzen und den Grund hinterlegen - ohne die alten Werte zu loeschen.
+ *
+ * Bis 0.9.9 tat das nur der erste der drei Fehlerwege. Die beiden anderen -
+ * "kein laufender Vertrag" und "null Preisstunden" - kehrten zurueck, ohne
+ * stand.json anzufassen. Der alte ok=1 blieb stehen, ging weiter ueber MQTT
+ * hinaus und stand in der Statuszeile, waehrend seit Stunden nichts mehr
+ * geholt wurde. Die Sprachdatei sagt aber: "OK = 1, wenn der letzte
+ * Preisabruf gelungen ist". Genau das stimmte dann nicht.
+ *
+ * Der Meldungsbaum am Dateiende haengt an denselben zwei Merkmalen und
+ * landete deshalb in der Entwarnung.
+ */
+function tb_merkmal_ok_faellt($meldung)
+{
+    $st = tb_stand();
+    $st['ok'] = 0;
+    $st['fehler'] = $meldung;
+    if (!tb_json_schreiben(tb_paths()['datadir'] . '/stand.json', $st)) {
+        tb_log_gebremst('stand_schreiben', 'stand.json liess sich nicht schreiben - '
+            . 'das Merkmal OK bleibt deshalb auf dem alten Wert stehen.');
+    }
+}
 
 function tb_preise_holen()
 {
@@ -89,10 +132,7 @@ function tb_preise_holen()
     $data = tb_gql(tb_abfrage_preise((string) $cfg['home_id']));
     if (isset($data['_fehler'])) {
         // Der alte Stand bleibt stehen; nur das Merkmal ok faellt.
-        $st = tb_stand();
-        $st['ok'] = 0;
-        $st['fehler'] = $data['_fehler'];
-        tb_json_schreiben($p['datadir'] . '/stand.json', $st);
+        tb_merkmal_ok_faellt($data['_fehler']);
         tb_log_gebremst('preise', 'Preisabruf misslungen: ' . $data['_fehler']);
         return array(0, $data['_fehler']);
     }
@@ -101,6 +141,7 @@ function tb_preise_holen()
         $meldung = 'Die Antwort enthaelt keine Preisinformationen. Hat das Konto einen '
                  . 'laufenden Tibber-Vertrag? Ohne Vertrag liefert die Schnittstelle keine '
                  . 'Preise, auch wenn das Token gueltig ist.';
+        tb_merkmal_ok_faellt($meldung);
         tb_log_gebremst('preise_leer', $meldung);
         return array(0, $meldung);
     }
@@ -112,13 +153,18 @@ function tb_preise_holen()
     if (!$alle) {
         $meldung = 'Es kamen null Preisstunden zurueck. Das ist kurz nach Mitternacht '
                  . 'moeglich; beim naechsten Takt wird es erneut versucht.';
+        tb_merkmal_ok_faellt($meldung);
         tb_log_gebremst('preise_null', $meldung);
         return array(0, $meldung);
     }
 
     $jetzt = time();
     $cur = tb_preis_zur_zeit($alle, $jetzt);
-    $next = tb_preis_zur_zeit($alle, $jetzt + 3600);
+    /* Die letzte feste 3600 im Preisweg. Bei Viertelstundenpreisen lieferte
+     * sie den Preis "in einer Stunde"; die Sprachdatei sagt aber "Endpreis
+     * der naechsten Stunde". Genommen wird jetzt der naechste Eintrag nach
+     * dem laufenden - bei Stundenpreisen ist das derselbe Wert wie bisher. */
+    $next = tb_preis_zur_zeit($alle, $jetzt + max(1, tb_schrittweite($alle)));
     // Energieanteil und Steuer der laufenden Stunde einzeln mitfuehren.
     $curE = null; $curS = null; $curL = -1;
     /* Die Gueltigkeitsdauer eines Eintrags ist die GEMESSENE Schrittweite,
@@ -142,11 +188,13 @@ function tb_preise_holen()
      * ein einziges Fenster ab jetzt beantwortet das nicht. Gesucht wird
      * ab dem Ende des ersten; findet sich keines, bleiben die Felder
      * LEER statt auf einer 0, die wie ein Messwert aussaehe. */
-    $laenge = (int) $cfg['fensterstunden'];
-    $fenster2 = array('ts' => null, 'h' => null, 'in' => null, 'ct' => null);
-    if ($fenster['ts'] !== null) {
-        $fenster2 = tb_fenster($alle, $laenge, $fenster['ts'] + $laenge * 3600);
-    }
+    /* Die Laenge wird GEKLEMMT wie in tb_fenster() selbst - sonst rechnet
+     * eine von Hand eingetragene 0 in tibber.json den Versatz auf 0, und das
+     * "zweite, sich nicht ueberschneidende" Fenster ist byteweise das erste. */
+    /* Die Laenge wird GEKLEMMT wie in tb_fenster() selbst, und der Abstand
+     * zaehlt ab jetzt - beides steckt in tb_fenster_zweites(). */
+    $laenge = tb_fensterlaenge($cfg['fensterstunden']);
+    $fenster2 = tb_fenster_zweites($alle, $laenge, $fenster, $jetzt);
 
     /* Das guenstigste Fenster des FOLGETAGS - sobald Tibber die Preise
      * fuer morgen liefert. Damit laesst sich abends entscheiden, ob man
@@ -202,7 +250,15 @@ function tb_preise_holen()
         'liste_heute' => $heute,
         'liste_morgen' => $morgen,
     );
-    tb_json_schreiben($p['datadir'] . '/stand.json', $st);
+    /* Ohne diese Pruefung meldete die Funktion Erfolg und das Protokoll
+     * schrieb "Preise geholt: 24 Stunden heute" - waehrend stand.json den
+     * alten Stand trug. Ein Erfolg im Protokoll, den es nicht gab. */
+    if (!tb_json_schreiben($p['datadir'] . '/stand.json', $st)) {
+        $meldung = 'Der Zwischenspeicher ' . $p['datadir'] . '/stand.json liess sich '
+                 . 'nicht schreiben. Die Preise sind geholt, aber nicht abgelegt.';
+        tb_log_gebremst('stand_schreiben', $meldung);
+        return array(0, $meldung);
+    }
     tb_verlauf_schreiben($st);
     return array(1, count($heute) . ' Stunden heute, ' . count($morgen) . ' Stunden morgen.');
 }
@@ -213,12 +269,25 @@ function tb_verlauf_schreiben(array $st)
     $cfg = tb_config();
     $p = tb_paths();
     $ordner = $p['datadir'] . '/verlauf';
-    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) { return; }
+    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
+        /* Ohne diese Zeile blieben AVG_30T und RANK_30T fuer immer leer, und
+         * im Protokoll stand nichts. Der Selbsttest sagt dazu nur "0 Punkte" -
+         * auf einer frischen Anlage richtig, hier irrefuehrend. */
+        tb_log_gebremst('verlauf_ordner', 'Der Verlaufsordner ' . $ordner . ' liess '
+            . 'sich nicht anlegen - der Vergleich mit den letzten Wochen '
+            . '(AVG_30T, RANK_30T) bleibt deshalb leer.');
+        return;
+    }
     $datei = $ordner . '/' . date('Ym') . '.csv';
     if (is_file($datei) && (time() - filemtime($datei)) < 3300) { return; }
     if ($st['cur'] === null) { return; }
-    @file_put_contents($datei, time() . ';' . $st['cur'] . ';'
-        . ($st['heute']['avg'] === null ? '' : $st['heute']['avg']) . "\n", FILE_APPEND);
+    if (@file_put_contents($datei, time() . ';' . $st['cur'] . ';'
+        . ($st['heute']['avg'] === null ? '' : $st['heute']['avg']) . "\n",
+        FILE_APPEND) === false) {
+        tb_log_gebremst('verlauf_schreiben', 'Der Verlaufspunkt liess sich nicht nach '
+            . $datei . ' schreiben - AVG_30T und RANK_30T bleiben leer.');
+        return;
+    }
     $tage = max(1, min(3650, (int) $cfg['verlauf_tage']));
     foreach ((array) glob($ordner . '/*.csv') as $alt) {
         if (time() - filemtime($alt) > $tage * 86400) { @unlink($alt); }
@@ -228,6 +297,51 @@ function tb_verlauf_schreiben(array $st)
 /* ==================================================================
  * Verbrauch holen und auswerten
  * ================================================================== */
+
+/**
+ * Die Kostenkennzahlen eines Monats - als EIGENE Funktion, damit der
+ * Selbsttest sie messen kann statt sie zu beschreiben.
+ *
+ * Zwei Dinge, die bis 0.9.9 anders waren:
+ *
+ * 1. Der eigene Aufschlag gehoert dazu. tb_preisliste() rechnet ihn in jeden
+ *    angezeigten Preis ein, und die Niveaubeurteilung der Verbrauchsstunden
+ *    tut es auch. Nur die Kostenkennzahlen nahmen Tibbers ROHE Kosten und
+ *    verglichen sie mit dem Festpreis. Bei 3 ct Aufschlag und 300 kWh wies
+ *    das Plugin damit rund 9 Euro Ersparnis je Monat aus, die es nicht gab:
+ *    CUR zeigte 31 ct, DYN_MONAT rechnete mit 28.
+ *
+ * 2. BEIDE Zaehlreihen oder keine. Kosten und kWh wuchsen getrennt. Liefert
+ *    Tibber fuer einen Tag Kosten, aber noch keinen Verbrauch - das kommt bei
+ *    nachlaufender Messstellenuebermittlung vor -, teilte dyn = kostenM/kwhM
+ *    die Kosten aus MEHR Tagen durch den Verbrauch aus WENIGER. Gemessen:
+ *    10 kWh/3 EUR plus 0 kWh/3 EUR ergab 60 ct/kWh statt 30.
+ *
+ * Rueckgabe: array(kwh, kosten, tage, dyn, diff, euro). dyn/diff/euro sind
+ * NULL, solange kein Verbrauch vorliegt - lieber kein Wert als eine Zahl,
+ * die aussieht wie eine Messung.
+ */
+function tb_kosten_kennzahlen(array $tage, array $cfg, $monat)
+{
+    $kwh = 0.0; $kosten = 0.0; $n = 0;
+    foreach ($tage as $tag => $w) {
+        if (strpos((string) $tag, (string) $monat) !== 0) { continue; }
+        if (!is_array($w)) { continue; }
+        if (!isset($w['kwh'], $w['kosten'])
+            || $w['kwh'] === null || $w['kosten'] === null) { continue; }
+        $kwh += (float) $w['kwh'];
+        $kosten += (float) $w['kosten'];
+        $n++;
+    }
+    // Der lastprofil-gewichtete Durchschnittspreis: Kosten geteilt durch
+    // Verbrauch ist genauer als ein Mittel der Stundenpreise, weil er den
+    // tatsaechlichen Verbrauch gewichtet.
+    $dyn = ($kwh > 0.01)
+         ? round($kosten / $kwh * 100 + (float) $cfg['aufschlag'], 3) : null;
+    $diff = ($dyn === null) ? null : round($dyn - (float) $cfg['festpreis'], 3);
+    $euro = ($diff === null) ? null : round($diff * $kwh / 100, 2);
+    return array($kwh, $kosten, $n, $dyn, $diff, $euro);
+}
 
 function tb_verbrauch_holen()
 {
@@ -267,21 +381,8 @@ function tb_verbrauch_holen()
     ksort($tage);
 
     $gestern = date('Y-m-d', strtotime('yesterday'));
-    $monat = date('Y-m');
-    $kwhM = 0.0; $kostenM = 0.0; $nM = 0;
-    foreach ($tage as $tag => $w) {
-        if (strpos($tag, $monat) !== 0) { continue; }
-        if ($w['kwh'] !== null)   { $kwhM += $w['kwh']; $nM++; }
-        if ($w['kosten'] !== null) { $kostenM += $w['kosten']; }
-    }
-
-    // Der lastprofil-gewichtete Durchschnittspreis des Monats ergibt sich aus
-    // Kosten geteilt durch Verbrauch - das ist genauer als ein Mittelwert der
-    // Stundenpreise, weil er den tatsaechlichen Verbrauch gewichtet.
-    $dyn = ($kwhM > 0.01) ? round($kostenM / $kwhM * 100, 3) : null;
-    $fix = (float) $cfg['festpreis'];
-    $diff = ($dyn === null) ? null : round($dyn - $fix, 3);
-    $euro = ($diff === null) ? null : round($diff * $kwhM / 100, 2);
+    list($kwhM, $kostenM, $nM, $dyn, $diff, $euro)
+        = tb_kosten_kennzahlen($tage, $cfg, date('Y-m'));
 
     $vb = array(
         'ts'             => time(),
@@ -312,7 +413,11 @@ function tb_verbrauch_holen()
     if (!isset($sd['_fehler'])) {
         $sh = tb_erstes_home($sd);
         $sk = isset($sh['consumption']['nodes']) ? $sh['consumption']['nodes'] : array();
-        $gestern_tag = date('Y-m-d', strtotime('yesterday'));
+        /* Derselbe Tag wie oben, nicht ein zweites Mal berechnet. Zwischen
+         * beiden Stellen liegt ein Netzabruf mit bis zu 60 s Zeitschranke -
+         * laeuft der Cron ueber Mitternacht, bezoegen sich Tageswerte und
+         * Stundenwerte in DERSELBEN verbrauch.json auf verschiedene Tage. */
+        $gestern_tag = $gestern;
         $kwh_g = 0.0; $kwh_guenstig = 0.0; $kosten_g = 0.0; $stunden = 0;
         foreach ((array) $sk as $n) {
             if (!isset($n['from'], $n['consumption']) || $n['consumption'] === null) { continue; }
@@ -336,13 +441,31 @@ function tb_verbrauch_holen()
         if ($stunden >= 20 && $kwh_g > 0.01) {
             $vb['guenstiganteil'] = (int) round($kwh_guenstig * 100.0 / $kwh_g);
             $fest = $kwh_g * (float) $cfg['festpreis'] / 100.0;
-            $vb['ersparnis_gestern'] = round($fest - $kosten_g, 2);
+            /* Auch hier der Aufschlag - sonst vergleicht die Zeile einen
+             * Festpreis mit Tibbers Rohkosten. */
+            $dyn_g = $kosten_g + $kwh_g * (float) $cfg['aufschlag'] / 100.0;
+            $vb['ersparnis_gestern'] = round($fest - $dyn_g, 2);
         }
         $vb['stunden_gestern'] = $stunden;
+    } else {
+        /* Ohne diesen Zweig scheiterte der stuendliche Zweitabruf STUMM:
+         * keine Zeile im Protokoll, kein Merkmal. GUENSTIGANTEIL und
+         * ERSPARNIS_GESTERN blieben leer, und in Loxone stand der letzte
+         * Wert - ohne dass irgendwo stand, warum. */
+        tb_log_gebremst('verbrauch_std', 'Der stuendliche Verbrauchsabruf misslang: '
+            . $sd['_fehler'] . ' Guenstiger Anteil und Ersparnis von gestern bleiben '
+            . 'deshalb leer.');
     }
 
-    tb_json_schreiben($p['datadir'] . '/verbrauch.json', $vb);
-    return array(1, count($tage) . ' Tage Historie, ' . $nM . ' davon im laufenden Monat.');
+    if (!tb_json_schreiben($p['datadir'] . '/verbrauch.json', $vb)) {
+        $meldung = 'Der Zwischenspeicher ' . $p['datadir'] . '/verbrauch.json liess '
+                 . 'sich nicht schreiben.';
+        tb_log_gebremst('verbrauch_schreiben', $meldung);
+        return array(0, $meldung);
+    }
+    return array(1, count($tage) . ' Tage Historie, ' . $nM . ' davon im laufenden Monat, '
+                 . (isset($vb['stunden_gestern']) ? (int) $vb['stunden_gestern'] : 0)
+                 . ' Stundenwerte fuer gestern.');
 }
 
 /* ==================================================================
@@ -376,27 +499,51 @@ function tb_monatsbericht()
     if ($n === 0) {
         return array(0, 'Fuer ' . $vormonat . ' liegen keine Tageswerte vor.');
     }
-    $dyn = $kwh > 0.01 ? round($kosten / $kwh * 100, 3) : null;
+    $dyn = $kwh > 0.01 ? round($kosten / $kwh * 100 + (float) $cfg['aufschlag'], 3) : null;
+    if ($dyn === null) {
+        /* $n > 0 heisst nur: es gab Tageszeilen. Stehen darin lauter Nullen,
+         * ist $dyn null - und bis 0.9.9 setzte sprintf() dafuer eine 0 ein
+         * und waehlte den Zweig 'draufgezahlt'. Herausgekommen ist ein Satz,
+         * der eine Messung behauptet, die es nicht gibt: "0.0 kWh an 31
+         * Tagen ... draufgezahlt 0.00 Euro." Lieber kein Bericht als einer,
+         * der richtig aussieht. */
+        return array(0, 'Fuer ' . $vormonat . ' steht kein Verbrauch in der Historie - '
+                      . 'es wird kein Bericht erzeugt.');
+    }
     $fix = (float) $cfg['festpreis'];
     $grund = (float) $cfg['grundpreis'];
-    $diff = $dyn === null ? null : round($dyn - $fix, 3);
-    $euro = $diff === null ? null : round($diff * $kwh / 100, 2);
+    $diff = round($dyn - $fix, 3);
+    $euro = round($diff * $kwh / 100, 2);
 
     $text = sprintf(
         'Monatsbericht %s: %.1f kWh an %d Tagen, %.2f Euro Arbeitspreis. '
         . 'Dynamisch %.3f ct/kWh gegen fest %.3f ct/kWh - %s %.2f Euro. '
         . 'Grundpreis %.2f Euro ist dabei nicht eingerechnet.',
         $vormonat, $kwh, $n, $kosten,
-        $dyn === null ? 0 : $dyn, $fix,
-        ($euro !== null && $euro < 0) ? 'gespart' : 'draufgezahlt',
-        abs($euro === null ? 0 : $euro), $grund);
+        $dyn, $fix,
+        ($euro < 0) ? 'gespart' : 'draufgezahlt',
+        abs($euro), $grund);
 
-    tb_json_schreiben($p['datadir'] . '/bericht.json', array(
+    if (!tb_json_schreiben($p['datadir'] . '/bericht.json', array(
         'ts' => time(), 'monat' => $vormonat, 'kwh' => round($kwh, 2),
         'kosten' => round($kosten, 2), 'tage' => $n, 'dyn' => $dyn,
         'fix' => $fix, 'diff' => $diff, 'euro' => $euro, 'text' => $text,
-    ));
-    @file_put_contents($marker, (string) time());
+    ))) {
+        tb_log_gebremst('bericht_datei', 'Der Monatsbericht liess sich nicht nach '
+            . $p['datadir'] . '/bericht.json schreiben.');
+    }
+    /* Der Erledigt-Marker MUSS stehen, sonst wiederholt sich der Bericht
+     * jede Minute. Bis 0.9.9 wurde sein Rueckgabewert verworfen und die
+     * Protokollzeile lief ungebremst: am Ersten des Monats von 8 bis 24 Uhr
+     * rund 960 gleiche Zeilen - genug, um die Kappung ausloesen und das
+     * Protokoll des Tages wegwerfen zu lassen. */
+    if (@file_put_contents($marker, (string) time()) === false) {
+        tb_log_gebremst('bericht_marker', 'Der Erledigt-Marker ' . $marker . ' liess '
+            . 'sich nicht schreiben - der Monatsbericht wiederholt sich deshalb, bis '
+            . 'das Verzeichnis beschreibbar ist.');
+        tb_log_gebremst('bericht_text', $text);
+        return array(1, $text);
+    }
     tb_log($text);
     return array(1, $text);
 }
@@ -438,8 +585,9 @@ function tb_veroeffentlichen()
         // MQTT gibt es kein Alter (beim Senden ist es immer null oder es
         // tickt jede Sekunde weiter), und der Zaehler ist ein Lebenszeichen.
         // Alle stehen unten unter status/ - als Zeitstempel.
-        if ($k === 'ALTER' || $k === 'PULSE_ALTER' || $k === 'ZAEHLER'
-            || $k === 'OK') { continue; }
+        // Die Liste steht in tb_mqtt_ausgeschlossen(), damit sie sich nicht
+        // von der Themenliste im Reiter MQTT wegbewegen kann.
+        if (in_array($k, tb_mqtt_ausgeschlossen(), true)) { continue; }
         $paare[strtolower($k)] = $v;
     }
     /* Die Stundenpreise von heute einzeln, damit Loxone einen Tagesverlauf
@@ -507,12 +655,6 @@ function tb_selbsttest()
             $fehler++;
             $zeilen[] = '[FEHL] PHP-Erweiterung ' . $erw . ' fehlt';
         }
-    }
-    if (extension_loaded('sockets')) {
-        $zeilen[] = '[OK]   PHP-Erweiterung sockets geladen (fuer MQTT)';
-    } else {
-        $zeilen[] = '[INFO] PHP-Erweiterung sockets fehlt - die Veroeffentlichung ueber '
-                  . 'MQTT geht dann nicht. Abhilfe: sudo apt install php-sockets';
     }
     if (extension_loaded('openssl')) {
         $zeilen[] = '[OK]   PHP-Erweiterung openssl geladen (fuer die Pulse-Verbindung)';
@@ -715,13 +857,81 @@ function tb_selbsttest()
      * drei Punkten saehe aus wie ein Monatsdurchschnitt. Geprueft wird der
      * Rueckgabewert der Kennzahlenfunktion an einer leeren Reihe - auf
      * einer frischen Anlage ist genau das der Fall. */
+    /* Die Mindestzahl kommt aus der Bibliothek, nicht aus dieser Datei.
+     * Bis 0.9.9 stand die 48 hier zweimal - ein Selbsttest, der seine
+     * Vergleichszahl selbst mitbringt, bleibt gruen, wenn sich die geprueft
+     * Funktion aendert, und die Aussage ist dann falsch. */
+    $mind = tb_verlauf_mindestpunkte();
     list($pavg, $prang, $pn) = tb_verlauf_kennzahlen(20.0, 30);
-    $ok10 = ($pn >= 48) ? ($pavg !== null) : ($pavg === null && $prang === null);
+    $ok10 = ($pn >= $mind) ? ($pavg !== null) : ($pavg === null && $prang === null);
     $zeilen[] = ($ok10 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
               . 'Verlaufskennzahlen: ' . $pn . ' Punkte, Durchschnitt '
               . ($pavg === null ? 'nicht gebildet' : $pavg . ' ct')
-              . ' (unter 48 Punkten wird keiner gebildet)';
+              . ' (unter ' . $mind . ' Punkten wird keiner gebildet)';
     if (!$ok10) { $fehler++; }
+
+    /* --- Der eigene Aufschlag steckt in den Kostenkennzahlen ---
+     *
+     * Bis 0.9.9 nicht: CUR trug ihn, DYN_MONAT nicht. Geprueft an einer
+     * Historie mit bekanntem Ergebnis - 300 kWh fuer 84 Euro sind 28 ct/kWh,
+     * mit 3 ct Aufschlag 31. Der Vergleich mit dem Festpreis 34 ergibt
+     * dann -3 ct und -9 Euro, nicht -6 ct und -18 Euro. */
+    $ktage = array('2026-08-10' => array('kwh' => 150.0, 'kosten' => 42.0),
+                   '2026-08-11' => array('kwh' => 150.0, 'kosten' => 42.0));
+    $kcfg = array_merge(tb_vorgaben(), array('aufschlag' => 3.0, 'festpreis' => 34.0));
+    list($kkwh, $kkos, $kn, $kdyn, $kdiff, $keuro)
+        = tb_kosten_kennzahlen($ktage, $kcfg, '2026-08');
+    $ok11 = (abs($kdyn - 31.0) < 0.001) && (abs($kdiff + 3.0) < 0.001)
+            && (abs($keuro + 9.0) < 0.01);
+    $zeilen[] = ($ok11 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
+              . 'Aufschlag in den Kostenkennzahlen: 300 kWh fuer 84 Euro plus 3 ct '
+              . 'ergibt ' . var_export($kdyn, true) . ' ct/kWh, Unterschied '
+              . var_export($kdiff, true) . ' ct und ' . var_export($keuro, true)
+              . ' Euro (erwartet 31, -3 und -9)';
+    if (!$ok11) { $fehler++; }
+
+    /* --- Ein Tag mit Kosten, aber ohne Verbrauch verzerrt nichts ---
+     *
+     * Bis 0.9.9 wuchsen beide Zaehlreihen getrennt: 10 kWh/3 EUR plus
+     * 0 kWh/3 EUR ergab 60 ct/kWh statt 30. */
+    $ktage2 = array('2026-08-10' => array('kwh' => 10.0,  'kosten' => 3.0),
+                    '2026-08-11' => array('kwh' => null,  'kosten' => 3.0));
+    $kcfg2 = array_merge(tb_vorgaben(), array('aufschlag' => 0.0, 'festpreis' => 34.0));
+    list($k2kwh, $k2kos, $k2n, $k2dyn) = tb_kosten_kennzahlen($ktage2, $kcfg2, '2026-08');
+    $ok12 = (abs($k2dyn - 30.0) < 0.001) && ($k2n === 1) && (abs($k2kos - 3.0) < 0.001);
+    $zeilen[] = ($ok12 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
+              . 'Tag mit Kosten ohne Verbrauch: ' . $k2n . ' Tag gezaehlt, '
+              . var_export($k2kos, true) . ' Euro, ' . var_export($k2dyn, true)
+              . ' ct/kWh (erwartet 1, 3 und 30)';
+    if (!$ok12) { $fehler++; }
+
+    /* --- FENSTER2_IN zaehlt ab JETZT, nicht ab dem Ende des ersten ---
+     *
+     * Bis 0.9.9 rechnete tb_fenster() den Abstand gegen seinen eigenen
+     * Startpunkt - hier also gegen das Ende des ersten Fensters. Gemessen:
+     * um 11:01 stand dort 0, waehrend das zweite Fenster wirklich in 17
+     * Stunden begann. Eine Loxone-Regel "laden, wenn FENSTER2_IN = 0" loeste
+     * damit mittags aus. Geprueft wird an demselben Pruefstueck wie oben. */
+    /* Die Erwartung ist eine FESTE Zahl aus dem Pruefstueck, nicht dieselbe
+     * Formel noch einmal. Der erste Anlauf dieses Satzes hat den Abstand mit
+     * derselben Rechnung nachgebaut, die er pruefen sollte - er waere gruen
+     * geblieben, wenn man die Korrektur herausnimmt. Dieselbe Falle steht in
+     * dieser Linie schon einmal, bei tb_suchtext_pruefen().
+     *
+     * Der Pruefling: 24 Stunden, 20 ct, nachts 10, abends 40. Um 11:01 Uhr
+     * beginnt das erste 3-Stunden-Fenster um 11 Uhr (in 0 h), das zweite
+     * fruehestens um 14 Uhr - also in 3 Stunden. Vor der Korrektur stand
+     * dort 0, weil gegen das Ende des ersten gerechnet wurde. */
+    $jetzt2 = $t0 + 11 * 3600 + 60;              // 11:01 Uhr
+    $g1 = tb_fenster($liste, 3, $jetzt2);
+    $g2 = tb_fenster_zweites($liste, 3, $g1, $jetzt2);
+    $ok13 = ($g1['h'] === 11) && ($g2['h'] === 14) && ($g2['in'] === 3);
+    $zeilen[] = ($ok13 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
+              . 'FENSTER2_IN zaehlt ab jetzt: um 11:01 Uhr beginnt das erste Fenster um '
+              . var_export($g1['h'], true) . ' Uhr, das zweite um '
+              . var_export($g2['h'], true) . ' Uhr in ' . var_export($g2['in'], true)
+              . ' h (erwartet 11, 14 und 3)';
+    if (!$ok13) { $fehler++; }
 
     // Die Loxone-Vorlage muss wohlgeformt sein.
     list($vname, $vinhalt) = tb_vorlage();
@@ -772,6 +982,10 @@ function tb_selbsttest()
         $kern++;
         if (strpos($zl, '[FEHL]') !== false) { $kern_fehl++; }
     }
+    /* $fehler zaehlt beides mit; gemeldet werden die Zahlen getrennt, damit
+     * eine Beanstandung zu DIESER Anlage nicht wie ein Fehler des Plugins
+     * aussieht. Bis 0.9.9 wurde $fehler an 20 Stellen erhoeht und nirgends
+     * gelesen - ein Zaehler, den niemand liest, ist eine falsche Faehrte. */
     $anlage = 0;
     foreach ($zeilen as $zl) {
         if (strpos($zl, '[FEHL]') === 0) { $anlage++; }
@@ -779,6 +993,8 @@ function tb_selbsttest()
     $zeilen[] = '';
     $zeilen[] = sprintf('Rechenkern: %d Faelle geprueft, %d Fehlschlaege',
                         $kern, $kern_fehl);
+    $zeilen[] = sprintf('Gezaehlt insgesamt: %d Beanstandung(en) in dieser Ausgabe.',
+                        $fehler);
     if ($anlage > 0) {
         $zeilen[] = sprintf('Dazu %d Beanstandung(en) zu DIESER Anlage - die stehen '
             . 'oben und sind kein Urteil ueber das Plugin.', $anlage);
@@ -815,7 +1031,10 @@ $tb_argv = isset($argv) ? $argv : array();
  * landete derselbe Tippfehler in der Dienstschleife. */
 $tb_bekannt = array('--selbsttest', '--preise', '--verbrauch');
 foreach ($tb_argv as $tb_i => $tb_a) {
-    if ($tb_i === 0 || strncmp((string) $tb_a, '--', 2) !== 0) { continue; }
+    if ($tb_i === 0) { continue; }
+    /* Bis 0.9.9 wurde nur geprueft, was mit -- beginnt. 'php tb_cron.php
+     * preise' - ohne Striche - lief damit als stiller Normallauf durch,
+     * genau das, was der Kommentar darueber verhindern will. */
     if (!in_array($tb_a, $tb_bekannt, true)) {
         fwrite(STDERR, 'Unbekannter Schalter: ' . $tb_a . "\n"
             . 'Bekannt sind: ' . implode(', ', $tb_bekannt) . "\n");
@@ -823,7 +1042,23 @@ foreach ($tb_argv as $tb_i => $tb_a) {
     }
 }
 
+/* Der Selbsttest rechnet nur - er braucht die Sperre nicht und darf deshalb
+ * auch nicht an ihr scheitern. Er steht VOR dem Ziehen der Sperre. */
 if (in_array('--selbsttest', $tb_argv, true)) { exit(tb_selbsttest()); }
+
+$tb_sperre = tb_sperre_ziehen();
+if ($tb_sperre === null) {
+    /* Ein anderer Lauf ist noch dran. Der Minutenlauf geht kommentarlos -
+     * der naechste Takt kommt gleich. Ein HANDaufruf bekommt eine Antwort
+     * und einen eigenen Rueckgabewert: sonst haelt die Oberflaeche das
+     * Nichtstun fuer einen gelungenen Abruf. */
+    if (count($tb_argv) > 1) {
+        fwrite(STDERR, "Ein anderer Lauf haelt gerade die Sperre - es wurde nichts "
+            . "geholt. Bitte in einer Minute noch einmal.\n");
+        exit(3);
+    }
+    exit(0);
+}
 
 $tb_p = tb_paths();
 foreach (array($tb_p['datadir'], $tb_p['datadir'] . '/verlauf', $tb_p['logdir']) as $tb_d) {
@@ -841,18 +1076,43 @@ function tb_faellig($name, $minuten)
 {
     $f = tb_paths()['datadir'] . '/.letzter_' . preg_replace('/[^a-z]/', '', $name);
     $letzte = is_file($f) ? (int) @file_get_contents($f) : 0;
-    if (time() - $letzte < max(1, (int) $minuten) * 60) { return false; }
+    $vergangen = time() - $letzte;
+    if ($vergangen < 0) {
+        /* Im Marker steht eine Zukunft. Das passiert nach einem Neustart
+         * ohne Echtzeituhr, wenn die Uhr erst spaeter ueber das Netz
+         * gestellt wird: die Differenz ist dann negativ und damit IMMER
+         * kleiner als der Takt - der Abruf waere bis zur Markerzeit
+         * blockiert, ohne dass irgendwo etwas stuende. */
+        tb_log_gebremst('uhrsprung', 'Der Marker ' . basename($f) . ' liegt in der '
+            . 'Zukunft (' . date('d.m.Y H:i', $letzte) . '). Die Uhr des LoxBerry ist '
+            . 'vermutlich zurueckgestellt worden; der Abruf wird trotzdem faellig.');
+        $vergangen = PHP_INT_MAX;
+    }
+    if ($vergangen < max(1, (int) $minuten) * 60) { return false; }
     @file_put_contents($f, (string) time());
     return true;
+}
+
+/** Den Takt-Marker fortschreiben, ohne zu fragen, ob er faellig war. */
+function tb_takt_setzen($name)
+{
+    $f = tb_paths()['datadir'] . '/.letzter_' . preg_replace('/[^a-z]/', '', $name);
+    @file_put_contents($f, (string) time());
 }
 
 if ($tb_preise || ($tb_auto && tb_faellig('preise', (int) $tb_cfg['preistakt']))) {
     list($ok, $meldung) = tb_preise_holen();
     if ($ok) { tb_log('Preise geholt: ' . $meldung); }
+    /* Ein Handabruf schreibt den Takt-Marker mit fort. Sonst kann der
+     * Minutenlauf unmittelbar danach ein zweites Mal abrufen - und Tibber
+     * bremst haeufige Abrufe. Bei $tb_preise wird tb_faellig() wegen des
+     * Kurzschlusses gar nicht gerufen, der Marker blieb also stehen. */
+    if ($tb_preise && $ok) { tb_takt_setzen('preise'); }
 }
 if ($tb_verbrauch || ($tb_auto && tb_faellig('verbrauch', (int) $tb_cfg['verbrauchstakt']))) {
     list($ok, $meldung) = tb_verbrauch_holen();
     if ($ok === 1) { tb_log('Verbrauch geholt: ' . $meldung); }
+    if ($tb_verbrauch && $ok === 1) { tb_takt_setzen('verbrauch'); }
 }
 if ($tb_auto) {
     list($ok, $meldung) = tb_monatsbericht();
@@ -874,6 +1134,10 @@ tb_zaehler_weiter();
  * sondern Rauschen, und wer sie abstellt, stellt auch die echte ab. */
 $tb_st_jetzt = tb_stand();
 $tb_alter_jetzt = tb_alter();
+/* Die Schranke kommt aus tb_altersschranke() - dieselbe Funktion, die auch
+ * die Statuskachel der Oberflaeche einfaerbt. Zwei Stellen mit derselben
+ * Zahl waeren zwei Stellen, die auseinanderlaufen koennen. */
+$tb_altersschranke = tb_altersschranke($tb_cfg);
 if (tb_token_lesen() === '') {
     tb_notify('token', 'fehler', 'Spotpreis Tibber: es ist kein Zugangstoken '
         . 'hinterlegt - es werden keine Preise geholt.');
@@ -881,9 +1145,10 @@ if (tb_token_lesen() === '') {
           && $tb_st_jetzt['fehler'] !== '') {
     tb_notify('abruf', 'fehler', 'Spotpreis Tibber: der Preisabruf misslingt. '
         . $tb_st_jetzt['fehler']);
-} elseif ($tb_alter_jetzt >= 0 && $tb_alter_jetzt > 7200) {
+} elseif ($tb_alter_jetzt >= 0 && $tb_alter_jetzt > $tb_altersschranke) {
     tb_notify('abruf', 'hinweis', 'Spotpreis Tibber: der letzte gelungene '
-        . 'Preisabruf ist ' . (int) round($tb_alter_jetzt / 60) . ' Minuten her.');
+        . 'Preisabruf ist ' . (int) round($tb_alter_jetzt / 60) . ' Minuten her '
+        . '(gemeldet wird ab ' . (int) round($tb_altersschranke / 60) . ' Minuten).');
 } else {
     tb_notify('abruf', 'ok', 'Der Preisabruf laeuft wieder.');
     tb_notify('token', 'ok', 'Es ist ein Zugangstoken hinterlegt.');
