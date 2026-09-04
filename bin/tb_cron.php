@@ -1122,6 +1122,46 @@ if ($tb_auto) {
     if ($ok === 1) { tb_notify('bericht', 'hinweis', $meldung); }
 }
 
+/* ---------------- Fahrplaner: fremde Auskuenfte und Gedaechtnis ----------
+ *
+ * Zwei Dinge, die nach aussen wirken und deshalb NICHT in einen Lesepfad
+ * gehoeren:
+ *
+ *   1. tb_umwelt(true) holt PV-Prognose und Speicherstand. Die Lesefunktion
+ *      - Oberflaeche und Loxone-Endpunkt - liest nur den Zwischenspeicher.
+ *      Sonst haette ein Miniserver, der alle fuenf Minuten fragt, bei kaltem
+ *      Speicher auf zwei fremde Dienste gewartet, und der unangemeldete
+ *      Endpunkt haette einen Netzabruf ausgeloest. Der Abruf bremst sich
+ *      selbst auf 15 Minuten; hier steht deshalb KEINE zweite Taktbremse
+ *      daneben, die von der ersten wegdriften koennte.
+ *
+ *   2. tb_laufend_fortschreiben() merkt sich, bis wann ein begonnener Block
+ *      laeuft. Ein Gedaechtnis, das ein Lesepfad fortschreibt, haenge an der
+ *      Zahl der Abrufe - und die kennt niemand.
+ *
+ * Beides nur, wenn ueberhaupt eine Regel eingeschaltet ist. Ab Werk ist es
+ * keine, und dann tut dieses Plugin genau so wenig wie in 0.9.10: kein
+ * Netzabruf, keine Datei, keine Zeile im Protokoll.
+ *
+ * Die Konfiguration wird hier neu gelesen: oben kann tb_preise_holen()
+ * gelaufen sein, und $tb_cfg stammt vom Anfang des Laufs. */
+if ($tb_auto) {
+    $tb_fpcfg = tb_config();
+    $tb_fpan = 0;
+    foreach ((array) $tb_fpcfg['regeln'] as $tb_fpr) {
+        if (!empty($tb_fpr['aktiv'])) { $tb_fpan++; }
+    }
+    if ($tb_fpan > 0) {
+        tb_umwelt(true);
+        $tb_fpplan = tb_fahrplan();
+        /* Der Zeitpunkt kommt aus der gemessenen Scheibenlaenge, nicht aus
+         * einer festen 3600 - liefert das Konto einmal Viertelstunden,
+         * rechnet die Hysterese ohne Zutun mit. */
+        $tb_fpjetzt = time() - (time() % (int) $tb_fpplan['slotlen']);
+        tb_laufend_fortschreiben($tb_fpplan['regeln'], $tb_fpjetzt);
+    }
+}
+
 /* Das Lebenszeichen: der Zaehler wird bei JEDEM Durchgang weitergestellt,
  * auch wenn kein Abruf faellig war. Nur so laesst sich "der Cron laeuft
  * noch" von "der Cron ist tot" unterscheiden - eine Prozessnummer gibt es

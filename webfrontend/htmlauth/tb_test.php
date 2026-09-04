@@ -230,6 +230,24 @@ function tb_pruefungen($voll = false)
     // nicht erst in die Pflichtpruefung: der Anwender merkt eine kaputte
     // Vorlage sonst erst in Loxone Config, und dort sucht er den Fehler bei sich.
     list($vname, $vinhalt) = tb_vorlage();
+    /* Die Wache vor simplexml. Nichts voraussetzen, was nicht in dpkg steht -
+     * und das @ hilft hier nicht: eine fehlende Funktion ist ein Fatal error,
+     * kein Fehler, den ein Fehlerbehandler abfaengt.
+     *
+     * Gemessen am 04.09.2026 an dieser Datei, PHP 8.4.21 ohne die Erweiterung:
+     *
+     *     Fatal error: Uncaught Error: Call to undefined function
+     *     simplexml_load_string() in tb_test.php:234
+     *
+     * Die Seite starb an dieser Zeile, und mit ihr alles darunter - der
+     * Reiter Logdateien wurde nie ausgegeben. In derselben Datei sind
+     * curl_init und mb_strlen bewacht; diese Zeile war es nicht.
+     *
+     * "Nicht pruefbar" ist ein eigener Ausgang und kein Kreuz: dass die
+     * Erweiterung fehlt, sagt nichts ueber die Vorlage. */
+    if (!function_exists('simplexml_load_string')) {
+        $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_XML'), tb_t('TEST.A_XML_KEIN_PARSER'));
+    } else {
     $vorher = libxml_use_internal_errors(true);
     $xml = simplexml_load_string($vinhalt);
     libxml_clear_errors();
@@ -237,6 +255,7 @@ function tb_pruefungen($voll = false)
     $zeilen[] = tb_pruefzeile($xml !== false ? 1 : 0, tb_t('TEST.F_XML'),
         $xml !== false ? sprintf(tb_t('TEST.A_XML_OK'), tb_e($vname), count($xml->VirtualInHttpCmd))
                        : tb_t('TEST.A_XML_KAPUTT'));
+    }
 
     /* ==============================================================
      * Die Zeilen, die das PLUGIN GEGEN SICH SELBST messen
@@ -445,6 +464,151 @@ function tb_pruefungen($voll = false)
                         tb_e(substr((string) $e['rumpf'], 0, 80))) . $zusatz);
         }
     }
+
+    /* ==================================================================
+     * Der Fahrplaner (ab 0.9.11)
+     *
+     * Fuenf Fragen. Die erste misst die Rechnung, die zweite die
+     * Uebereinstimmung mit den Schwesterlinien, die dritte den
+     * Auslieferungszustand, und die letzten beiden sind die Zeilen, die
+     * genau die zwei Fehler kuenftig von selbst finden, die beim Bau
+     * dieser Fassung aufgetreten sind.
+     * ================================================================== */
+
+    /* --- 1. Rechnet der Fahrplaner richtig? ---
+     * Braucht weder Netz noch Preise. Die Zeitzone steht dabei, weil sieben
+     * der Faelle die Zeitumstellung pruefen. */
+    list($pn, $pf, $ptext) = plan_selbsttest();
+    $pantwort = sprintf(tb_t('TEST.PLANER_SELBSTTEST'), $pn, $pf)
+              . ' ' . sprintf(tb_t('TEST.PLANER_ZEITZONE'),
+                              tb_e(date_default_timezone_get()));
+    /* Steht das Geraet auf einer Zone ohne Sommerzeit, stimmt die Rechnung
+     * trotzdem - die FRISTEN des Anwenders verschieben sich aber wirklich.
+     * Das ist eine Einstellung des Betriebssystems und gehoert gesagt, ohne
+     * dass die Zeile deshalb rot wird. */
+    $psommer = (int) date('I', mktime(12, 0, 0, 7, 1, 2026))
+             !== (int) date('I', mktime(12, 0, 0, 1, 1, 2026));
+    if (!$psommer) { $pantwort .= ' ' . tb_t('TEST.PLANER_ZEITZONE_ABWEICHUNG'); }
+    $zeilen[] = tb_pruefzeile($pf === 0 ? 1 : 0, tb_t('TEST.F_PLANER_RECHNET'),
+                              $pantwort);
+
+    /* --- 2. Liegt in den Schwesterlinien dieselbe Datei? ---
+     * Drei Ausgaenge. "Nicht installiert" ist einer davon und kein Haken:
+     * ueber eine leere Menge wird nicht geurteilt. */
+    $psum = tb_planer_pruefsummen();
+    $pteile = array();
+    $pverschieden = 0;
+    $pvorhanden = 0;
+    foreach ($psum as $pe) {
+        if ($pe['lage'] === 'eigen') { continue; }
+        if ($pe['lage'] === 'fehlt') {
+            $pteile[] = $pe['ordner'] . ': ' . tb_t('TEST.PLANER_L_FEHLT');
+            continue;
+        }
+        $pvorhanden++;
+        if ($pe['lage'] === 'verschieden') {
+            $pverschieden++;
+            $pteile[] = $pe['ordner'] . ': ' . tb_t('TEST.PLANER_L_VERSCHIEDEN');
+        } else {
+            $pteile[] = $pe['ordner'] . ': ' . tb_t('TEST.PLANER_L_GLEICH');
+        }
+    }
+    if ($pvorhanden === 0) {
+        $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_PLANER_GLEICH'),
+                                  tb_t('TEST.A_PLANER_GLEICH_KEINE'));
+    } else {
+        $zeilen[] = tb_pruefzeile($pverschieden === 0 ? 1 : 0,
+            tb_t('TEST.F_PLANER_GLEICH'),
+            sprintf(tb_t('TEST.A_PLANER_GLEICH'), tb_e(implode(', ', $pteile))));
+    }
+
+    /* --- 3. Wie viele Schaltregeln sind eingeschaltet? ---
+     * Keine ist der Auslieferungszustand und kein Fehler - also ein Strich
+     * und kein Kreuz. */
+    $pan = 0;
+    foreach ((array) $cfg['regeln'] as $pr) {
+        if (!empty($pr['aktiv'])) { $pan++; }
+    }
+    $zeilen[] = $pan === 0
+        ? tb_pruefzeile(-1, tb_t('TEST.F_PLANER_REGELN'), tb_t('TEST.PLANER_KEINE_REGEL'))
+        : tb_pruefzeile(1, tb_t('TEST.F_PLANER_REGELN'),
+                        sprintf(tb_t('TEST.PLANER_REGELN'), $pan, TB_REGELN));
+
+    /* --- 4. Bleibt jeder Wert im zugesagten Bereich? ---
+     *
+     * Der Anlass ist gemessen: R<n>VERD stand am 04.09.2026 mit MaxVal 1 in
+     * der Feldtabelle, waehrend der Wert Zeitscheiben ZAEHLT - der Pruefstand
+     * fand 3. Dieselbe Klasse wie ALTER bis 0.9.9. Diese Zeile findet den
+     * naechsten Fall von selbst.
+     *
+     * Liegen keine Preise vor, ist nichts gebildet worden - dann hatte die
+     * Frage keinen Gegenstand, und das ist ein Strich. */
+    $pfelder = tb_status_felder();
+    $pwerte = tb_werte();
+    $paussen = array();
+    $pgemessen = 0;
+    foreach ($pfelder as $pk => $pinfo) {
+        if (!array_key_exists($pk, $pwerte)) { continue; }
+        $pv = $pwerte[$pk];
+        if ($pv === null || !is_numeric($pv)) { continue; }
+        $pgemessen++;
+        if ((float) $pv < (float) $pinfo['min'] || (float) $pv > (float) $pinfo['max']) {
+            $paussen[] = $pk . '=' . $pv . ' (' . $pinfo['min'] . '..' . $pinfo['max'] . ')';
+        }
+    }
+    if ($pgemessen === 0) {
+        $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_PLANER_BEREICH'),
+                                  tb_t('TEST.A_PLANER_KEIN_PREIS'));
+    } else {
+        $zeilen[] = tb_pruefzeile($paussen ? 0 : 1, tb_t('TEST.F_PLANER_BEREICH'),
+            $paussen ? sprintf(tb_t('TEST.PLANER_BEREICH_FEHL'), tb_e(implode(', ', $paussen)))
+                     : sprintf(tb_t('TEST.PLANER_BEREICH'), $pgemessen));
+    }
+
+    /* --- 5. Sagen Formularpruefung und Kappung dasselbe? ---
+     *
+     * Eine Grenze steht genau einmal - so lautet die Regel. Tatsaechlich
+     * steht sie zweimal: als min/max in tb_feldregeln() fuer das Formular und
+     * die Sicherung, und als max()/min() in tb_fahrplan_normieren() fuer das,
+     * was schon in der Datei steht. Das ist Absicht (abweisen gegen kappen),
+     * aber die ZAHLEN muessen dieselben sein.
+     *
+     * Gemessen wird das, statt es zu behaupten: jeder Wert wird einmal ueber
+     * und einmal unter seiner Grenze durch die Kappung geschickt; kommt er
+     * nicht innerhalb der Formulargrenzen wieder heraus, laufen die beiden
+     * Stellen auseinander. */
+    $pgrenzen = array();
+    $pzahl = 0;
+    foreach (tb_feldregeln() as $pk => $pregel) {
+        if (!isset($pregel['min']) || !isset($pregel['max'])) { continue; }
+        if (!array_key_exists($pk, plan_global_vorgabe())) { continue; }
+        $pzahl++;
+        /* Die STRENGE Frage, und sie ist der ganze Punkt: ein Wert ueber der
+         * Grenze muss GENAU auf der Grenze landen, nicht bloss irgendwo
+         * innerhalb.
+         *
+         * Die lockere Fassung stand hier bis zur Eichung am 04.09.2026 und
+         * blieb beim Rueckbau gruen: Formulargrenze auf 300 gesetzt, Kappung
+         * weiter bei 200, aus 301 wurde 200 - und 200 liegt in 0..300. Die
+         * Zeile fand damit nur den einen der beiden Faelle. Der andere
+         * schadet genauso: das Formular nimmt 250 an, die Kappung macht
+         * stillschweigend 200 daraus, und in der Datei steht ein Wert, den
+         * niemand eingestellt hat. */
+        foreach (array(array((float) $pregel['min'] - 1.0, (float) $pregel['min']),
+                       array((float) $pregel['max'] + 1.0, (float) $pregel['max']))
+                 as $ppaar) {
+            list($pprobe, $psoll) = $ppaar;
+            $pcfg = tb_fahrplan_normieren(array_merge(tb_vorgaben(), array($pk => $pprobe)));
+            $praus = (float) $pcfg[$pk];
+            if ($praus !== $psoll) {
+                $pgrenzen[] = $pk . ': ' . $pprobe . ' -> ' . $praus
+                            . ' (' . tb_t('TEST.PLANER_ERWARTET') . ' ' . $psoll . ')';
+            }
+        }
+    }
+    $zeilen[] = tb_pruefzeile($pgrenzen ? 0 : 1, tb_t('TEST.F_PLANER_GRENZEN'),
+        $pgrenzen ? sprintf(tb_t('TEST.PLANER_GRENZEN_FEHL'), tb_e(implode('; ', $pgrenzen)))
+                  : sprintf(tb_t('TEST.PLANER_GRENZEN'), $pzahl));
 
     return $zeilen;
 }

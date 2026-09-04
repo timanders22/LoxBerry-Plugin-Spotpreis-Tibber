@@ -105,7 +105,7 @@ if ($tb_post) {
  * springt die Seite nach jedem Absenden zurueck auf Einstellungen, obwohl der
  * Reiter sichtbar und anklickbar ist. Der Reiter Test prueft die drei Stellen
  * (Liste, Leiste, Bereiche) seit 0.9.7 gegeneinander. */
-$tb_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
+$tb_muster = '/^tab-(settings|fahrplan|mqtt|loxone|test|log)$/';
 $tb_tab = 'tab-settings';
 if (isset($_POST['activetab']) && is_string($_POST['activetab'])
     && preg_match($tb_muster, (string) $_POST['activetab'])) {
@@ -319,6 +319,129 @@ if ($tb_post && isset($_POST['speichern'])) {
  * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
  * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
  * ruehrt ausschliesslich die MQTT-Werte an. */
+/* ---------------- Fahrplaner speichern ----------------
+ *
+ * Ein eigenes Formular und ein eigener Handler, so wie MQTT einen hat. Der
+ * Einstellungs-Handler fasst diese Schluessel nicht an und dieser keine
+ * anderen - sonst loeschte ein Druck im einen Reiter die Felder des anderen
+ * und meldete "gespeichert".
+ *
+ * Geprueft wird gegen tb_wert_pruefen(), also gegen DIESELBE Positivliste,
+ * die auch eine zurueckgespielte Sicherung durchlaufen muss. Alle
+ * Beanstandungen werden gesammelt; ist auch nur eine dabei, bleibt der
+ * vorherige Stand vollstaendig stehen.
+ */
+if ($tb_post && isset($_POST['save_fahrplan'])) {
+    $tb_cfg = tb_config();
+    $tb_fpneucfg = $tb_cfg;
+    $tb_fpmangel = array();
+
+    /* Die Haken zuerst: eine nicht angehakte Checkbox sendet gar nichts,
+     * isset() ist hier also die Frage und nicht der Wert. */
+    $tb_fpneucfg['hysterese'] = isset($_POST['hysterese']) ? 1 : 0;
+
+    /* Die uebrigen globalen Felder ueber eine Liste, damit Feldname,
+     * Pruefung und Zuweisung nicht auseinanderlaufen koennen. */
+    foreach (array('budget_kw', 'budget2_kw', 'budget2_von', 'budget2_bis',
+                   'pv_bonus', 'pv_schwelle', 'pv_quelle', 'pv_url', 'pv_pfad',
+                   'pv_zeitfeld', 'pv_wertfeld', 'pv_einheit',
+                   'soc_url', 'soc_pfad') as $tb_fpk) {
+        $tb_fpv = isset($_POST[$tb_fpk]) && is_scalar($_POST[$tb_fpk])
+              ? trim((string) $_POST[$tb_fpk]) : '';
+        if (!tb_wert_taugt($tb_fpv)) {
+            $tb_fpmangel[] = sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'), tb_e($tb_fpk));
+            continue;
+        }
+        $tb_fpgrund = tb_wert_pruefen($tb_fpk, $tb_fpv);
+        if ($tb_fpgrund !== '') { $tb_fpmangel[] = $tb_fpgrund; continue; }
+        $tb_fpneucfg[$tb_fpk] = $tb_fpv;
+    }
+
+    /* Ein Eingabefeld, das nur fuer eine Quellenart Sinn hat, wird bei den
+     * anderen ABGEWIESEN und nicht uebergangen: wer von "Liste von Saetzen"
+     * auf forecast.solar umstellt und Zeit- und Wertfeld stehen laesst,
+     * bekaeme sonst eine Einstellung, die nirgends ankommt und trotzdem
+     * dasteht. */
+    if (isset($tb_fpneucfg['pv_quelle']) && $tb_fpneucfg['pv_quelle'] !== 'liste') {
+        $tb_fpneucfg['pv_zeitfeld'] = '';
+        $tb_fpneucfg['pv_wertfeld'] = '';
+    }
+    if (isset($tb_fpneucfg['pv_quelle']) && $tb_fpneucfg['pv_quelle'] === 'forecast_solar') {
+        // Bei forecast.solar steht der Pfad fest - ein eigener waere eine
+        // Einstellung ohne Wirkung.
+        $tb_fpneucfg['pv_pfad'] = '';
+    }
+    if (isset($tb_fpneucfg['pv_quelle']) && $tb_fpneucfg['pv_quelle'] === ''
+        && trim((string) $tb_fpneucfg['pv_url']) !== '') {
+        $tb_fpmangel[] = tb_t('FP.M_URL_OHNE_QUELLE');
+    }
+    if (isset($tb_fpneucfg['pv_quelle']) && $tb_fpneucfg['pv_quelle'] !== ''
+        && trim((string) $tb_fpneucfg['pv_url']) === '') {
+        $tb_fpmangel[] = tb_t('FP.M_QUELLE_OHNE_URL');
+    }
+
+    /* Die vier Schaltregeln. Der Index ist hier ausgeschrieben und fest -
+     * es gibt kein Anlegen und kein Loeschen, also kann keine Zeile
+     * verrutschen. Waeren die Regeln eine wachsende Liste, muesste der
+     * urspruengliche Schluessel als verstecktes Feld mitreisen. */
+    $tb_fpregeln = isset($_POST['regel']) && is_array($_POST['regel'])
+               ? $_POST['regel'] : array();
+    $tb_fpneuregeln = array();
+    for ($tb_fpi = 0; $tb_fpi < TB_REGELN; $tb_fpi++) {
+        $tb_fpr = isset($tb_cfg['regeln'][$tb_fpi]) && is_array($tb_cfg['regeln'][$tb_fpi])
+              ? $tb_cfg['regeln'][$tb_fpi] : tb_regel_vorgabe();
+        $tb_fpe0 = isset($tb_fpregeln[$tb_fpi]) && is_array($tb_fpregeln[$tb_fpi])
+               ? $tb_fpregeln[$tb_fpi] : array();
+        $tb_fpr['aktiv'] = !empty($tb_fpe0['aktiv']) ? 1 : 0;
+        $tb_fpr['neg']   = !empty($tb_fpe0['neg']) ? 1 : 0;
+        foreach (array('name', 'art', 'n', 'von', 'bis', 'horizont', 'schwelle',
+                       'prozent', 'rang', 'leistung', 'energie', 'frist',
+                       'pv_sperre', 'soc_min', 'soc_max', 'min_lauf',
+                       'min_pause') as $tb_fpf) {
+            if (!isset($tb_fpe0[$tb_fpf]) || !is_scalar($tb_fpe0[$tb_fpf])) { continue; }
+            $tb_fpr[$tb_fpf] = trim((string) $tb_fpe0[$tb_fpf]);
+        }
+        $tb_fpneuregeln[$tb_fpi] = $tb_fpr;
+    }
+    /* Beurteilt wird mit derselben Funktion, die auch die Sicherung
+     * durchlaeuft - eine zweite Wahrheit ueber zulaessige Werte gibt es
+     * nicht. */
+    list($tb_fpgeprueft, $tb_fprmangel) = tb_regeln_pruefen($tb_fpneuregeln);
+    foreach ($tb_fprmangel as $tb_fpm) { $tb_fpmangel[] = $tb_fpm; }
+    if (!$tb_fprmangel) { $tb_fpneucfg['regeln'] = $tb_fpgeprueft; }
+
+    if ($tb_fpmangel) {
+        /* GAR NICHTS speichern - anders als der Einstellungs-Handler daneben,
+         * der die beanstandete Zeile uebergeht und den Rest sichert.
+         *
+         * Der Unterschied hat einen Grund: dort sind die Felder voneinander
+         * unabhaengig, hier bilden sie einen Fahrplan. Eine Regel mit
+         * uebernommener Leistung und abgewiesener Frist waere kein
+         * halbrichtiger Eintrag, sondern ein anderer Fahrplan - und man sieht
+         * es ihm nicht an. */
+        foreach ($tb_fpmangel as $tb_fpm) { $tb_fehler[] = $tb_fpm; }
+    } elseif (!tb_config_lesbar()) {
+        $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), $tb_p['config']);
+    } elseif (tb_config_speichern($tb_fpneucfg)) {
+        $tb_cfg = tb_config();
+        $tb_fpan = 0;
+        foreach ((array) $tb_cfg['regeln'] as $tb_fpr2) {
+            if (!empty($tb_fpr2['aktiv'])) { $tb_fpan++; }
+        }
+        $tb_meldungen[] = tb_t('FP.GESPEICHERT');
+        /* Das Protokoll bleibt einsprachig - es ist ein technisches
+         * Nachschlagewerk, kein Text fuer den Bediener. */
+        tb_log(sprintf('Fahrplaner gespeichert: %d von %d Regeln aktiv, Budget %s kW, '
+                       . 'PV-Quelle %s, Hysterese %s.', $tb_fpan, TB_REGELN,
+                       $tb_cfg['budget_kw'],
+                       $tb_cfg['pv_quelle'] === '' ? 'aus' : $tb_cfg['pv_quelle'],
+                       empty($tb_cfg['hysterese']) ? 'aus' : 'an'));
+    } else {
+        $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), $tb_p['config']);
+    }
+    $tb_tab = 'tab-fahrplan';
+}
+
 if ($tb_post && isset($_POST['save_mqtt'])) {
     $tb_mcfg = tb_config();
     $tb_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
@@ -601,6 +724,38 @@ if ($tb_rahmen) {
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, "Courier New", monospace;
     font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto;
     white-space: pre-wrap; }
+/* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Wortgetreu aus
+   VORLAGE_hausstandard.css.html uebernommen - bis 0.9.10 kam diese Linie ohne
+   ein einziges <select> aus, deshalb fehlte der Block hier. Ein <select> ueber
+   die volle Breite mit data-role="none" sieht sonst aus wie ein Textfeld: der
+   eingebaute Pfeil sitzt am rechten Rand und faellt dort nicht auf.
+
+   Die Raute im SVG wird als %23 geschrieben - eine rohe Raute beendet in einer
+   CSS-Adresse den Wert. */
+.sm-wrap select {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 32px; cursor: pointer; }
+.sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* Eine breite Tabelle scrollt in ihrem eigenen Kasten, nicht die Seite.
+   Wortgetreu aus VORLAGE_hausstandard.css.html; diese Linie kam bis 0.9.10
+   ohne breite Tabelle aus, deshalb fehlte die Klasse. Der Fahrplan mit
+   seinen vier Spalten und bis zu 48 Zeilen braucht sie. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+/* Die laufende Stunde in der Fahrplan-Vorschau. Kein neuer Farbwert: dasselbe
+   Gruen wie sm-hinweis, nur als Hintergrund einer Zeile. */
+.sm-tbl tr.sm-jetzt td { background: #f2f8ea; font-weight: 700; }
+/* Ein Block aus Feldern, die zusammengehoeren - eine Schaltregel. Nur Rahmen
+   und Abstand; alles darin sind gewoehnliche sm-feld. */
+.sm-gruppe { border: 1px solid #dcdcdc; border-radius: 8px; padding: 10px 14px;
+    margin: 14px 0; }
+.sm-gruppe > h3 { margin: 4px 0 10px; font-size: 1.0em; }
+/* Zwei bis vier Felder nebeneinander, wo sie zusammen eine Angabe bilden
+   (von/bis, Mindestlauf/Mindestpause). Bricht auf schmalen Anzeigen um. */
+.sm-reihe { display: flex; flex-wrap: wrap; gap: 14px; }
+.sm-reihe > .sm-feld { flex: 1 1 180px; min-width: 160px; }
 </style>
 <div class="sm-wrap">
 
@@ -681,6 +836,7 @@ if ($tb_lh || $tb_lm) { ?>
      Bereiche gegeneinander. -->
 <div class="sm-tabs">
 	<a class="sm-tab<?= $tb_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= tb_e(tb_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $tb_tab === 'tab-fahrplan' ? ' sm-active' : '' ?>" data-ziel="tab-fahrplan" href="index.php?form=fahrplan"><?= tb_e(tb_t('REITER.FAHRPLAN')) ?></a>
 	<a class="sm-tab<?= $tb_tab === 'tab-mqtt' ? ' sm-active' : '' ?>"     data-ziel="tab-mqtt"     href="index.php?form=mqtt">MQTT</a>
 	<a class="sm-tab<?= $tb_tab === 'tab-loxone' ? ' sm-active' : '' ?>"   data-ziel="tab-loxone"   href="index.php?form=loxone"><?= tb_e(tb_t('REITER.LOXONE')) ?></a>
 	<a class="sm-tab<?= $tb_tab === 'tab-test' ? ' sm-active' : '' ?>"     data-ziel="tab-test"     href="index.php?form=test"><?= tb_e(tb_t('REITER.TEST')) ?></a>
@@ -840,6 +996,336 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="tb_zurueck" value="1"><?= tb_e(tb_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>
+</div>
+
+<!-- ================= Reiter: Fahrplaner ================= -->
+<div class="sm-seite<?= $tb_tab === 'tab-fahrplan' ? ' sm-active' : '' ?>" id="tab-fahrplan">
+
+<h2><?= tb_e(tb_t('FP.H_TITEL')) ?></h2>
+<p><?= tb_t('FP.ERKLAERUNG') ?></p>
+<p class="sm-hilfe"><?= tb_t('FP.VERFAHREN') ?></p>
+
+<div class="sm-hinweis"><?= tb_t('FP.LOXONE_HINWEIS') ?></div>
+
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
+<input data-role="none" type="hidden" name="save_fahrplan" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-fahrplan">
+
+<h3><?= tb_e(tb_t('FP.H_GLOBAL')) ?></h3>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="budget_kw"><?= tb_e(tb_t('FP.L_BUDGET')) ?></label>
+    <input data-role="none" type="number" id="budget_kw" name="budget_kw" value="<?= tb_e($tb_cfg['budget_kw']) ?>" min="0" max="200" step="0.1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_BUDGET') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="pv_bonus"><?= tb_e(tb_t('FP.L_PV_BONUS')) ?></label>
+    <input data-role="none" type="number" id="pv_bonus" name="pv_bonus" value="<?= tb_e($tb_cfg['pv_bonus']) ?>" min="0" max="100" step="0.1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_PV_BONUS') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="pv_schwelle"><?= tb_e(tb_t('FP.L_PV_SCHWELLE')) ?></label>
+    <input data-role="none" type="number" id="pv_schwelle" name="pv_schwelle" value="<?= tb_e($tb_cfg['pv_schwelle']) ?>" min="1" max="100000" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_PV_SCHWELLE') ?></div>
+  </div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="budget2_kw"><?= tb_e(tb_t('FP.L_BUDGET2')) ?></label>
+    <input data-role="none" type="number" id="budget2_kw" name="budget2_kw" value="<?= tb_e($tb_cfg['budget2_kw']) ?>" min="0" max="200" step="0.1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_BUDGET2') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="budget2_von"><?= tb_e(tb_t('FP.L_BUDGET2_VON')) ?></label>
+    <input data-role="none" type="number" id="budget2_von" name="budget2_von" value="<?= tb_e($tb_cfg['budget2_von']) ?>" min="0" max="23" step="1">
+  </div>
+  <div class="sm-feld">
+    <label for="budget2_bis"><?= tb_e(tb_t('FP.L_BUDGET2_BIS')) ?></label>
+    <input data-role="none" type="number" id="budget2_bis" name="budget2_bis" value="<?= tb_e($tb_cfg['budget2_bis']) ?>" min="0" max="23" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_BUDGET2_ZEIT') ?></div>
+  </div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="hysterese" value="1" <?= !empty($tb_cfg['hysterese']) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('FP.L_HYSTERESE')) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('FP.H_HYSTERESE') ?></div>
+</div>
+
+<h3><?= tb_e(tb_t('FP.H_QUELLEN')) ?></h3>
+<p class="sm-hilfe"><?= tb_t('FP.QUELLEN_ERKLAERUNG') ?></p>
+<?php
+/* Der zuletzt geholte Stand. tb_umwelt() OHNE Argument liest nur den
+ * Zwischenspeicher - die Oberflaeche loest keinen Netzabruf aus, das tut
+ * allein der Minutentakt. */
+$tb_fpumw = tb_umwelt();
+if (empty($tb_fpumw['ts'])) { ?>
+<div class="sm-hilfe"><?= tb_t('FP.STAND_LEER') ?></div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= sprintf(tb_t('FP.STAND'),
+    $tb_fpumw['pv_summe'] === null ? '&ndash;' : tb_e(round((float) $tb_fpumw['pv_summe'], 1)),
+    $tb_fpumw['soc'] === null ? '&ndash;' : tb_e((int) round((float) $tb_fpumw['soc']))) ?></div>
+<?php }
+if (($tb_fpumw['pv_meldung'] === 'NICHT_ERREICHBAR')
+    || ($tb_fpumw['soc_meldung'] === 'NICHT_ERREICHBAR')) { ?>
+<div class="sm-warnung"><?= tb_t('FP.NICHT_ERREICHBAR') ?></div>
+<?php } ?>
+<div class="sm-feld">
+  <label for="pv_quelle"><?= tb_e(tb_t('FP.L_PV_QUELLE')) ?></label>
+  <select data-role="none" id="pv_quelle" name="pv_quelle">
+<?php foreach (array('' => 'FP.QUELLE_AUS', 'forecast_solar' => 'FP.QUELLE_FORECAST_SOLAR',
+                     'objekt' => 'FP.QUELLE_OBJEKT', 'liste' => 'FP.QUELLE_LISTE')
+               as $tb_fpw => $tb_fps) { ?>
+    <option value="<?= tb_e($tb_fpw) ?>"<?= (string) $tb_cfg['pv_quelle'] === (string) $tb_fpw ? ' selected' : '' ?>><?= tb_e(tb_t($tb_fps)) ?></option>
+<?php } ?>
+  </select>
+  <div class="sm-hilfe"><?= tb_t('FP.H_PV_QUELLE') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="pv_url"><?= tb_e(tb_t('FP.L_PV_URL')) ?></label>
+  <input data-role="none" type="text" id="pv_url" name="pv_url" value="<?= tb_e($tb_cfg['pv_url']) ?>" placeholder="https://api.forecast.solar/estimate/48.1/11.6/30/0/9.9">
+  <div class="sm-hilfe"><?= tb_t('FP.H_PV_URL') ?></div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="pv_pfad"><?= tb_e(tb_t('FP.L_PV_PFAD')) ?></label>
+    <input data-role="none" type="text" id="pv_pfad" name="pv_pfad" value="<?= tb_e($tb_cfg['pv_pfad']) ?>">
+    <div class="sm-hilfe"><?= tb_t('FP.H_PV_PFAD') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="pv_zeitfeld"><?= tb_e(tb_t('FP.L_PV_ZEITFELD')) ?></label>
+    <input data-role="none" type="text" id="pv_zeitfeld" name="pv_zeitfeld" value="<?= tb_e($tb_cfg['pv_zeitfeld']) ?>" placeholder="period_end">
+  </div>
+  <div class="sm-feld">
+    <label for="pv_wertfeld"><?= tb_e(tb_t('FP.L_PV_WERTFELD')) ?></label>
+    <input data-role="none" type="text" id="pv_wertfeld" name="pv_wertfeld" value="<?= tb_e($tb_cfg['pv_wertfeld']) ?>" placeholder="pv_estimate">
+    <div class="sm-hilfe"><?= tb_t('FP.H_PV_FELDER') ?></div>
+  </div>
+</div>
+<div class="sm-feld">
+  <label for="pv_einheit"><?= tb_e(tb_t('FP.L_PV_EINHEIT')) ?></label>
+  <select data-role="none" id="pv_einheit" name="pv_einheit">
+<?php foreach (array('wh' => 'FP.EINHEIT_WH', 'w' => 'FP.EINHEIT_W',
+                     'kw' => 'FP.EINHEIT_KW') as $tb_fpw => $tb_fps) { ?>
+    <option value="<?= tb_e($tb_fpw) ?>"<?= (string) $tb_cfg['pv_einheit'] === (string) $tb_fpw ? ' selected' : '' ?>><?= tb_e(tb_t($tb_fps)) ?></option>
+<?php } ?>
+  </select>
+  <div class="sm-hilfe"><?= tb_t('FP.H_PV_EINHEIT') ?></div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="soc_url"><?= tb_e(tb_t('FP.L_SOC_URL')) ?></label>
+    <input data-role="none" type="text" id="soc_url" name="soc_url" value="<?= tb_e($tb_cfg['soc_url']) ?>">
+    <div class="sm-hilfe"><?= tb_t('FP.H_SOC_URL') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="soc_pfad"><?= tb_e(tb_t('FP.L_SOC_PFAD')) ?></label>
+    <input data-role="none" type="text" id="soc_pfad" name="soc_pfad" value="<?= tb_e($tb_cfg['soc_pfad']) ?>">
+    <div class="sm-hilfe"><?= tb_t('FP.H_SOC_PFAD') ?></div>
+  </div>
+</div>
+
+<h3><?= tb_e(tb_t('FP.H_REGELN')) ?></h3>
+<p class="sm-hilfe"><?= tb_t('FP.REGELN_ERKLAERUNG') ?></p>
+<?php for ($tb_fpi = 0; $tb_fpi < TB_REGELN; $tb_fpi++) {
+    $tb_fpr = isset($tb_cfg['regeln'][$tb_fpi]) && is_array($tb_cfg['regeln'][$tb_fpi])
+          ? $tb_cfg['regeln'][$tb_fpi] : tb_regel_vorgabe();
+    $tb_fppfx = 'regel[' . $tb_fpi . ']';
+    $tb_fpid = 'r' . $tb_fpi . '_';
+?>
+<div class="sm-gruppe">
+<h3><?= tb_e(sprintf(tb_t('FP.REGEL_N'), $tb_fpi + 1)) ?><?= $tb_fpr['name'] !== '' ? tb_e(' - ' . $tb_fpr['name']) : '' ?></h3>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="<?= $tb_fppfx ?>[aktiv]" value="1" <?= !empty($tb_fpr['aktiv']) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('FP.L_AKTIV')) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('FP.H_AKTIV') ?></div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>name"><?= tb_e(tb_t('FP.L_NAME')) ?></label>
+    <input data-role="none" type="text" id="<?= $tb_fpid ?>name" name="<?= $tb_fppfx ?>[name]" value="<?= tb_e($tb_fpr['name']) ?>" maxlength="40">
+    <div class="sm-hilfe"><?= tb_t('FP.H_NAME') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>art"><?= tb_e(tb_t('FP.L_ART')) ?></label>
+    <select data-role="none" id="<?= $tb_fpid ?>art" name="<?= $tb_fppfx ?>[art]">
+<?php   foreach (array('fenster' => 'FP.ART_FENSTER', 'stunden' => 'FP.ART_STUNDEN',
+                       'schwelle' => 'FP.ART_SCHWELLE', 'mittel' => 'FP.ART_MITTEL')
+                 as $tb_fpw => $tb_fps) { ?>
+      <option value="<?= tb_e($tb_fpw) ?>"<?= (string) $tb_fpr['art'] === (string) $tb_fpw ? ' selected' : '' ?>><?= tb_e(tb_t($tb_fps)) ?></option>
+<?php   } ?>
+    </select>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>n"><?= tb_e(tb_t('FP.L_N')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>n" name="<?= $tb_fppfx ?>[n]" value="<?= tb_e($tb_fpr['n']) ?>" min="1" max="12" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_N') ?></div>
+  </div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>von"><?= tb_e(tb_t('FP.L_VON')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>von" name="<?= $tb_fppfx ?>[von]" value="<?= tb_e($tb_fpr['von']) ?>" min="0" max="23" step="1">
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>bis"><?= tb_e(tb_t('FP.L_BIS')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>bis" name="<?= $tb_fppfx ?>[bis]" value="<?= tb_e($tb_fpr['bis']) ?>" min="0" max="23" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_ZEITFENSTER') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>horizont"><?= tb_e(tb_t('FP.L_HORIZONT')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>horizont" name="<?= $tb_fppfx ?>[horizont]" value="<?= tb_e($tb_fpr['horizont']) ?>" min="1" max="48" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_HORIZONT') ?></div>
+  </div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>schwelle"><?= tb_e(tb_t('FP.L_SCHWELLE')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>schwelle" name="<?= $tb_fppfx ?>[schwelle]" value="<?= tb_e($tb_fpr['schwelle']) ?>" min="-100" max="200" step="0.1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_SCHWELLE') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>prozent"><?= tb_e(tb_t('FP.L_PROZENT')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>prozent" name="<?= $tb_fppfx ?>[prozent]" value="<?= tb_e($tb_fpr['prozent']) ?>" min="0" max="90" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_PROZENT') ?></div>
+  </div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="<?= $tb_fppfx ?>[neg]" value="1" <?= !empty($tb_fpr['neg']) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('FP.L_NEG')) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('FP.H_NEG') ?></div>
+</div>
+
+<h4><?= tb_e(tb_t('FP.H_PLANFELDER')) ?></h4>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>rang"><?= tb_e(tb_t('FP.L_RANG')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>rang" name="<?= $tb_fppfx ?>[rang]" value="<?= tb_e($tb_fpr['rang']) ?>" min="1" max="99" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_RANG') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>leistung"><?= tb_e(tb_t('FP.L_LEISTUNG')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>leistung" name="<?= $tb_fppfx ?>[leistung]" value="<?= tb_e($tb_fpr['leistung']) ?>" min="0" max="100" step="0.1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_LEISTUNG') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>energie"><?= tb_e(tb_t('FP.L_ENERGIE')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>energie" name="<?= $tb_fppfx ?>[energie]" value="<?= tb_e($tb_fpr['energie']) ?>" min="0" max="500" step="0.1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_ENERGIE') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>frist"><?= tb_e(tb_t('FP.L_FRIST')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>frist" name="<?= $tb_fppfx ?>[frist]" value="<?= tb_e($tb_fpr['frist']) ?>" min="-1" max="23" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_FRIST') ?></div>
+  </div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>pv_sperre"><?= tb_e(tb_t('FP.L_PV_SPERRE')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>pv_sperre" name="<?= $tb_fppfx ?>[pv_sperre]" value="<?= tb_e($tb_fpr['pv_sperre']) ?>" min="0" max="500" step="0.1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_PV_SPERRE') ?></div>
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>soc_min"><?= tb_e(tb_t('FP.L_SOC_MIN')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>soc_min" name="<?= $tb_fppfx ?>[soc_min]" value="<?= tb_e($tb_fpr['soc_min']) ?>" min="0" max="100" step="1">
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>soc_max"><?= tb_e(tb_t('FP.L_SOC_MAX')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>soc_max" name="<?= $tb_fppfx ?>[soc_max]" value="<?= tb_e($tb_fpr['soc_max']) ?>" min="0" max="100" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_SOC_GRENZEN') ?></div>
+  </div>
+</div>
+<div class="sm-reihe">
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>min_lauf"><?= tb_e(tb_t('FP.L_MIN_LAUF')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>min_lauf" name="<?= $tb_fppfx ?>[min_lauf]" value="<?= tb_e($tb_fpr['min_lauf']) ?>" min="0" max="720" step="1">
+  </div>
+  <div class="sm-feld">
+    <label for="<?= $tb_fpid ?>min_pause"><?= tb_e(tb_t('FP.L_MIN_PAUSE')) ?></label>
+    <input data-role="none" type="number" id="<?= $tb_fpid ?>min_pause" name="<?= $tb_fppfx ?>[min_pause]" value="<?= tb_e($tb_fpr['min_pause']) ?>" min="0" max="720" step="1">
+    <div class="sm-hilfe"><?= tb_t('FP.H_TAKTSCHUTZ') ?></div>
+  </div>
+</div>
+</div>
+<?php } ?>
+
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= tb_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= tb_e(tb_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+
+<h2><?= tb_e(tb_t('FP.H_VORSCHAU')) ?></h2>
+<p class="sm-hilfe"><?= tb_t('FP.VORSCHAU_ERKLAERUNG') ?></p>
+<?php
+$tb_fpfp = tb_fahrplan();
+if (!$tb_fpfp['preise']) { ?>
+<div class="sm-hilfe"><?= tb_t('FP.VORSCHAU_LEER') ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= tb_e(tb_t('FP.T_REGEL')) ?></th><th><?= tb_e(tb_t('FP.T_ZUSTAND')) ?></th>
+    <th><?= tb_e(tb_t('FP.T_WANN')) ?></th><th><?= tb_e(tb_t('FP.T_PREIS_SCHNITT')) ?></th></tr>
+<?php foreach ($tb_fpfp['regeln'] as $tb_fpr) {
+    if (empty($tb_fpr['ein'])) {
+        $tb_fpzust = tb_t('FP.ZUSTAND_AUS');
+    } elseif (!empty($tb_fpr['aktiv'])) {
+        $tb_fpzust = tb_t('FP.ZUSTAND_LAEUFT');
+    } elseif ($tb_fpr['gesperrt'] === 'pv') {
+        $tb_fpzust = tb_t('FP.SPERRE_PV');
+    } elseif ($tb_fpr['gesperrt'] === 'soc_min') {
+        $tb_fpzust = tb_t('FP.SPERRE_SOC_MIN');
+    } elseif ($tb_fpr['gesperrt'] === 'soc_max') {
+        $tb_fpzust = tb_t('FP.SPERRE_SOC_MAX');
+    } elseif ((int) $tb_fpr['in'] < 0) {
+        $tb_fpzust = tb_t('FP.ZUSTAND_KEIN_BLOCK');
+    } else {
+        $tb_fpzust = tb_t('FP.ZUSTAND_WARTET');
+    }
+    $tb_fpwann = !empty($tb_fpr['aktiv']) ? tb_t('FP.JETZT')
+             : ((int) $tb_fpr['in'] < 0 ? '&ndash;'
+                : sprintf(tb_t('FP.IN_STUNDEN'), (int) $tb_fpr['in']));
+?>
+<tr><td><?= tb_e($tb_fpr['name']) ?></td>
+    <td class="<?= !empty($tb_fpr['aktiv']) ? 'sm-an' : '' ?>"><?= tb_e($tb_fpzust) ?><?php
+      if (!empty($tb_fpr['verdraengt'])) {
+          echo ' <span class="sm-hilfe">' . tb_e(sprintf(tb_t('FP.VERDRAENGT'),
+               (int) $tb_fpr['verdraengt'])) . '</span>';
+      } ?></td>
+    <td><?= $tb_fpwann ?></td>
+    <td><?= $tb_fpr['ct'] === null ? '&ndash;' : tb_e($tb_fpr['ct']) ?></td></tr>
+<?php } ?>
+</table>
+
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= tb_e(tb_t('FP.T_ZEIT')) ?></th><th><?= tb_e(tb_t('FP.T_PREIS')) ?></th>
+    <th><?= tb_e(tb_t('FP.T_BELEGUNG')) ?></th><th><?= tb_e(tb_t('FP.T_REGEL')) ?></th></tr>
+<?php
+$tb_fpjetzt = time() - (time() % (int) $tb_fpfp['slotlen']);
+foreach ($tb_fpfp['preise'] as $tb_fpts => $tb_fpct) {
+    $tb_fpnamen = array();
+    foreach ($tb_fpfp['plan'] as $tb_fpp2) {
+        if (!empty($tb_fpp2['slots']) && in_array($tb_fpts, $tb_fpp2['slots'], true)) {
+            $tb_fpnamen[] = $tb_fpp2['name'];
+        }
+    }
+    $tb_fpkw = isset($tb_fpfp['belegung'][$tb_fpts]) ? (float) $tb_fpfp['belegung'][$tb_fpts] : 0.0;
+?>
+<tr<?= $tb_fpts === $tb_fpjetzt ? ' class="sm-jetzt"' : '' ?>>
+    <td><span class="sm-mono"><?= tb_e(date('d.m. H:i', (int) $tb_fpts)) ?></span></td>
+    <td><?= tb_e(round((float) $tb_fpct, 2)) ?></td>
+    <td><?= $tb_fpkw > 0 ? tb_e($tb_fpkw) : '&ndash;' ?></td>
+    <td><?= $tb_fpnamen ? tb_e(implode(', ', $tb_fpnamen)) : '&ndash;' ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
