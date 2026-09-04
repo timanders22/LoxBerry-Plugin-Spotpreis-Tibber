@@ -242,6 +242,68 @@ function tb_paths()
  * Konfiguration
  * ================================================================== */
 
+/* ==================================================================
+ * Der Fahrplaner
+ *
+ * Dasselbe Rechenwerk steckt in Spotpreis aWATTar und Spotpreis Octopus -
+ * byteweise dieselbe Datei. Naeheres im Kopf von planer.php; dort steht auch,
+ * dass wer sie aendert, sie in allen drei Linien aendert.
+ *
+ * __DIR__ und nicht gerechnet: planer.php liegt im SELBEN Verzeichnis wie
+ * diese Datei, auch installiert - beide unter webfrontend/html. Eine
+ * Kandidatenliste braucht es hier also nicht; sie steht dort, wo tb_lib.php
+ * aus einem anderen Baum geladen wird.
+ * ================================================================== */
+require_once __DIR__ . '/planer.php';
+
+/**
+ * Anzahl der Schaltregeln.
+ *
+ * Vier decken Wallbox, Speicher, Warmwasser und Waermepumpe ab. Dieselbe Zahl
+ * wie in den Schwesterlinien, und das ist Absicht: wer den Anbieter wechselt,
+ * tauscht das Plugin und laesst die Bausteine im Miniserver stehen. Eine
+ * fuenfte Regel hier haette in Loxone keine Entsprechung drueben.
+ */
+define('TB_REGELN', 4);
+
+/**
+ * Vorgabe einer Schaltregel.
+ *
+ * Die Felder des Fahrplaners (Rang, Leistung, Energie, Frist, Sperren,
+ * Taktschutz) kommen aus plan_regel_vorgabe() dazu. Ihre Vorgaben sind so
+ * gewaehlt, dass eine Regel ohne Zutun genau das tut, was die Regelart allein
+ * sagt - kein Budget, keine Frist, keine Sperre.
+ *
+ * 'aktiv' ist ab Werk 0: eine neue Fassung darf auf keiner bestehenden Anlage
+ * von sich aus etwas schalten.
+ *
+ * Die Regelarten sind wortgleich mit denen der Schwesterlinien:
+ *   fenster    das guenstigste zusammenhaengende Fenster
+ *   stunden    die n guenstigsten Stunden im Horizont
+ *   schwelle   laeuft, solange der Preis unter 'schwelle' liegt
+ *   mittel     laeuft, solange der Preis um 'prozent' unter dem Tagesmittel
+ *              liegt
+ *
+ * Die Art 'scheiben' aus planer.php kennt diese Linie nicht: Tibber liefert
+ * Stundenpreise, und eine Regel ueber Viertelstundenscheiben haette hier
+ * keinen Gegenstand.
+ */
+function tb_regel_vorgabe()
+{
+    return array(
+        'aktiv'    => 0,
+        'name'     => '',
+        'art'      => 'fenster',
+        'n'        => 3,      // Fensterlaenge bzw. Anzahl der Stunden
+        'von'      => 0,      // Zeitfenster von (Stunde, einschliesslich)
+        'bis'      => 0,      // Zeitfenster bis; von == bis heisst ganzer Tag
+        'horizont' => 24,     // wie weit nach vorn gesucht wird (Stunden)
+        'schwelle' => 20.0,   // ct/kWh fuer die Art 'schwelle'
+        'prozent'  => 15,     // Prozent unter dem Tagesmittel fuer 'mittel'
+        'neg'      => 0,      // bei negativem Energiepreis immer laufen
+    ) + plan_regel_vorgabe();
+}
+
 function tb_vorgaben()
 {
     return array(
@@ -262,7 +324,36 @@ function tb_vorgaben()
         'verlauf_tage'     => 90,
         'aktionstoken'     => '',
         'zeitueberschreitung' => 15,
-    );
+        /* ---------------- Fahrplaner (ab 0.9.11) ----------------
+         *
+         * Alles hier ist ab Werk AUS. Wer nichts einstellt, bekommt genau das
+         * Verhalten von 0.9.10: die Schaltregelliste ist leer, also rechnet
+         * der Planer nichts, und kein einziger Wert aendert sich.
+         *
+         * 'hysterese' steht auf 1 und ist damit die einzige Ausnahme von
+         * "neue Funktionen ab Werk aus". Sie hat ohne Regeln keinen
+         * Gegenstand: sie sorgt dafuer, dass ein BEGONNENER Block zu Ende
+         * laeuft. Ohne Regel gibt es keinen Block. Ab Werk 0 hiesse dagegen,
+         * dass die erste Regel, die jemand anlegt, ein Geraet mitten im
+         * Betrieb abschalten kann - und das will niemand absichtlich.
+         */
+        'regeln'      => array(),
+        'hysterese'   => 1,
+        // Woher die PV-Prognose kommt. '' = aus.
+        //   forecast_solar  fester Pfad result.watt_hours_period, Werte in Wh
+        //   objekt          ein Objekt "Zeit => Wert" unter 'pv_pfad'
+        //   liste           eine Liste von Saetzen mit 'pv_zeitfeld' und
+        //                   'pv_wertfeld' - die Form von Solcast
+        'pv_quelle'   => '',
+        'pv_url'      => '',
+        'pv_pfad'     => '',
+        'pv_zeitfeld' => '',
+        'pv_wertfeld' => '',
+        'pv_einheit'  => 'wh',   // wh | w | kw
+        // Speicherstand in Prozent, aus irgendeiner JSON-Auskunft.
+        'soc_url'     => '',
+        'soc_pfad'    => '',
+    ) + plan_global_vorgabe();
 }
 
 function tb_json_lesen($pfad)
@@ -370,7 +461,73 @@ function tb_config($erzeugen = true)
             . 'die Werkseinstellungen; gespeichert wird nichts, bis die Datei in '
             . 'Ordnung ist.');
     }
-    return array_merge(tb_vorgaben(), tb_json_lesen($p['config']));
+    return tb_fahrplan_normieren(array_merge(tb_vorgaben(), tb_json_lesen($p['config'])));
+}
+
+/**
+ * Die Werte des Fahrplaners in ihren Bereich zwingen - beim LESEN.
+ *
+ * Hier wird GEKAPPT, nicht abgewiesen. Das ist kein Widerspruch zu "Eingaben
+ * werden abgewiesen und gemeldet, nie still zurechtgebogen": abgewiesen wird
+ * am EINGANG, also im Formular (tb_wert_pruefen) und beim Zurueckspielen
+ * einer Sicherung. Was dagegen schon in der Datei steht - von Hand
+ * bearbeitet, aus einer aelteren Fassung, halb geschrieben -, darf das Plugin
+ * nicht zum Absturz bringen und schon gar nicht mit einer unsinnigen Zahl in
+ * den Miniserver gehen.
+ *
+ * Dieselbe Aufteilung wie in den Schwesterlinien.
+ */
+function tb_fahrplan_normieren(array $cfg)
+{
+    // ---- global ----
+    $cfg['budget_kw']   = max(0.0, min(200.0,   (float) $cfg['budget_kw']));
+    $cfg['pv_bonus']    = max(0.0, min(100.0,   (float) $cfg['pv_bonus']));
+    $cfg['pv_schwelle'] = max(1,   min(100000,  (int)   $cfg['pv_schwelle']));
+    $cfg['budget2_kw']  = max(0.0, min(200.0,   (float) $cfg['budget2_kw']));
+    $cfg['budget2_von'] = max(0,   min(23,      (int)   $cfg['budget2_von']));
+    $cfg['budget2_bis'] = max(0,   min(23,      (int)   $cfg['budget2_bis']));
+    $cfg['hysterese']   = empty($cfg['hysterese']) ? 0 : 1;
+    if (!in_array($cfg['pv_quelle'], array('', 'forecast_solar', 'objekt', 'liste'), true)) {
+        $cfg['pv_quelle'] = '';
+    }
+    if (!in_array($cfg['pv_einheit'], array('wh', 'w', 'kw'), true)) {
+        $cfg['pv_einheit'] = 'wh';
+    }
+
+    // ---- je Regel ----
+    if (!is_array($cfg['regeln'])) { $cfg['regeln'] = array(); }
+    for ($i = 0; $i < TB_REGELN; $i++) {
+        $r = isset($cfg['regeln'][$i]) && is_array($cfg['regeln'][$i])
+           ? $cfg['regeln'][$i] : array();
+        $r += tb_regel_vorgabe();
+        $r['aktiv']    = empty($r['aktiv']) ? 0 : 1;
+        $r['neg']      = empty($r['neg']) ? 0 : 1;
+        $r['name']     = trim((string) $r['name']);
+        $r['art']      = in_array($r['art'], array('fenster', 'stunden', 'schwelle', 'mittel'), true)
+                       ? $r['art'] : 'fenster';
+        $r['n']        = max(1, min(12, (int) $r['n']));
+        $r['von']      = max(0, min(23, (int) $r['von']));
+        $r['bis']      = max(0, min(23, (int) $r['bis']));
+        $r['horizont'] = max(1, min(48, (int) $r['horizont']));
+        $r['schwelle'] = (float) $r['schwelle'];
+        $r['prozent']  = max(0, min(90, (int) $r['prozent']));
+        $r['rang']     = max(1, min(99, (int) $r['rang']));
+        $r['leistung'] = max(0.0, min(100.0, (float) $r['leistung']));
+        $r['energie']  = max(0.0, min(500.0, (float) $r['energie']));
+        $r['frist']    = (int) $r['frist'];
+        if ($r['frist'] < 0 || $r['frist'] > 23) { $r['frist'] = -1; }
+        $r['pv_sperre'] = max(0.0, min(500.0, (float) $r['pv_sperre']));
+        $r['soc_min']   = max(0, min(100, (int) $r['soc_min']));
+        $r['soc_max']   = max(0, min(100, (int) $r['soc_max']));
+        /* Taktschutz. Beide in Minuten, 0 = aus. Bei Stundenpreisen ist eine
+         * Mindestlaufzeit unter 60 Minuten wirkungslos - das steht in der
+         * Hilfe und nicht in einer Schranke: abweisen waere bevormundend,
+         * und 0 heisst ohnehin aus. */
+        $r['min_lauf']  = max(0, min(720, (int) $r['min_lauf']));
+        $r['min_pause'] = max(0, min(720, (int) $r['min_pause']));
+        $cfg['regeln'][$i] = $r;
+    }
+    return $cfg;
 }
 
 /**
@@ -1304,7 +1461,7 @@ function tb_status_felder()
                      'text' => 'TB_FELD.' . $name,
                      'min' => $min, 'max' => $max, 'analog' => $analog);
     };
-    return array(
+    $r = array(
         'CUR'            => $f('ct/kWh', 'CUR',            0,      200),
         'CUR_ENERGIE'    => $f('ct/kWh', 'CUR_ENERGIE',    -100,   200),
         'CUR_STEUER'     => $f('ct/kWh', 'CUR_STEUER',     0,      100),
@@ -1363,6 +1520,57 @@ function tb_status_felder()
         'GUENSTIGANTEIL' => $f('%',      'GUENSTIGANTEIL', 0,      100),
         'ERSPARNIS_GESTERN' => $f('EUR', 'ERSPARNIS_GESTERN', -100, 100),
     );
+    /* --- ab 0.9.11: der Fahrplaner, deshalb hinten ---
+     *
+     * Angehaengt und nicht eingeschoben: die Befehlserkennung in Loxone sucht
+     * Textstellen, kein bestehender virtueller Eingang merkt davon etwas.
+     *
+     * Die Namen sind WORTGLEICH mit denen der Schwesterlinien Spotpreis
+     * aWATTar und Spotpreis Octopus - R1, R1IN, R1REST, R1CT, R1VERD,
+     * R1SPERRE und die vier PLAN-Groessen. Das ist die Zusage, die im README
+     * dieser Linie steht: wer den Anbieter wechselt, tauscht das Plugin und
+     * laesst die Bausteine stehen. Sie stehen dort in einer eigenen Zeile
+     * (REGEL;… und PLAN;…), hier in der einen Statuszeile - der Suchtext
+     * \i;R1=\i\v findet sie so wie so, denn Loxone sucht Textstellen und
+     * keine Zeilen.
+     *
+     * Warum 'analog' => 0 fuer R<n>: der Wert IST digital, und genau dafuer
+     * steht die 0. Verdraengt ebenso; Sperre hat vier Zustaende und bleibt
+     * analog.
+     *
+     * Die Sprachschluessel tragen die REGELNUMMER, sind also ausgeschrieben
+     * und nicht aus einem Platzhalter gebildet. Der Grund steht in Loxone:
+     * der Kommentar der Importvorlage wird dort zum Anzeigenamen des
+     * Bausteins, und vier Bausteine, die alle "Schaltregel laeuft" heissen,
+     * sind vier Bausteine, die niemand auseinanderhaelt. */
+    $g = array();
+    for ($i = 1; $i <= TB_REGELN; $i++) {
+        $g['R' . $i]            = $f('',       'R' . $i . '_AKTIV',   0,  1, 0);
+        $g['R' . $i . 'IN']     = $f('h',      'R' . $i . '_IN',     -1, 47);
+        $g['R' . $i . 'REST']   = $f('h',      'R' . $i . '_REST',    0, 47);
+        $g['R' . $i . 'CT']     = $f('ct/kWh', 'R' . $i . '_CT',   -100, 200);
+        /* Kein Ja/Nein, sondern eine ANZAHL: 'verdraengt' zaehlt die
+         * Zeitscheiben, die das Leistungsbudget dieser Regel weggenommen
+         * hat - plan_rechnen() bildet sie als count(ohne) - count(mit).
+         * Mit MaxVal 1 haette die Importvorlage Loxone einen Bereich
+         * zugesagt, den der Wert verlaesst, und der Baustein waere
+         * digital gewesen. Dieselbe Klasse wie ALTER bis 0.9.9. Am
+         * Pruefstand gemessen: zwei 4-kW-Regeln unter einem 5-kW-Budget
+         * ergaben fuer die zweite den Wert 3. */
+        $g['R' . $i . 'VERD']   = $f('',       'R' . $i . '_VERD',    0, 48);
+        /* 0 frei, 1 PV-Prognose, 2 Speicher zu leer, 3 Speicher zu voll -
+         * eine Zahl, weil Loxone mit Zahlen rechnet und nicht mit Woertern. */
+        $g['R' . $i . 'SPERRE'] = $f('',       'R' . $i . '_SPERRE',  0,  3);
+    }
+    /* PVSUM und SOC koennen "nicht gemessen" sein. Sie gehen dann als Strich
+     * hinaus (tb_w in der Endpunktdatei) und nicht als 0 - eine 0 waere eine
+     * stille Falschaussage, und Loxone behaelt beim Strich den letzten Wert.
+     * Deshalb reicht der Bereich von SOC bis 0 und nicht bis -1. */
+    $g['PVSUM']    = $f('kWh', 'PVSUM',    0, 1000);
+    $g['SOC']      = $f('%',   'SOC',      0, 100);
+    $g['BUDGET']   = $f('kW',  'BUDGET',   0, 200);
+    $g['PLANLAST'] = $f('kW',  'PLANLAST', 0, 200);
+    return array_merge($r, $g);
 }
 
 /**
@@ -1502,6 +1710,61 @@ function tb_werte()
         if (isset($vb[$klein])) { $w[$gross] = $vb[$klein]; }
     }
     $w['FIX'] = (float) $cfg['festpreis'];
+
+    /* ---- Fahrplaner (ab 0.9.11) ----
+     *
+     * Gerechnet wird HIER, zur Lesezeit, und nicht im Cron.
+     *
+     * Der Unterschied ist keine Geschmacksfrage. stand.json wird nur
+     * geschrieben, wenn wirklich Preise geholt wurden - ab Werk alle 30
+     * Minuten, einstellbar bis 1440. Ein im Cron gerechneter Fahrplan stuende
+     * also bis zu einem Tag lang still, waehrend 'in' und 'rest'
+     * herunterzaehlen muessen und eine Regel zur vollen Stunde umschaltet.
+     * Die Rechnung selbst ist reine Arithmetik ueber hoechstens 48 Werte und
+     * braucht weder Netz noch Datei.
+     *
+     * Was der Cron sehr wohl tut: die fremden Auskuenfte auffrischen
+     * (tb_umwelt(true)) und die Hysterese fortschreiben. Beides hat eine
+     * Wirkung nach aussen und gehoert deshalb nicht in einen Lesepfad, den
+     * der unangemeldete Endpunkt anstoesst.
+     */
+    $fp = tb_fahrplan($st);
+    /* ZUERST die Vorgaben fuer ALLE Regeln, dann erst das Ergebnis darueber.
+     *
+     * Ohne diesen Block blieben die Felder null, sobald der Fahrplan leer ist
+     * - keine Preise, Schnittstelle ausgefallen, Konfiguration frisch. Der
+     * Endpunkt macht aus null einen Strich, und Loxone behaelt beim Strich
+     * den LETZTEN Wert. Stand dort eine 1, laedt die Wallbox weiter, waehrend
+     * das Plugin nichts mehr weiss. Am 04.09.2026 an einer Anlage ohne Preise
+     * gemessen: R1 bis R4 gingen als Strich hinaus.
+     *
+     * R<n>CT bleibt ausdruecklich null: das ist ein Preis, also ein Messwert,
+     * und "nicht gemessen" ist dort die Wahrheit. */
+    for ($i = 1; $i <= TB_REGELN; $i++) {
+        $w['R' . $i]            = 0;
+        $w['R' . $i . 'IN']     = -1;    // kein Block im Horizont
+        $w['R' . $i . 'REST']   = 0;
+        $w['R' . $i . 'VERD']   = 0;
+        $w['R' . $i . 'SPERRE'] = 0;
+    }
+    foreach ($fp['regeln'] as $r) {
+        $n = (int) $r['nr'];
+        if ($n < 1 || $n > TB_REGELN) { continue; }
+        $w['R' . $n]            = (int) $r['aktiv'];
+        $w['R' . $n . 'IN']     = (int) $r['in'];
+        $w['R' . $n . 'REST']   = (int) $r['rest'];
+        $w['R' . $n . 'CT']     = $r['ct'];
+        $w['R' . $n . 'VERD']   = (int) $r['verdraengt'];
+        $w['R' . $n . 'SPERRE'] = tb_sperre_zahl($r['gesperrt']);
+    }
+    /* Nicht gemessen bleibt null und wird NICHT zu 0. Eine PV-Prognose von 0
+     * kWh ist eine Aussage (Nacht, Nebel); "keine Quelle eingerichtet" ist
+     * keine. Der Endpunkt macht daraus einen Strich, und Loxone behaelt den
+     * letzten Wert. */
+    $w['PVSUM']    = $fp['pv_summe'];
+    $w['SOC']      = $fp['soc'];
+    $w['BUDGET']   = (float) $cfg['budget_kw'];
+    $w['PLANLAST'] = $fp['planlast'];
     return $w;
 }
 
@@ -1520,6 +1783,464 @@ function tb_werte()
  * IST 24 ct VIEL? Eine feste Schwelle kann das nicht sagen, ein Vergleich mit
  * den letzten dreissig Tagen schon.
  * ================================================================== */
+
+/* ==================================================================
+ * Der Fahrplaner - Anschluss an diese Linie
+ *
+ * Das Rechenwerk steht in planer.php und ist dort ohne Netz durchgeprueft.
+ * Hier steht nur, was diese Linie beitraegt: die Preisreihe, die fremden
+ * Auskuenfte und das Gedaechtnis.
+ * ================================================================== */
+
+/**
+ * Eine JSON-Auskunft holen. Rueckgabe: Feld oder null.
+ *
+ * Zwei Zeitschranken, nicht eine: 'timeout' im Kontext gilt nur fuer das
+ * LESEN. Fuer den Verbindungsaufbau gilt default_socket_timeout, und der
+ * steht auf dem LoxBerry auf 60 Sekunden. Eine tote Gegenstelle haette den
+ * Aufruf also eine Minute lang aufgehalten.
+ */
+function tb_holen($url, $sekunden = 12)
+{
+    $url = trim((string) $url);
+    if ($url === '' || !preg_match('#^https?://#i', $url)) { return null; }
+    $sekunden = max(2, min(30, (int) $sekunden));
+    $alt = @ini_set('default_socket_timeout', (string) $sekunden);
+    $ctx = stream_context_create(array('http' => array(
+        'timeout'         => $sekunden,
+        'method'          => 'GET',
+        'user_agent'      => 'LoxBerry Spotpreis Tibber',
+        'header'          => "Accept: application/json\r\nAccept-Language: de\r\n",
+        /* Keiner Umleitung folgen. Diese Adressen tragen zwar keine
+         * Anmeldung, aber die Regel gilt fuer jeden Abruf dieser Linie -
+         * eine Umleitung auf einen fremden Rechner ist nichts, was ein
+         * Plugin von sich aus mitmacht. */
+        'follow_location' => 0,
+        'max_redirects'   => 1,
+        'ignore_errors'   => true)));
+    $r = @file_get_contents($url, false, $ctx);
+    if ($alt !== false) { @ini_set('default_socket_timeout', $alt); }
+    if ($r === false) { return null; }
+    /* Eine Antwort ist noch kein Lebenszeichen. Mit ignore_errors kommt auch
+     * eine 404 als Zeichenkette an; gilt die LETZTE Statuszeile, denn bei
+     * einer Umleitung stehen mehrere im Feld. */
+    $code = 0;
+    if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $z) {
+            if (preg_match('#^HTTP/[0-9.]+\s+([0-9]{3})#', (string) $z, $m)) {
+                $code = (int) $m[1];
+            }
+        }
+    }
+    if ($code !== 0 && ($code < 200 || $code > 299)) { return null; }
+    $d = json_decode($r, true);
+    return is_array($d) ? $d : null;
+}
+
+/**
+ * PV-Prognose und Speicherstand.
+ *
+ * Der Zwischenspeicher liegt unter data/ und nicht unter /tmp: /tmp ist auf
+ * dem LoxBerry eine Ramdisk, und nach jedem Neustart stuende die Prognose
+ * wieder auf "nicht gemessen", bis der naechste Abruf gelingt.
+ *
+ * $holen entscheidet, ob ueberhaupt ins Netz gegangen wird - und das ist der
+ * Unterschied zu den Schwesterlinien. Dort holt die Lesefunktion selbst nach,
+ * sobald der Speicher alt ist; hier tut das NUR der Cron. Der Grund steht in
+ * der Regel "der unangemeldete Endpunkt darf nichts ausloesen": tb_werte()
+ * wird vom Loxone-Endpunkt gerufen, und ein Miniserver, der alle fuenf
+ * Minuten fragt, wuerde sonst bei kaltem Speicher zwei fremde Dienste
+ * anfragen und bis zu 24 Sekunden auf seine Antwort warten.
+ *
+ * Rueckgabe immer vollstaendig, auch wenn nichts gemessen wurde.
+ */
+function tb_umwelt($holen = false, $slotlen = 3600)
+{
+    $cfg = tb_config();
+    $leer = array('pv' => null, 'pv_summe' => null, 'soc' => null,
+                  'pv_meldung' => '', 'soc_meldung' => '', 'ts' => 0);
+    $cache = tb_paths()['datadir'] . '/umwelt.json';
+    $alt = tb_json_lesen($cache);
+    $frisch = is_array($alt) && isset($alt['ts'])
+              && time() - (int) $alt['ts'] < 900;
+    if (!$holen || $frisch) {
+        return is_array($alt) && $alt ? $alt + $leer : $leer;
+    }
+
+    $erg = $leer;
+    $erg['ts'] = time();
+    $slotlen = max(60, (int) $slotlen);
+    $jetzt = time() - (time() % $slotlen);
+    $zeit = isset($cfg['zeitueberschreitung']) ? (int) $cfg['zeitueberschreitung'] : 15;
+
+    if ($cfg['pv_quelle'] !== '' && trim((string) $cfg['pv_url']) !== '') {
+        $roh = tb_holen($cfg['pv_url'], $zeit);
+        if ($roh === null) {
+            $erg['pv_meldung'] = 'NICHT_ERREICHBAR';
+        } else {
+            list($pv, $m) = plan_pv_lesen($roh, $cfg['pv_quelle'], $cfg['pv_pfad'],
+                $cfg['pv_zeitfeld'], $cfg['pv_wertfeld'], $cfg['pv_einheit'], $slotlen);
+            $erg['pv_meldung'] = $m;
+            if ($pv) {
+                $erg['pv'] = $pv;
+                $erg['pv_summe'] = plan_pv_summe($pv, $jetzt, 24);
+            }
+        }
+    }
+    if (trim((string) $cfg['soc_url']) !== '') {
+        $roh = tb_holen($cfg['soc_url'], $zeit);
+        if ($roh === null) {
+            $erg['soc_meldung'] = 'NICHT_ERREICHBAR';
+        } else {
+            list($soc, $m) = plan_soc_lesen($roh, $cfg['soc_pfad']);
+            $erg['soc_meldung'] = $m;
+            $erg['soc'] = $soc;
+        }
+    }
+    /* Eine Stoerung ueberschreibt die zuletzt gemessenen Werte nicht: was
+     * gestern um zwoelf an Prognose vorlag, ist eine bessere Auskunft als
+     * gar keine - aber nur, wenn die Meldung dazu sichtbar bleibt. Deshalb
+     * wird der ALTE Wert uebernommen und die Meldung NICHT. */
+    if ($erg['pv'] === null && is_array($alt) && isset($alt['pv']) && $alt['pv']) {
+        $erg['pv'] = $alt['pv'];
+        $erg['pv_summe'] = isset($alt['pv_summe']) ? $alt['pv_summe'] : null;
+    }
+    if ($erg['soc'] === null && is_array($alt) && isset($alt['soc']) && $alt['soc'] !== null) {
+        $erg['soc'] = $alt['soc'];
+    }
+    tb_json_schreiben($cache, $erg);
+    return $erg;
+}
+
+/**
+ * Den Sperrgrund als Zahl - Loxone rechnet mit Zahlen, nicht mit Woertern.
+ * 0 frei, 1 PV-Prognose, 2 Speicher zu leer, 3 Speicher zu voll.
+ */
+function tb_sperre_zahl($grund)
+{
+    if ($grund === 'pv') { return 1; }
+    if ($grund === 'soc_min') { return 2; }
+    if ($grund === 'soc_max') { return 3; }
+    return 0;
+}
+
+/* ---------------- Hysterese: was laeuft, laeuft zu Ende ----------------
+ *
+ * Der Planer bekommt bei jedem Lauf eine frische Preisreihe und hat kein
+ * Gedaechtnis. Ohne eines kann er zu jedem Abruf ein anderes Ergebnis
+ * liefern - und die Wallbox schaltet mitten im Laden ab, weil in drei
+ * Stunden eine Stunde billiger geworden ist.
+ *
+ * Gemerkt wird EINE Zahl je Regel: bis wann der begonnene Block laeuft. Sie
+ * wird gesetzt, wenn ein Block ANFAENGT, und bis zu seinem Ende nicht mehr
+ * angefasst - sonst koennte sie sich selbst verlaengern, und das waere eine
+ * Regel, die nie wieder ausgeht.
+ *
+ * Die Ablage liegt unter data/ und nicht unter /tmp. Die Schwesterlinien
+ * legen sie nach /tmp und begruenden das damit, dass nach einem Neustart
+ * ohnehin nichts mehr faehrt. Das stimmt fuer den LoxBerry, nicht aber fuer
+ * das Geraet an der Steckdose: eine Waschmaschine laeuft weiter, waehrend
+ * der Raspberry neu startet. Nach dem Neustart wuerde die Regel dann neu
+ * entscheiden - genau das, was die Hysterese verhindern soll.
+ */
+
+/** array(Regelindex => bis_ts). Abgelaufene Eintraege fallen weg. */
+function tb_laufend_lesen()
+{
+    $cfg = tb_config();
+    if (empty($cfg['hysterese'])) { return array(); }
+    $d = tb_json_lesen(tb_paths()['datadir'] . '/laufend.json');
+    if (!is_array($d)) { return array(); }
+    $jetzt = time();
+    $out = array();
+    foreach ($d as $i => $bis) {
+        if (is_array($bis)) { continue; }
+        $bis = (int) $bis;
+        // Harte Obergrenze: kein Block laeuft laenger als 24 Stunden.
+        if ($bis > $jetzt && $bis <= $jetzt + 86400) { $out[(int) $i] = $bis; }
+    }
+    return $out;
+}
+
+/**
+ * Nach der Rechnung fortschreiben. Drei Faelle je Regel:
+ *   laeuft und war noch nicht vermerkt  -> Ende eintragen
+ *   laeuft und war vermerkt             -> unveraendert stehen lassen
+ *   laeuft nicht                        -> Eintrag entfernen
+ *
+ * Nur der Cron ruft das auf. Ein Lesepfad, der ein Gedaechtnis fortschreibt,
+ * waere von der Zahl der Abrufe abhaengig.
+ */
+function tb_laufend_fortschreiben($regeln, $jetzt)
+{
+    $cfg = tb_config();
+    $f = tb_paths()['datadir'] . '/laufend.json';
+    if (empty($cfg['hysterese'])) {
+        /* is_file() VOR unlink(). Das @ genuegt nicht, wenn ein eigener
+         * Fehlerbehandler gesetzt ist: der wird unabhaengig von
+         * error_reporting gerufen, und "No such file or directory" stuende
+         * als Befund im Protokoll, obwohl nichts fehlt. */
+        if (is_file($f)) { @unlink($f); }
+        return;
+    }
+    $alt = tb_laufend_lesen();
+    $neu = array();
+    foreach ((array) $regeln as $r) {
+        if (!is_array($r) || empty($r['aktiv'])) { continue; }
+        $i = (int) $r['nr'] - 1;
+        if (isset($alt[$i])) { $neu[$i] = $alt[$i]; continue; }
+        // 'rest' kommt hier in STUNDEN an - tb_fahrplan() rechnet die Minuten
+        // des Planers dort um, und diese Liste ist das Ergebnis davon.
+        $rest = isset($r['rest']) ? (int) $r['rest'] : 0;
+        if ($rest > 0) { $neu[$i] = (int) $jetzt + $rest * 3600; }
+    }
+    tb_json_schreiben($f, $neu);
+}
+
+/**
+ * Der Fahrplan.
+ *
+ * Rueckgabe:
+ *   'regeln'   je Regel nr, aktiv, in, rest, ct, verdraengt, gesperrt, ein,
+ *              name, art, rang, fehlt, spart_ct, spart_eur
+ *   'plan'     dasselbe MIT den Zeitscheiben - nur fuer die Anzeige
+ *   'belegung' ts => kW, was zu welcher Scheibe verplant ist
+ *   'preise'   ts => ct, die Reihe, mit der gerechnet wurde
+ *   'slotlen'  Sekunden je Zeitscheibe, gemessen an der Preisreihe
+ *   'pv_summe' kWh der naechsten 24 h, oder null
+ *   'soc'      Prozent, oder null
+ *   'planlast' kW, die in der laufenden Scheibe verplant sind
+ *
+ * 'in' und 'rest' kommen aus dem Planer in MINUTEN und gehen hier in STUNDEN
+ * hinaus - diese Linie rechnet seit jeher in Stunden, und daran haengen die
+ * virtuellen Eingaenge im Miniserver.
+ */
+function tb_fahrplan($st = null)
+{
+    $cfg = tb_config();
+    if (!is_array($st)) { $st = tb_stand(); }
+    $leer = array('regeln' => array(), 'plan' => array(), 'belegung' => array(),
+                  'preise' => array(), 'slotlen' => 3600,
+                  'pv_summe' => null, 'soc' => null, 'planlast' => 0.0);
+
+    // Die Preisreihe aus heute und morgen, in ct/kWh - so, wie der Planer
+    // sie erwartet, und so, wie tb_stand() sie ablegt.
+    $liste = array();
+    foreach (array('liste_heute', 'liste_morgen') as $tag) {
+        foreach ((array) (isset($st[$tag]) ? $st[$tag] : array()) as $e) {
+            if (!is_array($e) || !isset($e['ts']) || !isset($e['ct'])) { continue; }
+            if ($e['ct'] === null) { continue; }
+            $liste[(int) $e['ts']] = (float) $e['ct'];
+        }
+    }
+    if (!$liste) { return $leer; }
+    ksort($liste);
+
+    /* Die Scheibenlaenge wird GEMESSEN, nicht gesetzt. Tibber liefert heute
+     * Stundenpreise; liefert das Konto eines Tages Viertelstunden, rechnet
+     * der Planer damit, ohne dass jemand etwas einstellt. tb_schrittweite()
+     * beantwortet dieselbe Frage schon fuer die Fensterrechnung - es waere
+     * eine zweite Wahrheit, sie hier noch einmal zu bilden. */
+    $roh = array();
+    foreach ($liste as $ts => $ct) { $roh[] = array('ts' => $ts, 'ct' => $ct); }
+    $slotlen = tb_schrittweite($roh);
+    if ($slotlen < 60) { $slotlen = 3600; }
+
+    $jetzt = time() - (time() % $slotlen);
+    $umwelt = tb_umwelt(false, $slotlen);
+
+    /* Das Tagesmittel nur uebergeben, wenn es eines GIBT. 0.0 waere ein Wert
+     * und kein Nichtwissen - und bei negativen Preisen ist der Unterschied
+     * entscheidend. */
+    $mittel = null;
+    if (!empty($st['ok']) && isset($st['heute']['avg']) && $st['heute']['avg'] !== null
+        && !empty($st['heute']['n'])) {
+        $mittel = (float) $st['heute']['avg'];
+    }
+
+    $plan = plan_rechnen($liste, $slotlen, $jetzt, $cfg['regeln'], array(
+        'pv'       => isset($umwelt['pv']) ? $umwelt['pv'] : null,
+        'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
+        'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
+        'neg'      => !empty($st['neg']) ? 1 : 0,
+        'mittel'   => $mittel,
+        'laufend'  => tb_laufend_lesen(),
+    ), array(
+        'budget_kw'   => $cfg['budget_kw'],
+        'pv_bonus'    => $cfg['pv_bonus'],
+        'pv_schwelle' => $cfg['pv_schwelle'],
+        'budget2_kw'  => $cfg['budget2_kw'],
+        'budget2_von' => $cfg['budget2_von'],
+        'budget2_bis' => $cfg['budget2_bis'],
+    ));
+
+    $regeln = array();
+    foreach ($plan as $i => $w) {
+        $r = isset($cfg['regeln'][$i]) ? $cfg['regeln'][$i] : array();
+        $w['in']   = $w['in'] < 0 ? -1 : (int) round($w['in'] / 60);
+        $w['rest'] = (int) round($w['rest'] / 60);
+        $w['name'] = (isset($r['name']) && $r['name'] !== '')
+                   ? $r['name'] : sprintf(tb_t('FP.REGEL_N'), $i + 1);
+        $w['art']  = isset($r['art']) ? $r['art'] : 'fenster';
+        $w['ein']  = empty($r['aktiv']) ? 0 : 1;
+        if (!isset($w['verdraengt'])) { $w['verdraengt'] = 0; }
+        if (!isset($w['gesperrt'])) { $w['gesperrt'] = ''; }
+        $plan[$i] = $w;
+        $ohne = $w;
+        unset($ohne['slots']);      // die Scheibenliste braucht Loxone nicht
+        $regeln[] = $ohne;
+    }
+
+    $belegung = plan_belegung($plan);
+    $planlast = isset($belegung[$jetzt]) ? (float) $belegung[$jetzt] : 0.0;
+
+    return array(
+        'regeln'   => $regeln,
+        'plan'     => $plan,
+        'belegung' => $belegung,
+        'preise'   => $liste,
+        'slotlen'  => $slotlen,
+        'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
+        'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
+        'planlast' => $planlast,
+    );
+}
+
+/**
+ * Eine Regelliste aus einer Sicherungsdatei beurteilen.
+ *
+ * Rueckgabe: array(bereinigte Liste, Beanstandungen).
+ *
+ * Enger als die Normierung beim Lesen, und das ist Absicht: was aus einer
+ * fremden Datei kommt, wird abgewiesen und nicht zurechtgebogen. Alle
+ * Beanstandungen werden gesammelt - die erste zu melden und abzubrechen
+ * verschweigt die uebrigen.
+ */
+function tb_regeln_pruefen($wert)
+{
+    $mangel = array();
+    if (!is_array($wert)) {
+        return array(array(), array(sprintf(tb_t('EINST.SICH_WERT_REGELN'), 'regeln')));
+    }
+    if (count($wert) > TB_REGELN) {
+        $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_ZUVIEL'), count($wert), TB_REGELN);
+    }
+    /* Ganzzahlen, Kommazahlen und Auswahlwerte - je Feld eine Regel, und die
+     * Grenzen sind dieselben wie in tb_fahrplan_normieren(). */
+    $zahl = array('n' => array(1, 12), 'von' => array(0, 23), 'bis' => array(0, 23),
+                  'horizont' => array(1, 48), 'prozent' => array(0, 90),
+                  'rang' => array(1, 99), 'frist' => array(-1, 23),
+                  'soc_min' => array(0, 100), 'soc_max' => array(0, 100),
+                  'min_lauf' => array(0, 720), 'min_pause' => array(0, 720));
+    $komma = array('schwelle' => array(-100.0, 200.0), 'leistung' => array(0.0, 100.0),
+                   'energie' => array(0.0, 500.0), 'pv_sperre' => array(0.0, 500.0));
+    $haken = array('aktiv', 'neg');
+
+    $rein = array();
+    foreach ($wert as $i => $r) {
+        $i = (int) $i;
+        if ($i < 0 || $i >= TB_REGELN) {
+            $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_INDEX'), $i);
+            continue;
+        }
+        if (!is_array($r)) {
+            $mangel[] = sprintf(tb_t('EINST.SICH_WERT_REGELN'), 'regeln[' . $i . ']');
+            continue;
+        }
+        $neu = tb_regel_vorgabe();
+        foreach ($r as $k => $v) {
+            $k = (string) $k;
+            if (!array_key_exists($k, $neu)) {
+                $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_FREMD'),
+                                    htmlspecialchars($k, ENT_QUOTES, 'UTF-8'), $i + 1);
+                continue;
+            }
+            if (!tb_wert_taugt($v)) {
+                $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_UNTAUGLICH'),
+                                    htmlspecialchars($k, ENT_QUOTES, 'UTF-8'), $i + 1);
+                continue;
+            }
+            $s = trim((string) $v);
+            if (in_array($k, $haken, true)) {
+                if (!in_array($s, array('0', '1'), true)) {
+                    $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_FELD'), $k, $i + 1);
+                    continue;
+                }
+                $neu[$k] = (int) $s;
+            } elseif (isset($zahl[$k])) {
+                if (!preg_match('/^-?[0-9]{1,7}$/', $s)
+                    || (int) $s < $zahl[$k][0] || (int) $s > $zahl[$k][1]) {
+                    $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_BEREICH'), $k, $i + 1,
+                                        $zahl[$k][0], $zahl[$k][1]);
+                    continue;
+                }
+                $neu[$k] = (int) $s;
+            } elseif (isset($komma[$k])) {
+                $s2 = str_replace(',', '.', $s);
+                if (!preg_match('/^-?[0-9]{1,4}(\.[0-9]{1,3})?$/', $s2)
+                    || (float) $s2 < $komma[$k][0] || (float) $s2 > $komma[$k][1]) {
+                    $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_BEREICH'), $k, $i + 1,
+                                        $komma[$k][0], $komma[$k][1]);
+                    continue;
+                }
+                $neu[$k] = (float) $s2;
+            } elseif ($k === 'art') {
+                if (!in_array($s, array('fenster', 'stunden', 'schwelle', 'mittel'), true)) {
+                    $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_FELD'), $k, $i + 1);
+                    continue;
+                }
+                $neu[$k] = $s;
+            } elseif ($k === 'name') {
+                if (strlen($s) > 40) {
+                    $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_FELD'), $k, $i + 1);
+                    continue;
+                }
+                $neu[$k] = $s;
+            }
+        }
+        $rein[$i] = $neu;
+    }
+    /* Luecken auffuellen, damit die Liste immer TB_REGELN Eintraege hat -
+     * sonst haengt die Nummer einer Regel an ihrer Position in der Datei,
+     * und eine ausgelassene Regel 2 machte aus Regel 3 die Regel 2. Daran
+     * haengen MQTT-Thema, virtueller Eingang und Endpunktadresse. */
+    if (!$mangel) {
+        for ($i = 0; $i < TB_REGELN; $i++) {
+            if (!isset($rein[$i])) { $rein[$i] = tb_regel_vorgabe(); }
+        }
+        ksort($rein);
+    }
+    return array($rein, $mangel);
+}
+
+/**
+ * Liegt in den Schwesterlinien dieselbe planer.php?
+ *
+ * Die Regel "diese Datei ist in drei Plugins byteweise gleich" hatte bis
+ * 0.9.11 kein Werkzeug, das sie findet - sie stand als Bitte im Dateikopf.
+ * Hier ist es, und es misst am INSTALLIERTEN Zustand.
+ *
+ * Rueckgabe: Liste aus array(ordner, lage, sha), lage ist eines von
+ *   'gleich' | 'verschieden' | 'fehlt'
+ * 'fehlt' heisst NICHT "in Ordnung" und nicht "Befund": das Schwesterplugin
+ * ist auf diesem LoxBerry schlicht nicht installiert, und ueber eine leere
+ * Menge wird nicht geurteilt.
+ */
+function tb_planer_pruefsummen()
+{
+    /* Gerechnet wird in planer.php, nicht hier.
+     *
+     * Der erste Entwurf hatte die Rechnung an dieser Stelle - und damit in
+     * genau EINER der drei Linien, die dieselbe Datei fuehren. Die beiden
+     * anderen haetten entweder keine Pruefung bekommen oder eine zweite
+     * Kopie davon; eine Pruefung, die Kopien vergleicht, in Kopien zu
+     * fuehren waere der Witz gewesen. Seit planer.php 1.1.6 steht sie dort,
+     * und alle drei rufen dieselbe.
+     *
+     * Hier bleiben nur die zwei Angaben, die diese Linie kennt: wo LoxBerry
+     * wohnt und wo die eigene Datei liegt. */
+    return plan_pruefsummen(tb_paths()['home']);
+}
 
 /** Alle Punkte der letzten $tage Tage. Rueckgabe: Liste aus array(ts, ct). */
 function tb_verlauf_lesen($tage = 30)
@@ -2076,6 +2797,30 @@ function tb_feldregeln()
         'mqtt_ein'            => array('art' => 'haken'),
         'mqtt_topic'          => array('art' => 'thema'),
         'aktionstoken'        => array('art' => 'merkwort'),
+        /* ---- Fahrplaner (ab 0.9.11) ----
+         *
+         * Dieselbe Positivliste, die das Formular benutzt - und dieselbe, die
+         * eine zurueckgespielte Sicherung durchlaufen muss. Die Grenzen
+         * stehen HIER und nur hier; tb_fahrplan_normieren() kappt mit
+         * denselben Zahlen, weil es dieselbe Frage an anderer Stelle
+         * beantwortet (was schon in der Datei steht). Wer eine Grenze
+         * aendert, aendert beide - der Reiter Test haelt sie gegeneinander. */
+        'budget_kw'    => array('art' => 'komma', 'min' => 0,  'max' => 200),
+        'budget2_kw'   => array('art' => 'komma', 'min' => 0,  'max' => 200),
+        'budget2_von'  => array('art' => 'zahl',  'min' => 0,  'max' => 23),
+        'budget2_bis'  => array('art' => 'zahl',  'min' => 0,  'max' => 23),
+        'pv_bonus'     => array('art' => 'komma', 'min' => 0,  'max' => 100),
+        'pv_schwelle'  => array('art' => 'zahl',  'min' => 1,  'max' => 100000),
+        'hysterese'    => array('art' => 'haken'),
+        'pv_quelle'    => array('art' => 'auswahl',
+                                'werte' => array('', 'forecast_solar', 'objekt', 'liste')),
+        'pv_einheit'   => array('art' => 'auswahl', 'werte' => array('wh', 'w', 'kw')),
+        'pv_url'       => array('art' => 'url'),
+        'soc_url'      => array('art' => 'url'),
+        'pv_pfad'      => array('art' => 'pfad'),
+        'soc_pfad'     => array('art' => 'pfad'),
+        'pv_zeitfeld'  => array('art' => 'pfad'),
+        'pv_wertfeld'  => array('art' => 'pfad'),
     );
 }
 
@@ -2139,6 +2884,35 @@ function tb_wert_pruefen($schluessel, $wert)
         case 'merkwort':
             return ($s === '' || preg_match('/^[A-Za-z0-9]{8,64}$/', $s)) ? ''
                 : sprintf(tb_t('EINST.SICH_WERT_MERKWORT'), $schluessel);
+        /* ---- ab 0.9.11, fuer den Fahrplaner ---- */
+        case 'auswahl':
+            /* Eine ZUORDNUNG, kein zweiwertiger Ausdruck: die Liste der
+             * erlaubten Werte steht in der Feldregel. Kommt eine fuenfte
+             * Quellenart dazu, steht sie an einer Stelle. */
+            $erlaubt = isset($r['werte']) && is_array($r['werte']) ? $r['werte'] : array();
+            return in_array($s, $erlaubt, true) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_AUSWAHL'), $schluessel,
+                          implode(', ', array_map(function ($w) {
+                              return $w === '' ? '(leer)' : $w;
+                          }, $erlaubt)));
+        case 'url':
+            /* Leer ist erlaubt und heisst "aus".
+             *
+             * NICHT hart filtern: aus einer Adresse Zeichen zu entfernen
+             * ergibt eine andere Adresse, die aussieht wie eine richtige.
+             * Abgewiesen wird, was kein http(s) ist oder zu lang - der Rest
+             * geht unveraendert durch, denn Abfragezeichenfolgen enthalten
+             * jedes erdenkliche Zeichen. Steuerzeichen hat tb_wert_taugt()
+             * schon abgefangen. */
+            if ($s === '') { return ''; }
+            if (strlen($s) > 1024 || !preg_match('#^https?://[^\s]+$#i', $s)) {
+                return sprintf(tb_t('EINST.SICH_WERT_URL'), $schluessel);
+            }
+            return '';
+        case 'pfad':
+            // Ein Punktpfad in einem JSON-Baum. Leer ist erlaubt.
+            return ($s === '' || preg_match('/^[A-Za-z0-9_.\-]{1,128}$/', $s)) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_PFAD'), $schluessel);
     }
     return '';
 }
@@ -2260,6 +3034,26 @@ function tb_sicherung_lesen($roh)
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(tb_t('EINST.SICH_FREMD'),
                                  htmlspecialchars($k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        /* Die Schaltregeln sind der einzige Schluessel, dessen Wert ein FELD
+         * ist. tb_wert_taugt() weist Felder ab - zu Recht, denn jeder andere
+         * Wert dieser Konfiguration geht irgendwann in eine Zeile, und ein
+         * Feld haette dort nichts zu suchen. Also bekommt dieser eine
+         * Schluessel seine eigene Pruefung, und sie ist nicht laxer, sondern
+         * enger: jedes Feld jeder Regel wird einzeln beurteilt.
+         *
+         * Ohne diesen Zweig waere die Sicherung fuer den Fahrplaner wertlos -
+         * genau die Halbierung, die diese Datei bei den Zugangsdaten schon
+         * einmal hatte. */
+        if ($k === 'regeln') {
+            list($rein, $rmangel) = tb_regeln_pruefen($w);
+            if ($rmangel) {
+                foreach ($rmangel as $m) { $mangel[] = $m; }
+                continue;
+            }
+            $neu[$k] = $rein;
+            $anzahl++;
             continue;
         }
         if (!tb_wert_taugt($w)) {

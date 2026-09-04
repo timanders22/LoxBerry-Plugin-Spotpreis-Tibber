@@ -198,6 +198,113 @@ zwei unabhängigen Umsetzungen: `github.com/terjesannum/tibber-exporter` und der
 Node-RED-Erweiterung `node-red-contrib-tibber-api`. Felder, die dort nicht
 stehen, stehen auch hier nicht.
 
+## Fassung 0.9.11 — der Fahrplaner
+
+Bis 0.9.10 konnte dieses Plugin sagen, **welche Stunden günstig sind**. Es
+konnte nicht sagen, **welches Gerät sie bekommt**. Solange nur ein Verbraucher
+am Preis hängt, ist das dasselbe; sobald Wärmepumpe, Wallbox und Waschmaschine
+mitspielen, ist es das nicht mehr — sie finden alle dieselbe billigste Stunde
+und schalten gemeinsam ein.
+
+Der Fahrplaner ist dieselbe Rechnung, die in *Spotpreis aWATTar* und
+*Spotpreis Octopus* seit deren 1.2.0 beziehungsweise 1.1.0 steckt:
+`webfrontend/html/planer.php`, in allen drei Linien **byteweise dieselbe
+Datei**. Diese Linie hatte sie als einzige nicht.
+
+### Was er kann
+
+| | |
+|---|---|
+| **Frist** | „Die Waschmaschine braucht 2,5 h und muss um 7 Uhr fertig sein." Bisher gab es ein Zeitfenster und einen Horizont, aber keinen Endtermin und keine Energiemenge. |
+| **Rangfolge und Leistungsbudget** | Alle Regeln teilen sich eine gleichzeitige Leistung. Rang 1 sucht zuerst aus; was eine höher gereihte Regel belegt hat, steht den übrigen nicht mehr zur Verfügung. |
+| **Zweites Budget** | Für steuerbare Verbrauchseinrichtungen nach §14a EnWG: innerhalb eines Zeitfensters gilt zusätzlich eine kleinere Grenze. |
+| **PV-Prognose** | Liegt für eine Stunde eine Prognose vor, wird eine Gutschrift vom Preis abgezogen — so gewinnt die sonnige Mittagsstunde gegen die billige Nachtstunde. Quellen: forecast.solar, Solcast, oder jede JSON-Auskunft mit Pfadangabe. |
+| **Speicherstand** | Eine Regel kann erst ab oder nur bis zu einem Ladezustand laufen. |
+| **Taktschutz** | Mindestlaufzeit und Mindestpause, damit Wärmepumpe und Kompressor nicht takten. |
+| **Hysterese** | Ein begonnener Block läuft zu Ende, auch wenn inzwischen eine Stunde billiger geworden ist. |
+
+Das Verfahren ist bewusst einfach — es ist ein gieriges, kein optimales. Dafür
+lässt es sich in einem Satz erklären: *wer vorne steht, sucht sich zuerst aus.*
+Genau das braucht, wer um drei Uhr nachts wissen will, warum die Wallbox nicht
+lädt.
+
+### Was nach Loxone geht
+
+Vier Schaltregeln, je sechs Werte, dazu vier Größen zum Fahrplan als Ganzes —
+**28 neue Felder**, hinten an die bestehende Statuszeile angehängt. Bestehende
+virtuelle Eingänge merken davon nichts: Loxone sucht Textstellen, keine Zeilen.
+
+| Feld | Bedeutung |
+|---|---|
+| `R1` … `R4` | läuft gerade (0/1) — daran gehört der digitale Eingang |
+| `R1IN` … | Stunden bis zum nächsten Block; -1 = keiner im Horizont |
+| `R1REST` … | verbleibende Stunden des laufenden Blocks |
+| `R1CT` … | Durchschnittspreis der gewählten Stunden |
+| `R1VERD` … | wie viele Stunden das Budget dieser Regel weggenommen hat |
+| `R1SPERRE` … | 0 frei, 1 PV-Prognose, 2 Speicher zu leer, 3 Speicher zu voll |
+| `PVSUM` | erwarteter PV-Ertrag der nächsten 24 h in kWh |
+| `SOC` | Ladezustand des Speichers in Prozent |
+| `BUDGET` | das eingestellte Leistungsbudget in kW |
+| `PLANLAST` | wie viele kW in der laufenden Stunde verplant sind |
+
+Die Namen sind **wortgleich** mit denen der Schwesterlinien. Damit gilt die
+Zusage aus dem Kopf dieser Datei auch für den Fahrplaner: wer den Anbieter
+wechselt, tauscht das Plugin und lässt die Bausteine im Miniserver stehen.
+
+`PVSUM` und `SOC` gehen als Strich hinaus, solange keine Quelle eingerichtet
+ist — nicht als 0. Eine 0 wäre eine Aussage über die Sonne, die niemand
+gemacht hat, und Loxone behält beim Strich den letzten Wert.
+
+### Ab Werk ändert sich nichts
+
+Die Regelliste ist leer, kein Budget, keine Prognosequelle. Wer nichts
+einstellt, bekommt das Verhalten von 0.9.10 — kein zusätzlicher Netzabruf,
+keine zusätzliche Datei, keine Zeile mehr im Protokoll. Die 28 neuen Felder
+stehen in der Statuszeile und melden 0 beziehungsweise einen Strich.
+
+Beim ersten Speichern im neuen Reiter wird die Regelliste einmal auf vier
+Einträge vervollständigt. Das ist der Aktualisierungsfall und der einzige
+Schreibvorgang, den das Update auslöst.
+
+### Zwei Entscheidungen, die von den Schwesterlinien abweichen
+
+**Gerechnet wird zur Lesezeit, nicht im Minutentakt.** `stand.json` wird bei
+dieser Linie nur geschrieben, wenn wirklich Preise geholt wurden — ab Werk
+alle 30 Minuten, einstellbar bis 1440. Ein im Cron gerechneter Fahrplan stünde
+also bis zu einen Tag still, während `IN` und `REST` herunterzählen müssen.
+Die Rechnung ist reine Arithmetik über höchstens 48 Werte.
+
+**Die PV-Prognose holt nur der Minutentakt.** Die Lesefunktion liest bloß den
+Zwischenspeicher. Sonst hätte ein Miniserver, der alle fünf Minuten fragt, bei
+kaltem Speicher auf zwei fremde Dienste gewartet — und der unangemeldete
+Endpunkt hätte einen Netzabruf ausgelöst.
+
+### Was im Reiter *Test* dazukommt
+
+Fünf Fragen, und zwei davon sind Zeilen, die genau die Fehler künftig von
+selbst finden, die beim Bau dieser Fassung aufgetreten sind:
+
+- Rechnet der Fahrplaner richtig? (170 Fälle, ohne Netz und ohne Preise)
+- Liegt in den Schwesterlinien dieselbe Rechnung? (drei Ausgänge: gleich,
+  verschieden, nicht installiert)
+- Wie viele Schaltregeln sind eingeschaltet?
+- Bleibt jeder Wert in dem Bereich, den die Importvorlage Loxone zusagt?
+- Sagen Formularprüfung und Kappung beim Lesen dasselbe?
+
+### Nebenher berichtigt
+
+- **`simplexml_load_string()` stand ohne Wache.** Fehlt dem LoxBerry die
+  PHP-Erweiterung für XML, starb der Reiter *Test* mit einem Fatal error — und
+  mit ihm alles darunter, auch der Reiter *Logdateien*. In derselben Datei
+  waren `curl_init` und `mb_strlen` bewacht. Jetzt gibt es einen dritten
+  Ausgang: „nicht prüfbar" ist kein Kreuz.
+- **Der Selbsttest des Fahrplaners hing an der Zeitzone des Geräts.** Sieben
+  seiner Fälle prüfen die Zeitumstellung und stehen als feste Zeitpunkte da;
+  auf einem LoxBerry ohne Sommerzeit gingen sie rot, ohne dass am Plugin etwas
+  falsch war. Gemessen unter PHP 8.4.21: mit `date.timezone=UTC` sieben
+  Fehlschläge von 170, mit `Europe/Berlin` null. Der Selbsttest setzt die Zone
+  jetzt selbst und nennt beide.
+
 ## Fassung 0.9.10 — was sich geändert hat
 
 Eine Durchsicht Zeile für Zeile, mit vier unabhängigen Prüfern. Das Wichtigste
