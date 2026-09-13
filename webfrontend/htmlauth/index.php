@@ -410,6 +410,29 @@ if ($tb_post && isset($_POST['save_fahrplan'])) {
     foreach ($tb_fprmangel as $tb_fpm) { $tb_fpmangel[] = $tb_fpm; }
     if (!$tb_fprmangel) { $tb_fpneucfg['regeln'] = $tb_fpgeprueft; }
 
+    /* Der Typ eines Feldes kommt aus EINER Quelle.
+     *
+     * Bis 0.9.13 legte dieser Handler die Formularwerte als Zeichenketten
+     * ab ('0', '500'); jeder andere Speicherweg beginnt dagegen mit
+     * tb_config(), und das ist durch tb_fahrplan_normieren() gelaufen -
+     * dort stehen Zahlen. In der Konfigurationsdatei wechselte der Typ also
+     * je nachdem, welches Formular zuletzt gespeichert hatte.
+     * wirkungstest.py meldete das als Drift an sechs Feldern, in BEIDE
+     * Richtungen: Formular Fahrplaner machte aus 0 die '0', Formular MQTT
+     * aus der '0' wieder 0.
+     *
+     * Gemessene Wirkung hatte es keine - gelesen wird ohnehin immer
+     * normiert -, aber zwei Wahrheiten ueber den Typ eines Feldes sind eine
+     * zu viel: die Sicherungsdatei sah je nach Vorgeschichte anders aus,
+     * und ein Vergleich zweier Anlagen meldete Unterschiede, die keine
+     * waren.
+     *
+     * Die Grenzen in tb_fahrplan_normieren() greifen hier nicht mehr:
+     * tb_wert_pruefen() hat sie oben schon geprueft und Verstoesse
+     * abgewiesen. Was bleibt, ist die Umwandlung - und die faellt genauso
+     * aus wie beim naechsten Lesen. */
+    $tb_fpneucfg = tb_fahrplan_normieren($tb_fpneucfg);
+
     if ($tb_fpmangel) {
         /* GAR NICHTS speichern - anders als der Einstellungs-Handler daneben,
          * der die beanstandete Zeile uebergeht und den Rest sichert.

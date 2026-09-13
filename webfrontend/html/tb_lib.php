@@ -2579,7 +2579,7 @@ function tb_mqtt_retain($thema)
     if ($tab === null) {
         $tab = array();
         foreach (array(
-            'status/ok', 'status/ts', 'status/pulse_ts',
+            'status/ok',
             'morgen_ok', 'fix',
             'verbr_gestern', 'kosten_gestern',
             'verbr_monat', 'kosten_monat', 'dyn_monat', 'diff_monat', 'euro_monat',
@@ -2587,7 +2587,23 @@ function tb_mqtt_retain($thema)
             'avg_30t', 'rank_30t',
         ) as $t) { $tab[$t] = true; }
     }
-    /* Ein Thema OHNE Eintrag geht publish - es darf nicht auf Dauer im
+    /* BERICHTIGT in 0.9.14: status/ts und status/pulse_ts standen in 0.9.13
+     * hier drin. Das war falsch. Beide gehoeren zum LEBENSZEICHEN
+     * (tb_mqtt_lebenszeichen), und Regeln/07 sagt dazu: "Das Lebenszeichen
+     * ist nie retained ... es traegt den Zeitstempel." Der Bestand sagt es
+     * genauso - ACTiKamera 1.9.19 haelt 'ts' ausdruecklich auf 0 ("online
+     * und ts sind das Lebenszeichen und gehen nie retained hinaus"), und
+     * MarstekVenus 1.1.10 faengt sie noch vor der Feldtabelle ab ("Das
+     * Lebenszeichen und die Zeitstempel: nie").
+     *
+     * Der Unterschied, auf den es ankommt: ein INHALTLICHER Zeitstempel ist
+     * ein Zustand und darf retained sein (bei ACTiKamera die Aufnahmezeit
+     * 'zeit'). Ein Zeitstempel, der nur sagt "ich lief gerade", ist es
+     * nicht - er ist die halbe Aussage des Lebenszeichens, und die andere
+     * Haelfte (status/zaehler) geht ohnehin fluechtig hinaus. Retained
+     * stuende im Broker eine Zeit ohne den Zaehler, der sie widerlegt.
+     *
+     * Ein Thema OHNE Eintrag geht publish - es darf nicht auf Dauer im
      * Broker stehenbleiben, nur weil niemand an die Tabelle gedacht hat. */
     return isset($tab[(string) $thema]);
 }

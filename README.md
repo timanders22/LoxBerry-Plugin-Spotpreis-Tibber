@@ -1,5 +1,7 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
+Version 0.9.14
+
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
 Momentanleistung im Sekundentakt. Alles geht an Loxone: über MQTT als Regelweg
@@ -197,6 +199,46 @@ Die öffentliche Tibber-Beschreibung (`developer.tibber.com`), gegengelesen an
 zwei unabhängigen Umsetzungen: `github.com/terjesannum/tibber-exporter` und der
 Node-RED-Erweiterung `node-red-contrib-tibber-api`. Felder, die dort nicht
 stehen, stehen auch hier nicht.
+
+## Fassung 0.9.13 und 0.9.14 — was im Broker stehenbleibt
+
+Ein Broker kann den letzten Wert eines Themas festhalten (*retained*). Loxone
+hat ihn dann nach einem Neustart des Miniservers oder des Brokers sofort wieder.
+Bis 0.9.12 ging **jedes** Thema flüchtig hinaus; nach einem Neustart standen
+alle virtuellen Eingänge leer, bis zum nächsten fälligen Abruf — ab Werk bis zu
+30 Minuten.
+
+Die Entscheidung fällt **je Thema**, nicht je Absendung: dieses Plugin schickt
+Lebenszeichen und Zustände in einem Durchgang, und wer am Aufruf entscheidet,
+macht entweder das Lebenszeichen dauerhaft oder die Zustände flüchtig.
+
+| | Themen |
+|---|---|
+| **zurückbehalten** | `status/ok`, `morgen_ok`, `fix`, `verbr_gestern`, `kosten_gestern`, `verbr_monat`, `kosten_monat`, `dyn_monat`, `diff_monat`, `euro_monat`, `ersparnis_gestern`, `guenstiganteil`, `avg_30t`, `rank_30t` |
+| **flüchtig** | der laufende Preis, Niveau und Rang, die Fenster, die Pulse-Momentanwerte, die Stundenpreise, die Tageskennzahlen — und das Lebenszeichen: `status/zaehler`, `status/ts`, `status/pulse_ts` |
+
+**In 0.9.14 berichtigt:** `status/ts` und `status/pulse_ts` standen in 0.9.13
+bei den zurückbehaltenen Themen. Das war falsch. Beide gehören zum
+**Lebenszeichen**, und ein Lebenszeichen wird nie zurückbehalten — es stünde
+sonst für immer im Broker und sähe aus wie ein laufendes Plugin. Der
+Unterschied, auf den es ankommt: ein *inhaltlicher* Zeitstempel ist ein Zustand
+und darf bleiben; einer, der nur sagt „ich lief gerade", ist die halbe Aussage
+des Lebenszeichens — und die andere Hälfte, der umlaufende Zähler, geht
+flüchtig hinaus.
+
+Die Spalte *Zurückbehalten* im Reiter *MQTT* fragt dieselbe Funktion, die auch
+sendet. Ein Wert aus lauter Leerzeichen geht gar nicht hinaus: eine leere
+Nutzlast *löscht* ein zurückbehaltenes Thema im Broker.
+
+Beim Update räumt der Installer `.mqtt_signatur` ab — sonst würde alles, was
+sich seither nicht geändert hat, nicht gesendet und stünde damit auch nicht im
+Broker. Nachsehen: `mosquitto_sub -t '<präfix>/#' --retained-only`.
+
+Dazu in 0.9.14: die Fahrplaner-Einstellungen werden beim Speichern mit denselben
+Typen abgelegt, die beim Lesen ohnehin gelten. Bis 0.9.13 schrieb das
+Fahrplaner-Formular Zeichenketten (`"0"`, `"500"`) und jedes andere Formular
+Zahlen — je nachdem, welches zuletzt gespeichert hatte, sah die
+Konfigurationsdatei anders aus.
 
 ## Fassung 0.9.11 — der Fahrplaner
 
