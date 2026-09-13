@@ -26,6 +26,21 @@ rm -f "$PDATA/stand.json" 2>/dev/null
 # Taktmarker zuruecksetzen, damit gleich nach dem Update abgerufen wird.
 rm -f "$PDATA/.letzter_"* 2>/dev/null
 
+# Und den MQTT-Aenderungsmerker.
+#
+# Seit 0.9.13 gehen Zustaende ZURUECKBEHALTEN hinaus. Der Doppelt-senden-
+# Filter vergleicht eine Signatur ueber die Werte; nach einem Update ist sie
+# unveraendert, es ginge also nur das Lebenszeichen hinaus - und die
+# zurueckbehaltenen Themen stuenden erst beim naechsten echten Preiswechsel
+# im Broker. Dasselbe gilt beim erstmaligen Einschalten von MQTT und nach
+# einem Wechsel des Themen-Praefixes (Regeln/07, EVCC 08.09.2026).
+#
+# Die Probe dafuer: unmittelbar nach dem naechsten Minutenlauf muessen unter
+#   mosquitto_sub -t '<praefix>/#' --retained-only
+# so viele Themen stehen, wie die Tabelle im Reiter MQTT zurueckbehaltene
+# fuehrt - nicht weniger.
+rm -f "$PDATA/.mqtt_signatur" 2>/dev/null
+
 echo "<OK> Zwischenspeicher geleert - beim naechsten Minutenlauf wird neu geholt."
 
 # Der Suchtext der virtuellen Eingaenge hat bis 0.9.6 kein Trennzeichen vor

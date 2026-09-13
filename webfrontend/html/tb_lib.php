@@ -808,6 +808,24 @@ function tb_notify($thema, $stufe, $text)
     if ($alt === $neu) { return false; }
     @file_put_contents($f, $neu);
     if ($stufe === 'ok') { return true; }        // Entwarnung: nur merken
+    /* loxberry_log.php nachladen - weder der Cron noch die Oberflaeche
+     * laden sie von selbst.
+     *
+     * Bis 0.9.12 stand hier nur die Wache, und die schlug IMMER an: am
+     * Geraet gemessen (LoxBerry 4.0.0.15, 13.09.2026) ist
+     * function_exists('notify_ext') false, wenn nur tb_lib.php geladen ist,
+     * und ebenso false hinter loxberry_system.php und loxberry_web.php -
+     * die beiden laden loxberry_log.php nicht nach. Die Folge: KEINE
+     * Meldung ging je an das Benachrichtigungszentrum, und im Protokoll
+     * stand als Grund, es gebe die Funktion in dieser LoxBerry-Fassung
+     * nicht. Es gibt sie: loxberry_log.php:1030.
+     *
+     * Bauart aus oc_lib.php des Octopus-Plugins, damit beide Linien
+     * dasselbe tun. */
+    $tb_liblog = tb_paths()['home'] . '/libs/phplib/loxberry_log.php';
+    if (!function_exists('notify_ext') && is_file($tb_liblog)) {
+        @require_once $tb_liblog;
+    }
     if (!function_exists('notify_ext')) {
         tb_log_gebremst('kein_notify', 'Der Hinweis "' . $text . '" konnte nicht an das '
             . 'Benachrichtigungszentrum gehen: notify_ext() gibt es in dieser '
@@ -2463,7 +2481,18 @@ function tb_mqtt_senden(array $paare, $praefix)
         if ($v === null || $v === '') { continue; }   // fehlender Wert: nichts senden
         $thema = tb_mqtt_wert_saeubern($k);
         if ($thema === '' || strpos($thema, ' ') !== false) { $fehler++; continue; }
-        $sendbar[$thema] = $v;
+        /* Der Wert wird HIER gesaeubert, nicht erst beim Senden.
+         *
+         * Ein Wert aus lauter Leerzeichen wird dabei zur leeren Nutzlast,
+         * und eine leere Nutzlast LOESCHT ein zurueckbehaltenes Thema im
+         * Broker ("Delete $udptopic from memory because of empty message",
+         * mqttgateway.pl, sub udpin). Gemessen an der Sprachsteuerung
+         * 0.11.5: dort ging genau das seit 0.10.2 hinaus. Ein solcher Wert
+         * geht deshalb gar nicht erst hinaus - das Plugin sagt ohnehin
+         * zu, einen fehlenden Wert nicht zu senden. */
+        $wert = tb_mqtt_wert_saeubern($v);
+        if ($wert === '') { continue; }
+        $sendbar[$thema] = $wert;
     }
     $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'],
                                    $errno, $errstr, 2);
@@ -2473,13 +2502,20 @@ function tb_mqtt_senden(array $paare, $praefix)
         return array(0, $fehler + count($sendbar));
     }
     $versucht = 0;
-    foreach ($sendbar as $thema => $v) {
-        $msg = 'publish ' . $praefix . '/' . $thema . ' ' . tb_mqtt_wert_saeubern($v);
+    $behalten = 0;
+    foreach ($sendbar as $thema => $wert) {
+        /* Der UDP-Eingang des Gateways kennt vier Befehle; 'retain' ist
+         * einer davon (mqttgateway.pl:293, ausgefuehrt in :354-357). Ein
+         * unbekanntes erstes Wort wuerde als THEMA gelesen - deshalb steht
+         * hier genau eines der beiden Woerter und nichts anderes. */
+        $befehl = tb_mqtt_retain($thema) ? 'retain' : 'publish';
+        if ($befehl === 'retain') { $behalten++; }
+        $msg = $befehl . ' ' . $praefix . '/' . $thema . ' ' . $wert;
         $versucht++;
         if (@fwrite($strom, $msg) === false) { $fehler++; }
     }
     fclose($strom);
-    return array($versucht, $fehler);
+    return array($versucht, $fehler, $behalten);
 }
 
 /**
@@ -2499,6 +2535,61 @@ function tb_mqtt_senden(array $paare, $praefix)
 function tb_mqtt_ausgeschlossen()
 {
     return array('OK', 'ALTER', 'PULSE_ALTER', 'ZAEHLER');
+}
+
+/**
+ * Wird ein Thema zurueckbehalten? Die Entscheidung faellt je THEMA.
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, Messwerte
+ * mit Zeitbezug nicht, das Lebenszeichen nie. Bis 0.9.12 ging bei Tibber
+ * ALLES fluechtig hinaus - nach einem Neustart des Brokers oder des
+ * Miniservers standen saemtliche virtuellen Eingaenge leer, bis zum
+ * naechsten faelligen Abruf (Vorgabe 30 Minuten).
+ *
+ * Warum je Thema und nicht je Aufruf: der Cron schickt Lebenszeichen und
+ * Zustaende in EINEM Durchgang. Wer die Entscheidung am Aufruf trifft, macht
+ * damit entweder das Lebenszeichen retained (falsch) oder die Zustaende
+ * nicht (auch falsch). Belegt an ACTiKamera 1.9.19, 08.09.2026.
+ *
+ * Zurueckbehalten wird, was nach einem Neustart noch WAHR ist:
+ *
+ *   status/ok        das Fehlerflag - ohne es weiss Loxone nach einem
+ *                    Neustart nicht, ob der letzte Abruf gelungen ist
+ *   status/ts        der Zeitstempel des letzten gelungenen Abrufs. Loxone
+ *                    rechnet daraus das Alter; steht er nicht da, laesst
+ *                    sich ein haengender Cron gar nicht erkennen. Er ist
+ *                    NICHT das Lebenszeichen - das ist status/zaehler.
+ *   status/pulse_ts  dasselbe fuer die Pulse
+ *   morgen_ok        liegen die Preise fuer morgen vor
+ *   fix              der eingetragene Festpreis - eine reine Einstellung
+ *   die Verbrauchs- und Kostenwerte von gestern und dieses Monats sowie
+ *   der Dreissig-Tage-Vergleich: sie aendern sich taeglich, nicht
+ *   stuendlich, und bleiben ueber einen Neustart richtig.
+ *
+ * Fluechtig bleibt alles mit Zeitbezug - der laufende Preis, das Niveau,
+ * der Rang, die Fenster, die Pulse-Momentanwerte, die Stundenpreise des
+ * Tages und die Tageskennzahlen. Ein retained Preis von gestern saehe
+ * nach einem Ausfall aus wie der von heute; genau das soll er nicht.
+ * Und status/zaehler ist das Lebenszeichen: retained zeigte es immer
+ * "lebt".
+ */
+function tb_mqtt_retain($thema)
+{
+    static $tab = null;
+    if ($tab === null) {
+        $tab = array();
+        foreach (array(
+            'status/ok', 'status/ts', 'status/pulse_ts',
+            'morgen_ok', 'fix',
+            'verbr_gestern', 'kosten_gestern',
+            'verbr_monat', 'kosten_monat', 'dyn_monat', 'diff_monat', 'euro_monat',
+            'ersparnis_gestern', 'guenstiganteil',
+            'avg_30t', 'rank_30t',
+        ) as $t) { $tab[$t] = true; }
+    }
+    /* Ein Thema OHNE Eintrag geht publish - es darf nicht auf Dauer im
+     * Broker stehenbleiben, nur weil niemand an die Tabelle gedacht hat. */
+    return isset($tab[(string) $thema]);
 }
 
 function tb_mqtt_themen()
