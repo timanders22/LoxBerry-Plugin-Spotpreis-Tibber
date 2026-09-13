@@ -1377,10 +1377,16 @@ foreach ($tb_fpfp['preise'] as $tb_fpts => $tb_fpct) {
 <h2><?= tb_e(tb_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= tb_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
-<tr><th><?= tb_e(tb_t('MQTT.T_THEMA')) ?></th><th><?= tb_e(tb_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (tb_mqtt_themen() as $tb_thema => $tb_schluessel) { ?>
+<tr><th><?= tb_e(tb_t('MQTT.T_THEMA')) ?></th><th><?= tb_e(tb_t('MQTT.T_BEDEUTUNG')) ?></th>
+    <th><?= tb_e(tb_t('MQTT.T_RETAIN')) ?></th></tr>
+<?php foreach (tb_mqtt_themen() as $tb_thema => $tb_schluessel) {
+    /* Die Spalte fragt DIESELBE Funktion, die auch sendet. Eine
+       abgeschriebene Liste liefe von der Sendeseite weg, und dann stuende
+       hier etwas anderes, als im Broker liegt. */
+    $tb_ret = tb_mqtt_retain($tb_thema); ?>
 <tr><td><span class="sm-mono"><?= tb_e($tb_cfg['mqtt_topic'] . '/' . $tb_thema) ?></span></td>
-    <td><?= tb_t($tb_schluessel) ?></td></tr>
+    <td><?= tb_t($tb_schluessel) ?></td>
+    <td class="<?= $tb_ret ? 'sm-an' : '' ?>"><?= tb_e(tb_t($tb_ret ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= tb_t('MQTT.PLATZHALTER') ?></p>

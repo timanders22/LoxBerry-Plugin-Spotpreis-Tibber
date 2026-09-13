@@ -620,14 +620,15 @@ function tb_veroeffentlichen()
     if ($geaendert) {
         foreach ($paare as $k => $v) { $senden[$k] = $v; }
     }
-    list($versucht, $fehler) = tb_mqtt_senden($senden, $topic);
+    list($versucht, $fehler, $behalten) = tb_mqtt_senden($senden, $topic);
     if ($geaendert && $fehler === 0) {
         // Der Merker wird nur fortgeschrieben, wenn wirklich alles hinaus
         // ist. Sonst gilt ein halb gesendeter Stand als gesendet, und die
         // fehlenden Werte liegen bis zur naechsten Aenderung.
         @file_put_contents($merker, $signatur);
     }
-    return array($versucht, $fehler, $geaendert ? 'geaendert' : 'lebenszeichen');
+    return array($versucht, $fehler, $geaendert ? 'geaendert' : 'lebenszeichen',
+                 $behalten);
 }
 
 /* ==================================================================
@@ -1194,7 +1195,7 @@ if (tb_token_lesen() === '') {
     tb_notify('token', 'ok', 'Es ist ein Zugangstoken hinterlegt.');
 }
 
-list($tb_v, $tb_f, $tb_lage) = tb_veroeffentlichen();
+list($tb_v, $tb_f, $tb_lage, $tb_behalten) = tb_veroeffentlichen();
 /* Beide Zahlen getrennt. Ein 'n Werte versendet' ohne die Zahl der
  * Fehlschlaege ist eine Zusammenfassung, die besser aussieht als ihr
  * schlechtester Punkt - und LOGOK setzt voraus, dass nichts gescheitert
@@ -1204,6 +1205,7 @@ if ($tb_f > 0) {
     tb_log_gebremst('mqtt_fehler', 'MQTT: ' . $tb_v . ' Themen versucht, '
         . $tb_f . ' gescheitert.');
 } elseif ($tb_lage === 'geaendert') {
-    tb_log_gebremst('mqtt_ok', 'MQTT: ' . $tb_v . ' Themen veroeffentlicht.', 3600);
+    tb_log_gebremst('mqtt_ok', 'MQTT: ' . $tb_v . ' Themen veroeffentlicht, davon '
+        . (int) $tb_behalten . ' zurueckbehalten.', 3600);
 }
 exit(0);
