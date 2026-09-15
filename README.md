@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.14
+Version 0.9.15
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -153,6 +153,7 @@ gelöscht werden.
 | Doppelte Maskierung | `tb_e(tb_t(...))` gegen Werte mit HTML-Entitäten | keine Stelle |
 | **Eindeutigkeit der Suchtexte** | jeder der 48 Feldnamen gegen die echte Statuszeile — welches Feld liest welchen Wert | eindeutig, geeicht |
 | **Sicherung, Rundlauf** | die eigene Datei zurückspielen, 19 Fälle: Kopf, beide Geheimnisse, halb gültig, fremd, kein JSON, Zeilenumbruch im Thema | 19/19 |
+| **Meldung beim Update** | `preupgrade.sh` im Wegwerfhof wirklich ausgeführt, Dienstskript als Attrappe, vier Lagen: Dienst an/aus × PID-Datei da/fehlt/veraltet | keine falsche Meldung, angehalten wird in jeder Lage |
 | **Eichung** | jede neue Prüfung wird in einer Kopie einzeln zerbrochen und **muss** rot werden — an der richtigen Zeile | bestanden |
 
 Die Prüfstücke selbst gehören **nicht** ins Plugin-Paket. Sie liegen im
@@ -199,6 +200,37 @@ Die öffentliche Tibber-Beschreibung (`developer.tibber.com`), gegengelesen an
 zwei unabhängigen Umsetzungen: `github.com/terjesannum/tibber-exporter` und der
 Node-RED-Erweiterung `node-red-contrib-tibber-api`. Felder, die dort nicht
 stehen, stehen auch hier nicht.
+
+## Fassung 0.9.15 — die Meldung „Dienst angehalten" sagt die Wahrheit
+
+Beim Update hält `preupgrade.sh` den Pulse-Dienst an, damit er während des
+Auspackens keine WebSocket-Verbindung offen hält. Woran es erkannte, **ob**
+überhaupt einer lief, war bis 0.9.14 die PID-Datei
+`data/plugins/<ordner>/pulse.pid` — und zwar allein an ihrer Anwesenheit. Das
+ist kein Beleg, dass ein Prozess lebt. Zwei Lagen gingen daneben, beide am
+15.09.2026 im Wegwerfhof des Prüfstands gemessen:
+
+| Lage | bis 0.9.14 | ab 0.9.15 |
+|---|---|---|
+| Dienst läuft, PID-Datei da | angehalten, Meldung richtig | unverändert richtig |
+| Dienst steht, PID-Datei **veraltet** | „Laufender Pulse-Dienst angehalten." — es lief keiner | angehalten, **keine** Meldung |
+| Dienst läuft, PID-Datei **fehlt** | **gar nichts** — die Verbindung blieb offen | angehalten, Meldung richtig |
+
+Eine veraltete PID-Datei entsteht nach einem Stromausfall oder einem Neustart
+ohne saubere Abmeldung. Die dritte Zeile ist die teurere von beiden: dort wurde
+der Dienst vor dem Auspacken überhaupt nicht angehalten.
+
+Gefragt wird jetzt `bin/dienst.sh status`. Das prüft **argumentweise** über
+`/proc/<pid>/cmdline`, ob die Nummer wirklich zu `tb_pulse.php` gehört — `argv[1]`
+ist das Skript, `argv[0]` ein PHP-Interpreter — und fällt damit weder auf eine
+recycelte Prozessnummer noch auf einen Editor herein, der die Datei gerade
+offen hat. Angehalten wird anschließend **in jedem Fall**; gemeldet wird nur,
+was die Antwort hergibt.
+
+Am Sollmerker ändert das nichts. `soll_laufen` wird weiterhin **vor** dem
+Anhalten nach `data/plugins/<ordner>.lief_vorher` gerettet — neben den Ordner,
+den der Installer beim Upgrade vollständig abräumt — und `postinstall.sh` legt
+ihn zurück.
 
 ## Fassung 0.9.13 und 0.9.14 — was im Broker stehenbleibt
 
