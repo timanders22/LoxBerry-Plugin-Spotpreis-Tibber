@@ -46,24 +46,43 @@ if [ -f "$BASE/data/plugins/$PFOLDER/soll_laufen" ]; then
 fi
 
 PID="$BASE/data/plugins/$PFOLDER/pulse.pid"
-if [ -f "$PID" ]; then
-    # Ueber dienst.sh, nicht ueber die nackte Prozessnummer.
-    #
-    # bin/dienst.sh prueft ARGUMENTWEISE, ob die Nummer wirklich zu
-    # tb_pulse.php gehoert (argv[1] ist das Skript, argv[0] ein
-    # PHP-Interpreter), und begruendet das ueber zehn Zeilen. Genau diese
-    # Pruefung fehlte hier - bei einer veralteten PID-Datei (Stromausfall,
-    # Neustart ohne saubere Abmeldung) traf das kill -9 einen FREMDEN
-    # Prozess, dem der Kernel die Nummer neu vergeben hatte.
-    if [ -x "$PBIN/dienst.sh" ]; then
-        "$PBIN/dienst.sh" stop >/dev/null 2>&1 || true
-    fi
-    # Rueckfall, falls dienst.sh fehlt: dann wenigstens hoeflich und ohne -9.
-    if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
-        kill "$(cat "$PID")" 2>/dev/null || true
-        sleep 2
-    fi
-    rm -f "$PID"
+
+# ERST FRAGEN, DANN ANHALTEN - und nur das melden, was die Antwort hergibt.
+#
+# Bis 0.9.14 hing dieser ganze Block an [ -f "$PID" ], und die Meldung stand
+# bedingungslos darin. Das ist der Befund vom 11.09.2026 (das Protokoll meldete
+# einen Dienst angehalten, der stand) eine Tuer weiter: eine PID-Datei ist KEIN
+# Beleg, dass ein Prozess lebt. Ueberlebt sie einen Stromausfall oder einen
+# Neustart ohne saubere Abmeldung, meldete dieses Skript einen Dienst
+# angehalten, den es nie gab - am 15.09.2026 im Wegwerfhof des Pruefstands
+# gemessen: veraltete PID-Datei, kein Prozess, trotzdem
+# "<INFO> Laufender Pulse-Dienst angehalten."
+#
+# Die Gegenrichtung war ebenso falsch und waere teurer: fehlt die PID-Datei,
+# waehrend der Dienst laeuft, wurde vor dem Auspacken NICHTS angehalten - die
+# WebSocket-Verbindung blieb offen, wogegen dieser Block ueberhaupt steht.
+#
+# Gefragt wird deshalb dienst.sh status. Das prueft ARGUMENTWEISE, ob die
+# Nummer wirklich zu tb_pulse.php gehoert (argv[1] ist das Skript, argv[0] ein
+# PHP-Interpreter), und begruendet das dort ueber zehn Zeilen. Angehalten wird
+# anschliessend in JEDEM Fall - stop raeumt auch den Sollmerker ab, und der
+# Rettungsmerker oben ist zu diesem Zeitpunkt bereits geschrieben. Dieselbe
+# Bauart tragen BYD Autos 0.9.12 und Matter2Lox 0.9.23.
+LIEF_WIRKLICH=0
+if [ -x "$PBIN/dienst.sh" ]; then
+    "$PBIN/dienst.sh" status >/dev/null 2>&1 && LIEF_WIRKLICH=1
+    "$PBIN/dienst.sh" stop >/dev/null 2>&1 || true
+fi
+# Rueckfall, falls dienst.sh fehlt: dann wenigstens hoeflich und ohne -9.
+# kill -0 ist hier zugleich der Beleg, dass da wirklich etwas lief - anders als
+# die blosse Anwesenheit der Datei.
+if [ -f "$PID" ] && kill -0 "$(cat "$PID" 2>/dev/null)" 2>/dev/null; then
+    LIEF_WIRKLICH=1
+    kill "$(cat "$PID")" 2>/dev/null || true
+    sleep 2
+fi
+rm -f "$PID"
+if [ "$LIEF_WIRKLICH" -eq 1 ]; then
     echo "<INFO> Laufender Pulse-Dienst angehalten."
 fi
 
