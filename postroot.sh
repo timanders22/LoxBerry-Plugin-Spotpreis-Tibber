@@ -31,6 +31,37 @@
 # keine Echtzeitwerte der Pulse. Schlaegt hier etwas fehl, ist das deshalb ein
 # Hinweis und keine Warnung: das Plugin ist vollstaendig installiert.
 
+# ---------------------------------------------------------------------------
+# Die Marke aus preupgrade.sh - hier faellt sie, und zwar ueber einen trap
+# ---------------------------------------------------------------------------
+# postroot.sh ist das LETZTE Skript, das LoxBerry ruft (Reihenfolge nach
+# Regeln/06: preroot, preinstall, preupgrade, postinstall, postupgrade,
+# postroot). Der Dienst ist zu diesem Zeitpunkt bereits gestartet -
+# postinstall.sh tut es mit TB_START_TROTZ_MARKE=1. Die Marke lag also
+# waehrend des ganzen Starts und hat jeden anderen Starter abgewiesen.
+#
+# Warum ein trap und nicht eine Zeile am Dateiende: dieses Skript steigt an
+# fuenf Stellen mit "exit 0" aus - zweimal ueber exit_hinweis(), einmal wenn
+# beide Erweiterungen vorhanden sind, einmal wenn es nicht als root laeuft.
+# Ohne den trap bliebe die Marke in genau diesen Faellen liegen und sperrte
+# den Dienst eine Stunde lang, ohne dass irgendwo stuende, warum. Dieselbe
+# Begruendung wie bei der Sprachsteuerung (Regeln/06, Nachtrag 17.09.2026).
+# Gemessen (bash 5.2): eine Kommandoersetzung und eine Unterschale loesen den
+# EXIT-Trap nicht aus - die Marke faellt also nicht zu frueh.
+TB_ARGV3=$3
+TB_ARGV5=$5
+TB_PFOLDER="${TB_ARGV3:-spotpreistibber}"
+TB_BASE="${TB_ARGV5:-$LBHOMEDIR}"
+if [ -z "$TB_BASE" ] || [ ! -d "$TB_BASE" ]; then
+    TB_SELF=$(cd "$(dirname "$0")" && pwd)
+    TB_BASE=$(cd "$TB_SELF/../.." 2>/dev/null && pwd)
+fi
+TB_MARKE="$TB_BASE/data/plugins/$TB_PFOLDER.upgrade_laeuft"
+tb_marke_weg() {
+    rm -f "$TB_MARKE" 2>/dev/null
+}
+trap tb_marke_weg EXIT
+
 exit_hinweis() {
     echo "<INFO> ------------------------------------------------------------"
     echo "<INFO> $1"

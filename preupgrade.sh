@@ -25,6 +25,34 @@ PCONFIG="$BASE/config/plugins/$PFOLDER"
 # Auspacken, das Skript liegt zu diesem Zeitpunkt also noch da.
 PBIN="$BASE/bin/plugins/$PFOLDER"
 
+# ---------- Die Marke: ALS ERSTES, noch vor allem anderen ----------
+#
+# Zwischen der neuen Cron-Datei und postinstall.sh liegt fast eine Minute (am
+# Geraet an der Einspeisebremse gemessen, Regeln/06). In dieser Luecke sind
+# config/plugins/<ordner>/ und data/plugins/<ordner>/ schon geloescht. Was
+# dann startet, laeuft ohne Einstellungen und ohne Tibber-Token.
+#
+# Bei DIESER Linie ist am 18.09.2026 in WSL gemessen, dass in der Luecke
+# nichts anlaeuft: der Waechter verlangt data/plugins/<ordner>/soll_laufen,
+# und "dienst.sh start" verlangt config/plugins/<ordner>/token.json - beide
+# Dateien loescht purge_installation. Die Marke ist deshalb VORSORGE. Sie
+# deckt die Wege ab, die dort nicht gemessen sind: ein Systemstart mitten in
+# der Aktualisierung, ein Aufruf aus einem Hakenskript, und den Knopf
+# "Dienst starten" in der Oberflaeche, nachdem ein Minutenlauf die
+# Konfiguration aus der Zweitschrift geheilt hat.
+#
+# Sie liegt NEBEN dem Datenordner - ein Kind von data/plugins/<ordner>/
+# loeschte purge_installation mit.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+date +%s > "$MARKE" 2>/dev/null
+if [ -s "$MARKE" ]; then
+    echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - ein Startweg"
+    echo "<WARNING> koennte den Pulse-Dienst waehrend der Installation anwerfen."
+fi
+
 # Laufenden Pulse-Dienst anhalten - er haelt eine Verbindung offen.
 #
 # UND SICH MERKEN, DASS ER LIEF. Der Sollmerker liegt unter

@@ -100,11 +100,19 @@ chmod 600 "$PCONFIG/tibber.json" "$PCONFIG/token.json" 2>/dev/null
 # Ordner selbst ist beim Upgrade weg (purge_installation im Upgrade-Zweig).
 # Gestartet wird nur, wenn er wirklich lief: ein bewusst angehaltener Dienst
 # bleibt angehalten.
+#
+# TB_START_TROTZ_MARKE=1: dienst.sh startet nicht, solange die Marke aus
+# preupgrade.sh gilt. Hier ist sie die EIGENE - dieser Start ist der
+# vorgesehene Abschluss der Aktualisierung. Entfernt wird die Marke erst in
+# postroot.sh, also NACH diesem Start; so sieht kein Waechterlauf in dem
+# Augenblick, in dem der neue Dienst noch nicht dasteht, weder Marke noch
+# Dienst (bei Chromecast4lox 1.3.10 mit 400 Waechterlaeufen gemessen: die
+# umgekehrte Reihenfolge ergab vier Dienste, diese Reihenfolge einen).
 LIEF="$BASE/data/plugins/$PFOLDER.lief_vorher"
 if [ -f "$LIEF" ]; then
     rm -f "$LIEF"
     if [ -x "$PBIN/dienst.sh" ]; then
-        if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+        if TB_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
             echo "<OK> Der Pulse-Dienst lief vor dem Update und wurde neu gestartet."
         else
             echo "<INFO> Der Pulse-Dienst lief vor dem Update, liess sich aber nicht"

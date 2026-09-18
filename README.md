@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.16
+Version 0.9.17
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,35 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.17
+
+- **Der Dienst startet nicht mehr mitten in einer Aktualisierung.** Zwischen
+  der neuen Cron-Datei und `postinstall.sh` liegt fast eine Minute; in dieser
+  Lücke sind `config/plugins/<ordner>/` und `data/plugins/<ordner>/` bereits
+  gelöscht. `preupgrade.sh` legt jetzt als Erstes eine Marke neben den
+  Datenordner, `bin/dienst.sh` startet nicht, solange sie gilt (höchstens eine
+  Stunde; ohne lesbare Uhr gilt sie), `postroot.sh` entfernt sie als Letztes,
+  und `uninstall` räumt sie weg. Der Reiter Test zeigt in einer Zeile, ob eine
+  Marke liegt und wie alt sie ist.
+
+  **Vorsorge, kein behobener Schaden.** Am 18.09.2026 ist in WSL gemessen, dass
+  in dieser Lücke bei diesem Plugin nichts anläuft: der Wächter verlangt
+  `soll_laufen`, und `dienst.sh start` verlangt `token.json` — beide Dateien
+  sind in der Lücke gelöscht. Die Marke deckt die Wege ab, die dort nicht
+  gemessen sind: ein Systemstart mitten in der Aktualisierung, ein Aufruf aus
+  einem Hakenskript, und der Knopf „Dienst starten" in der Oberfläche, nachdem
+  ein Minutenlauf die Konfiguration aus der Zweitschrift geheilt hat. Die
+  Oberfläche wird bei liegender Marke **nicht** gesperrt — gemessen wurde, dass
+  weder ein Seitenaufruf noch ein Speichern noch der Knopf „Neues Merkwort
+  erzeugen" in der Lücke etwas verliert: Einstellungen, Zweitschrift und
+  Merkwort waren vorher und nachher gleich.
+
+- **`bin/dienst.sh` verschmutzt das Protokoll nicht mehr.** Beginnt das zweite
+  Argument eines fremden Prozesses mit einem Strich, hielt `basename` es für
+  einen eigenen Schalter und schrieb `basename: invalid option -- 'r'` nach
+  stderr — bei jedem `dienst.sh status` und `dienst.sh stop`. Das Urteil war
+  schon vorher richtig; jetzt bleibt auch die Fehlerausgabe leer.
 
 ## Neu in 0.9.16
 

@@ -39,6 +39,14 @@ SOLL="$PDATA/soll_laufen"
 LOGDATEI="$PLOG/tibber.log"
 SKRIPT="$SELF/tb_pulse.php"
 
+# Die Marke einer laufenden Aktualisierung.
+#
+# Sie liegt NEBEN dem Datenordner, nicht darin: purge_installation raeumt
+# data/plugins/<ordner>/ beim Upgrade vollstaendig ab (Regeln/06), ein
+# Geschwister mit Punkt im Namen ueberlebt das. preupgrade.sh legt sie als
+# Erstes an, postroot.sh entfernt sie als Letztes, uninstall raeumt sie weg.
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
+
 if ! mkdir -p "$PDATA" "$PLOG" 2>/dev/null; then
     echo "FEHLER: $PDATA oder $PLOG laesst sich nicht anlegen." >&2
     exit 1
@@ -66,9 +74,47 @@ laeuft() {
     # als argv[1].
     ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
     [ -n "$ARGS" ] || return 1
-    [ "$(basename "$(echo "$ARGS" | sed -n '2p')")" = "tb_pulse.php" ] || return 1
+    # basename MIT -- : argv[1] eines fremden Prozesses faengt oft mit einem
+    # Strich an (gemessen am 18.09.2026 an "php -r 'sleep(300);'"). Ohne den
+    # Abschluss der Schalterliste haelt basename das '-r' fuer einen eigenen
+    # Schalter und schreibt "basename: invalid option -- 'r'" nach stderr.
+    # Das URTEIL war schon vorher richtig - verglichen wird nur die Ausgabe,
+    # und die bleibt leer -, aber die Zeile stand in jedem Protokoll.
+    [ "$(basename -- "$(echo "$ARGS" | sed -n '2p')")" = "tb_pulse.php" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)php[0-9.]*$' || return 1
     return 0
+}
+
+# Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# Gemessen am Geraet an der Einspeisebremse (Regeln/06): zwischen der neuen
+# Cron-Datei und postinstall.sh liegen fast 60 Sekunden. In dieser Luecke sind
+# config/plugins/<ordner>/ und data/plugins/<ordner>/ bereits geloescht - ein
+# Dienst, der dort anlaeuft, arbeitet ohne Einstellungen und ohne Token.
+#
+# Drei Regeln, alle drei aus Regeln/06:
+#   * Nur eine Marke, die hoechstens 3600 s alt ist, gilt. Eine abgebrochene
+#     Installation darf den Dienst nicht fuer immer stilllegen.
+#   * Eine Marke aus der ZUKUNFT gilt nicht (Uhr nachgestellt).
+#   * OHNE LESBARE UHR FAELLT DIE PRUEFUNG GESCHLOSSEN AUS. Liefert "date"
+#     nichts - unter Last kann ein fork scheitern -, rechnete die Schale mit
+#     einer leeren Zeichenkette, das Alter wuerde negativ, die Bedingung fiele
+#     durch, und der Dienst startete mitten in der Aktualisierung. Ein Schutz
+#     faellt geschlossen aus (CLAUDE.md, Abschnitt 4).
+marke_gilt() {
+    [ -f "$MARKE" ] || return 1
+    local SEIT JETZT ALTER
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in
+        ''|*[!0-9]*) SEIT=0 ;;
+    esac
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in
+        ''|*[!0-9]*) return 0 ;;   # keine lesbare Uhr -> die Marke gilt
+    esac
+    ALTER=$((JETZT - SEIT))
+    [ "$ALTER" -ge 0 ] && [ "$ALTER" -lt 3600 ] && return 0
+    return 1
 }
 
 # Eine Sperre um das Starten.
@@ -93,6 +139,21 @@ sperre_holen() {
 }
 
 starten() {
+    # Die Marke VOR allem anderen - auch vor der Sperrdatei. Sonst legte
+    # dieser Aufruf noch data/plugins/<ordner>/dienst.lock in einem Ordner an,
+    # den purge_installation gerade geloescht hat (am 18.09.2026 in WSL
+    # gemessen: "dienst.lock" war nach einem Startversuch in der Luecke das
+    # einzige, was im frisch angelegten Datenordner stand).
+    #
+    # TB_START_TROTZ_MARKE=1 setzt allein postinstall.sh. Dort ist die Marke
+    # die eigene, und der Start ist der vorgesehene Abschluss der
+    # Aktualisierung; die Marke selbst faellt erst in postroot.sh, also NACH
+    # diesem Start. Ohne die Ausnahme bliebe der Dienst bis zum naechsten
+    # Waechterlauf aus.
+    if [ "${TB_START_TROTZ_MARKE:-0}" != "1" ] && marke_gilt; then
+        echo "eine Aktualisierung dieses Plugins laeuft - der Dienst wird danach gestartet"
+        return 0
+    fi
     if ! sperre_holen; then
         echo "ein anderer Aufruf startet gerade - dieser Lauf tut nichts"
         return 0
@@ -143,6 +204,12 @@ starten() {
 WARTE="$PDATA/.waechter_warte"
 waechter_lauf() {
     [ -f "$SOLL" ] || return 0
+    # Die Marke schon HIER, nicht erst in starten(). Sonst schriebe der
+    # Waechter erst seine Zeile "Pulse-Dienst lief nicht, wird neu gestartet"
+    # und stiege danach wortlos aus - eine Protokollzeile, die etwas anderes
+    # behauptet als das, was geschah. Der Rueckzugszaehler wird dabei nicht
+    # angefasst: eine Aktualisierung ist kein fehlgeschlagener Start.
+    if marke_gilt; then return 0; fi
     if laeuft; then
         rm -f "$WARTE"
         return 0
