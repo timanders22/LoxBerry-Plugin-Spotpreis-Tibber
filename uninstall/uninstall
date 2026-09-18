@@ -44,6 +44,10 @@ rm -f "$BASE/data/plugins/$PFOLDER/soll_laufen" 2>/dev/null
 # Der Rettungsmerker liegt NEBEN dem Datenordner und ueberlebt dessen
 # Loeschung - wer neben dem Ordner ablegt, raeumt hier selbst auf.
 rm -f "$BASE/data/plugins/$PFOLDER.lief_vorher" 2>/dev/null
+# Dasselbe fuer die Marke einer Aktualisierung. Sie bleibt liegen, wenn eine
+# Installation abgebrochen ist; eine neu installierte Fassung faende sie vor
+# und startete bis zu einer Stunde lang nicht.
+rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
 
 for DATEI in \
     "$BASE/config/plugins/$PFOLDER.backup.token.json" \

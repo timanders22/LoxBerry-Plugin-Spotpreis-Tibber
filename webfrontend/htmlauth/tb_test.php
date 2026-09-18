@@ -192,6 +192,33 @@ function tb_pruefungen($voll = false)
             sprintf(tb_t('TEST.A_PULSE_ALT'), $pid, $la < 0 ? -1 : $la));
     }
 
+    /* Die Marke einer laufenden Aktualisierung.
+     *
+     * Zu jeder Regel gehoert das Werkzeug, das sie findet (CLAUDE.md,
+     * Abschnitt 6). preupgrade.sh legt die Marke an, dienst.sh startet
+     * nicht, solange sie gilt, postroot.sh entfernt sie. Bleibt sie nach
+     * einer abgebrochenen Installation liegen, startet der Dienst bis zu
+     * einer Stunde lang nicht - und ohne diese Zeile stuende nirgends,
+     * warum. Danach verfaellt sie von selbst.
+     *
+     * Drei Ausgaenge, wie die Pruefung in dienst.sh: keine Marke (Haken),
+     * eine geltende (Strich - das ist kein Fehler, sondern eine Lage), eine
+     * verfallene (Strich mit Alter, damit sie jemand wegraeumen kann). */
+    $tb_marke = $p['datadir'] . '.upgrade_laeuft';
+    if (!is_file($tb_marke)) {
+        $zeilen[] = tb_pruefzeile(1, tb_t('TEST.F_MARKE'), tb_t('TEST.A_MARKE_KEINE'));
+    } else {
+        $tb_seit = trim((string) @file_get_contents($tb_marke));
+        $tb_alt  = preg_match('/^[0-9]+$/', $tb_seit) ? (time() - (int) $tb_seit) : -1;
+        if ($tb_alt >= 0 && $tb_alt < 3600) {
+            $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_MARKE'),
+                sprintf(tb_t('TEST.A_MARKE_GILT'), $tb_alt));
+        } else {
+            $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_MARKE'),
+                sprintf(tb_t('TEST.A_MARKE_ALT'), basename($tb_marke)));
+        }
+    }
+
     // Schwellen
     $zeilen[] = tb_pruefzeile(
         ((float) $cfg['guenstig'] < (float) $cfg['teuer']) ? 1 : 0,
