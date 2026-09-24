@@ -159,7 +159,27 @@ fi
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Plugin installiert oder aktualisiert." \
     >> "$PLOG/tibber.log" 2>/dev/null
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Jetzt die Oberflaeche oeffnen und das persoenliche Zugangstoken"
-echo "<INFO> eintragen. Es gibt es unter developer.tibber.com im eigenen Konto."
+# ---------- Abschluss: Erstanleitung nur ohne eingetragenes Token ----------
+# Dieses Skript laeuft bei der Erstinstallation UND bei jedem Upgrade (siehe
+# Kopf). Bis 0.9.19 stand die Aufforderung, das Zugangstoken einzutragen,
+# deshalb auch nach jedem gelungenen Upgrade da - das Token war zu dem
+# Zeitpunkt laengst zurueckgespielt (gemessen 24.09.2026 in WSL,
+# Pruefung-Spotpreis-Tibber-0.9.20, Fall b). Wer das liest, haelt es fuer
+# verloren.
+#
+# Entschieden wird nach dem INHALT, nicht nach der Upgrade-Marke: steht in
+# token.json ein nicht leeres "token" - dasselbe, was tb_token_lesen() in
+# webfrontend/html/tb_lib.php liest und tb_token_form() als 'TOKEN.LEER'
+# abweist, wenn es fehlt? Fehlt es nach einem Upgrade, ist die Rueckholung
+# oben gescheitert, und dann ist die Anleitung genau richtig. PHP ist hier
+# sicher da (Pruefung weiter oben).
+if php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+exit(is_array($d) && isset($d["token"]) && (string) $d["token"] !== "" ? 0 : 1);' \
+    -- "$PCONFIG/token.json" >/dev/null 2>&1; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Jetzt die Oberflaeche oeffnen und das persoenliche Zugangstoken"
+    echo "<INFO> eintragen. Es gibt es unter developer.tibber.com im eigenen Konto."
+fi
 exit 0
