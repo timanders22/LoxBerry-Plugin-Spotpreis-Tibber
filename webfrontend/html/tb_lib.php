@@ -218,7 +218,19 @@ function tb_lbhome()
  * beiden Dateien VOR allem, was schreibt. */
 function tb_keine_wurzel_abbruch($programm)
 {
-    if (tb_paths()['home'] !== '') { return; }
+    $p = tb_paths();
+    if ($p['home'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        /* Seit 0.9.19: eine Wurzel ist da, aber diese Datei liegt nicht darin
+         * (Archivmodus in tb_paths()). */
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts geholt, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner> aufrufen' . "\n"
+            . 'oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
     fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
         . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
         . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
@@ -254,11 +266,36 @@ function tb_paths()
      * nachweislich kein Pluginordner sind, gelten auch dort nicht (Bauart
      * VolkswagenID 0.9.24). */
     $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
-    if ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true)) {
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true));
+    if ($lbp_gilt) {
         $dir = $lbp;
     } elseif ($dir === '' || $dir === '.' || $dir === '/'
               || $dir === 'html' || $dir === 'bin' || $dir === 'plugins') {
         $dir = 'spotpreistibber';
+    }
+    /* Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek
+     * dort installiert liegt (<Wurzel>/webfrontend/html/plugins/<ordner>,
+     * physisch verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich
+     * nennt ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit
+     * ihrer Attrappe, und so verwaltet auch bin/dienst.sh aus einem Archiv
+     * heraus die Anlage). Sonst ist das ein ausgepacktes Archiv oder ein
+     * Pruefordner: alles bleibt in dessen eigenem Ordner, und die Programme
+     * unter bin/ steigen aus (tb_keine_wurzel_abbruch()).
+     *
+     * Bis 0.9.18 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel
+     * und den festen Namen 'spotpreistibber' - Konfiguration, Token, Daten und
+     * Protokoll der Anlage; mit $LBHOMEDIR allein, wie es am Geraet in
+     * /etc/environment steht, ebenso. tb_cron.php holte und schrieb dort, und
+     * tb_pulse.php lief dort als Dienst (in WSL gemessen,
+     * Pruefung-Spotpreis-Tibber-0.9.19, Faelle B1, B2, B6, B7, B9, B10).
+     * Bauart wie eb_paths() der Einspeisebremse 0.9.22. */
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
     }
     if ($home === '') {
         /* Keine Wurzel (Entwicklung, ausgepacktes Archiv, fremder Baum):
@@ -282,6 +319,9 @@ function tb_paths()
             'logdir'      => $basis . '/log',
             'log'         => $basis . '/log/tibber.log',
             'lief_vorher' => $basis . '/data.lief_vorher',
+            // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+            // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+            'archiv'      => $gefunden,
         );
         return $p;
     }
@@ -308,6 +348,7 @@ function tb_paths()
          * still, ohne dass irgendwo etwas stand. Ein Geschwister mit Punkt
          * im Namen trifft das rm -rf auf das Verzeichnis nicht. */
         'lief_vorher' => $home . '/data/plugins/' . $dir . '.lief_vorher',
+        'archiv'      => '',
     );
     return $p;
 }
@@ -481,6 +522,29 @@ function tb_json_schreiben($pfad, $daten, $rechte = null)
     return true;
 }
 
+/* Eine Datei mit Geheimnis kopieren, ohne dass die Kopie je mit den Rechten
+ * der umask dasteht: erst eine leere Datei 0600 daneben, dann hinein kopieren
+ * (copy() behaelt die Rechte einer vorhandenen Zieldatei), dann umbenennen.
+ * Bis 0.9.18 legte die Heilung in tb_config() die Konfiguration samt
+ * Aktionstoken und die beiseitegelegte .kaputt-Datei mit @copy() an - mit
+ * umask 022 also 644 (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19,
+ * Faelle N2a und N2b; in Pruefung-Spotpreis-Tibber-0.9.17 als N3 notiert).
+ * Rueckgabe true, wenn die Kopie steht. */
+function tb_kopie_0600($von, $nach)
+{
+    $tmp = $nach . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, '') === false) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($tmp, 0600);
+    if (!@copy($von, $tmp) || !@rename($tmp, $nach)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
 /**
  * Die Konfiguration lesen.
  *
@@ -517,12 +581,12 @@ function tb_config($erzeugen = true)
              * Wer sie spaeter braucht, findet sie; wer sie nicht braucht,
              * merkt nichts davon. */
             $beiseite = $p['config'] . '.kaputt.' . date('Ymd_His');
-            @copy($p['config'], $beiseite);
+            tb_kopie_0600($p['config'], $beiseite);
             tb_log('Die Konfiguration war unlesbar und wurde als '
                    . basename($beiseite) . ' beiseitegelegt; es gilt wieder die '
                    . 'Zweitschrift.');
         }
-        @copy($p['sicherung'], $p['config']);
+        tb_kopie_0600($p['sicherung'], $p['config']);
         $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
         $kaputt = ($roh !== '' && $roh !== '{}' && !is_array(json_decode($roh, true)));
     }
@@ -896,8 +960,14 @@ function tb_notify($thema, $stufe, $text)
      *
      * Bauart aus oc_lib.php des Octopus-Plugins, damit beide Linien
      * dasselbe tun. */
-    $tb_liblog = tb_paths()['home'] . '/libs/phplib/loxberry_log.php';
-    if (!function_exists('notify_ext') && is_file($tb_liblog)) {
+    /* Nur aus der Wurzel der Anlage. Ohne Wurzel hiess das bis 0.9.18
+     * '/libs/phplib/loxberry_log.php' ab der Laufwerkswurzel, und was dort
+     * lag, lief als Code dieses Plugins (in WSL gemessen,
+     * Pruefung-Spotpreis-Tibber-0.9.19, Fall C4; ZendureSolarFlow 0.9.26
+     * zd_melden()). */
+    $tb_home = tb_paths()['home'];
+    $tb_liblog = $tb_home !== '' ? $tb_home . '/libs/phplib/loxberry_log.php' : '';
+    if (!function_exists('notify_ext') && $tb_liblog !== '' && is_file($tb_liblog)) {
         @require_once $tb_liblog;
     }
     if (!function_exists('notify_ext')) {
@@ -916,24 +986,76 @@ function tb_notify($thema, $stufe, $text)
 }
 
 /**
- * Laeuft unter dieser Prozessnummer wirklich UNSER Skript?
- *
- * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Ein grep darueber
- * trifft JEDEN Prozess, der den Pfad irgendwo fuehrt - auch einen Editor, der
- * die Datei gerade offen hat. Richtig sind zwei Bedingungen: argv[1] ist genau
- * das Skript, und argv[0] ist ein Interpreter. Die zweite ist noetig, weil
- * "nano <pfad>" den Pfad ebenfalls als argv[1] traegt.
+ * Die Nummer des Dienstbenutzers: loxberry, wo es ihn gibt, sonst die eigene
+ * wirksame - wie "id -u loxberry || id -u" in bin/dienst.sh. Ohne posix wird
+ * /etc/passwd bzw. /proc/self/status gelesen. Laesst sich keine bestimmen,
+ * bleibt -1, und kein Prozess gilt als Dienst: die Anzeige sagt dann
+ * "gestoppt" - sie beendet nichts.
  */
-function tb_prozess_ist($pid, $skriptname)
+function tb_dienst_uid()
+{
+    static $uid = null;
+    if ($uid !== null) { return $uid; }
+    $uid = -1;
+    if (function_exists('posix_getpwnam')) {
+        $pw = @posix_getpwnam('loxberry');
+        if (is_array($pw) && isset($pw['uid'])) { return $uid = (int) $pw['uid']; }
+    } else {
+        foreach ((array) @file('/etc/passwd', FILE_IGNORE_NEW_LINES) as $z) {
+            $f = explode(':', (string) $z);
+            if (count($f) > 2 && $f[0] === 'loxberry' && preg_match('/^[0-9]+$/', $f[2])) {
+                return $uid = (int) $f[2];
+            }
+        }
+    }
+    if (function_exists('posix_geteuid')) { return $uid = (int) posix_geteuid(); }
+    $st = (string) @file_get_contents('/proc/self/status');
+    if (preg_match('/^Uid:\s+[0-9]+\s+([0-9]+)/m', $st, $m)) { $uid = (int) $m[1]; }
+    return $uid;
+}
+
+/**
+ * Laeuft unter dieser Prozessnummer wirklich UNSER Pulse-Dienst?
+ *
+ * ARGUMENTWEISE ueber /proc/<pid>/cmdline, dieselbe Probe wie tb_ist_dienst()
+ * in bin/dienst.sh (Regeln/06): genau zwei Argumente, argv[0] ein
+ * PHP-Interpreter (php, php8.3 ...), argv[1] zeichengenau der Dienstpfad
+ * $skript (relativ gestartet gegen /proc/<pid>/cwd aufgeloest, zusaetzlich
+ * ueber realpath() verglichen), und der Prozess gehoert dem Dienstbenutzer
+ * (tb_dienst_uid()).
+ *
+ * Bis 0.9.18 genuegte hier der DATEINAME von argv[1]. Die Anzeige in der
+ * Oberflaeche, im Reiter Test, im Healthcheck und im Selbsttest meldete damit
+ * "laeuft, PID n" fuer ein "php <dienstpfad> --einmal", ein
+ * "php <andere Installation>/tb_pulse.php" oder den Prozess eines fremden
+ * Benutzers unter der Nummer aus der PID-Datei (in WSL gemessen,
+ * Pruefung-Spotpreis-Tibber-0.9.19, Faelle A2, A3, A7, A8, A9) - waehrend
+ * dienst.sh seit 0.9.18 denselben Prozess nicht als Dienst gelten laesst.
+ */
+function tb_prozess_ist($pid, $skript)
 {
     $pid = (int) $pid;
-    if ($pid <= 0 || !is_dir('/proc/' . $pid)) { return false; }
-    $roh = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    if ($roh === '') { return false; }
-    $teile = explode("\0", $roh);
-    if (count($teile) < 2) { return false; }
-    if (basename((string) $teile[1]) !== $skriptname) { return false; }
-    return preg_match('#(^|/)php[0-9.]*$#', (string) $teile[0]) === 1;
+    $skript = (string) $skript;
+    if ($pid <= 0 || $skript === '' || !is_dir('/proc/' . $pid)) { return false; }
+    $uid = tb_dienst_uid();
+    $eigner = @fileowner('/proc/' . $pid);
+    if ($uid < 0 || $eigner === false || (int) $eigner !== $uid) { return false; }
+    $roh = @file_get_contents('/proc/' . $pid . '/cmdline');
+    if (!is_string($roh) || $roh === '') { return false; }
+    $teile = explode("\0", rtrim($roh, "\0"));
+    if (count($teile) !== 2 || $teile[0] === '' || $teile[1] === '') { return false; }
+    if (!preg_match('/^php([0-9].*)?$/', basename($teile[0]))) { return false; }
+    $ziel = $teile[1];
+    if ($ziel[0] !== '/') {
+        $wd = @readlink('/proc/' . $pid . '/cwd');
+        if (!is_string($wd) || $wd === '') { return false; }
+        if (substr($wd, -10) === ' (deleted)') { $wd = substr($wd, 0, -10); }
+        $ziel = $wd . '/' . $ziel;
+    }
+    if ($ziel === $skript) { return true; }
+    $a = @realpath($ziel);
+    $b = @realpath($skript);
+    return $a !== false && $b !== false && $a === $b;
 }
 
 /* ---------------- Protokoll ---------------- */
@@ -1488,10 +1610,14 @@ function tb_live_alter()
 
 function tb_dienst_pid()
 {
-    $f = tb_paths()['datadir'] . '/pulse.pid';
+    $p = tb_paths();
+    $f = $p['datadir'] . '/pulse.pid';
     if (!is_file($f)) { return 0; }
-    $pid = (int) trim((string) @file_get_contents($f));
-    return tb_prozess_ist($pid, 'tb_pulse.php') ? $pid : 0;
+    // Der Inhalt wird als Zahl geprueft, bevor er irgendwohin geht.
+    $roh = trim((string) @file_get_contents($f));
+    if (!preg_match('/^[0-9]{1,12}$/', $roh)) { return 0; }
+    $pid = (int) $roh;
+    return tb_prozess_ist($pid, $p['bindir'] . '/tb_pulse.php') ? $pid : 0;
 }
 
 function tb_dienst_soll()
@@ -2498,13 +2624,14 @@ function tb_abo_text()
 
 
 /**
- * Den Broker fragen, ob unter $thema ein zurueckbehaltener Wert steht.
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung, ein SUBSCRIBE mit allen Filtern.
  *
- * Rueckgabe: 'leer'      der Broker hat das Abonnement bestaetigt und keinen
- *                        zurueckbehaltenen Wert geschickt
- *            'belegt'    er hat einen geschickt
- *            'unbekannt' er war nicht zu fragen (keine Wurzel, keine
- *                        Verbindung, Anmeldung abgewiesen, keine Antwort)
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat das Abonnement bestaetigt (oder einen Wert
+ * geschickt); was dann nicht unter 'belegt' steht, ist leer. 'unbekannt':
+ * er war nicht zu fragen (keine Wurzel, keine Verbindung, Anmeldung
+ * abgewiesen, keine Antwort).
  *
  * Warum ueberhaupt fragen: das Abraeumen laeuft ueber den UDP-Eingang des
  * Gateways, und dort meldet sendto() auch fuer ein verworfenes Datagramm
@@ -2519,17 +2646,28 @@ function tb_abo_text()
  * fremde Bibliothek, wie der WebSocket-Nachbau in bin/tb_pulse.php. Die
  * Anmeldung nimmt Brokeruser/Brokerpass aus der general.json (Regeln/07,
  * Abschnitt 2); das Kennwort steht nur im CONNECT-Paket, nie in einem
- * Protokoll und nie auf einer Kommandozeile.
+ * Protokoll und nie auf einer Kommandozeile. Bis 0.9.18 fragte eine
+ * Einzelfunktion nur nach status/ok; seit 0.9.19 fragen tb_mqtt_altlast()
+ * und die Deinstallation (tb_mqtt_leeren()) hier nach ganzen Listen.
  */
-function tb_mqtt_behalten_fragen($thema)
+function tb_mqtt_behalten_liste(array $themen)
 {
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
     $p = tb_paths();
-    if ($p['home'] === '') { return 'unbekannt'; }
+    if ($p['home'] === '') { return $aus; }
     $gen = tb_json_lesen($p['home'] . '/config/system/general.json');
     $m = array();
     if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
     elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
-    if (!$m) { return 'unbekannt'; }
+    if (!$m) { return $aus; }
     $hol = function ($gross, $klein) use ($m) {
         if (isset($m[$gross])) { return (string) $m[$gross]; }
         return isset($m[$klein]) ? (string) $m[$klein] : '';
@@ -2542,7 +2680,7 @@ function tb_mqtt_behalten_fragen($thema)
     $kennwort = $hol('Brokerpass', 'brokerpass');
 
     $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
-    if (!$s) { return 'unbekannt'; }
+    if (!$s) { return $aus; }
     stream_set_timeout($s, 1);
 
     $zk = function ($t) { return pack('n', strlen($t)) . $t; };
@@ -2599,11 +2737,11 @@ function tb_mqtt_behalten_fragen($thema)
         $nutz .= $zk($benutzer);
         if ($kennwort !== '') { $nutz .= $zk($kennwort); }
     }
-    $lage = 'unbekannt';
     if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
         $ack = $paket();
         if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
-            $sub = pack('n', 1) . $zk((string) $thema) . chr(0);
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
             @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
             $bestaetigt = false;
             $ende = microtime(true) + 3.0;
@@ -2620,78 +2758,226 @@ function tb_mqtt_behalten_fragen($thema)
                     $t = substr($pk[1], 2, $tl[1]);
                     $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
                     $wert = (string) substr($pk[1], $versatz);
-                    if ($t === (string) $thema && ($pk[0] & 1) && $wert !== '') {
-                        $lage = 'belegt';
-                        break;
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                        if (count($aus['belegt']) === count($soll)) { break; }
                     }
                 }
             }
-            if ($lage !== 'belegt' && $bestaetigt) { $lage = 'leer'; }
+            if ($bestaetigt || $aus['belegt']) { $aus['lage'] = 'ok'; }
         }
         @fwrite($s, chr(0xE0) . chr(0));
     }
     fclose($s);
-    return $lage;
+    return $aus;
 }
 
 /**
- * Muss der zurueckbehaltene Altwert von <praefix>/status/ok noch geloescht
- * werden? Rueckgabe true heisst: in diesem Lauf die leere retain-Nutzlast
- * senden (tb_mqtt_senden, unmittelbar vor dem gueltigen Wert).
- *
- * status/ok ging bis 0.9.17 zurueckbehalten hinaus. Es ist eine Aussage des
- * Dienstes ueber sich selbst - "der letzte eigene Preisabruf gelang" - und
- * nach der Entscheidung des Hausherrn vom 18./19.09.2026 nie retained
- * (Regeln/07, Abschnitt 2). Ein spaeteres publish ersetzt einen
- * zurueckbehaltenen Wert im Broker NICHT; ohne Loeschung stuende die letzte 1
- * fuer immer dort, und nach einem Neustart von Broker oder Gateway laese
- * Loxone "in Ordnung" von einem Plugin, das nicht mehr laeuft.
- *
- * Der Ablauf, je Lauf, bis der Merker liegt:
- *   1. den Broker fragen (tb_mqtt_behalten_fragen);
- *   2. 'leer'   -> Merker schreiben, nichts senden;
- *      'belegt' -> abraeumen, kein Merker - der naechste Lauf fragt wieder;
- *      'unbekannt' -> ebenso abraeumen, kein Merker, einmal je Stunde ins
- *      Protokoll. Das kostet je Lauf ein Datagramm und eine Verbindung, bis
- *      der Broker antwortet.
- * Der Merker liegt im Datenordner und traegt die Kennung
- * "belegt <praefix>/status/ok": ein anderer Inhalt - auch ein Merker einer
- * Vorfassung oder eines anderen Praefixes - gilt nicht. purge_installation
- * raeumt ihn bei jedem Upgrade mit ab; dann wird genau einmal nachgefragt.
+ * Alle Themen, die diese Linie je zurueckbehalten gesendet hat - fuer die
+ * Deinstallation. Die heutige Retain-Tabelle (ueber tb_mqtt_themen() und
+ * tb_mqtt_retain(), keine abgeschriebene Liste) und dazu, was frueher darin
+ * stand: status/ok bis 0.9.17, status/ts und status/pulse_ts in 0.9.13
+ * (tb_mqtt_retain() der Archive 0.9.13, 0.9.14 und 0.9.17, gelesen am
+ * 24.09.2026). Die Stundenpreise stunde/N/ct gingen nie zurueckbehalten
+ * hinaus.
  */
-function tb_mqtt_ok_abraeumen($praefix)
+function tb_mqtt_leer_themen()
 {
-    $thema = $praefix . '/status/ok';
-    $merker = tb_paths()['datadir'] . '/.mqtt_ok_geraeumt';
-    $kennung = 'belegt ' . $thema;
-    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
-        return false;
+    // Seit 0.9.19 mit den zwoelf Werten mit Zeitbezug, die bis 0.9.18
+    // zurueckbehalten hinausgingen (tb_mqtt_frueher_behalten()).
+    $t = array();
+    foreach (tb_mqtt_frueher_behalten() as $k) { $t[$k] = true; }
+    foreach (array_keys(tb_mqtt_themen()) as $k) {
+        if (tb_mqtt_retain($k)) { $t[$k] = true; }
     }
-    $lage = tb_mqtt_behalten_fragen($thema);
-    if ($lage === 'leer') {
+    ksort($t);
+    return array_keys($t);
+}
+
+/**
+ * Aus der Deinstallation: die zurueckbehaltenen Themen der Linie leeren.
+ *
+ * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
+ * Nachricht geht als Loeschung an den Broker, Regeln/07, Nachtraege vom
+ * 19.09.2026). VOR der ersten Runde und nach jeder wird der Broker gefragt
+ * (tb_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht, hoechstens
+ * $runden Runden. Steht nichts da, geht nichts hinaus. Ist der Broker nicht zu
+ * fragen, gehen alle Themen in jeder Runde hinaus, und die Ausgabe sagt, dass
+ * nicht nachgelesen wurde - der Eingang verwirft unter Last Datagramme
+ * (Regeln/07), ein blosses Senden ist kein Beleg. Bauart ZendureSolarFlow
+ * 0.9.26 (zd_mqtt_leeren()).
+ *
+ * Bis 0.9.18 raeumte die Deinstallation nichts ab: die Zustaende der Linie
+ * blieben im Broker, und nach jedem Neustart von Broker oder Gateway bekam
+ * der Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt (in
+ * WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle U1, U3, U4, U6).
+ *
+ * Liest die Konfiguration ohne Selbstheilung und schreibt weder Protokoll
+ * noch Datei. Ausgabe im Format der Hakenskripte (<OK>/<INFO>/<WARNING>).
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw. der
+ * Eingang war nicht erreichbar, 2 nicht moeglich.
+ */
+function tb_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    $p = tb_paths();
+    $cfg = array_merge(tb_vorgaben(), tb_json_lesen($p['config']));
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($praefix === '') { $praefix = 'tibber'; }
+    $praefix = trim(tb_mqtt_wert_saeubern($praefix), '/ ');
+    if ($praefix === '' || preg_match('/[#+\s]/', $praefix)) {
+        echo "<WARNING> MQTT: das Themenpraefix ist leer oder enthaelt einen Platzhalter oder "
+           . "Leerraum - zurueckbehaltene Themen wurden nicht geleert.\n";
+        return 2;
+    }
+    $z = tb_mqtt_zustand();
+    if (!$z['udpport']) {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $alle = array();
+    foreach (tb_mqtt_leer_themen() as $t) { $alle[] = $praefix . '/' . $t; }
+    $n = count($alle);
+    $f = tb_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
+           . "/ steht zurueckbehalten - nichts zu leeren.\n";
+        return 0;
+    }
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) ($pause * 1000000)); }
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = tb_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $z['udpport'] . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
+           . "zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
+    return 0;
+}
+
+/**
+ * Die Themen, die frueher zurueckbehalten hinausgingen und es heute nicht mehr
+ * tun (tb_mqtt_retain() der Archive 0.9.13, 0.9.14, 0.9.17 und 0.9.18,
+ * gelesen am 24.09.2026): status/ok bis 0.9.17, status/ts und
+ * status/pulse_ts in 0.9.13, die zwoelf Werte mit Zeitbezug bis 0.9.18. Ihre
+ * Altwerte stehen auf bestehenden Anlagen im Broker, bis jemand sie loescht -
+ * ein spaeteres publish ersetzt einen zurueckbehaltenen Wert nicht.
+ */
+function tb_mqtt_frueher_behalten()
+{
+    return array(
+        'status/ok', 'status/ts', 'status/pulse_ts',
+        'morgen_ok',
+        'verbr_gestern', 'kosten_gestern', 'ersparnis_gestern', 'guenstiganteil',
+        'verbr_monat', 'kosten_monat', 'dyn_monat', 'diff_monat', 'euro_monat',
+        'avg_30t', 'rank_30t',
+    );
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf noch abgeraeumt werden?
+ *
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt',
+ *                 'themen' => array(<thema ohne praefix>, ...)).
+ *
+ * Je Lauf, bis der Merker liegt:
+ *   1. den Broker nach allen Themen aus tb_mqtt_frueher_behalten() fragen;
+ *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
+ *      einige belegt -> genau diese abraeumen, kein Merker ('belegt'); der
+ *      Aufrufer sendet dann VOLL (tb_veroeffentlichen), damit die leere
+ *      retain-Nutzlast unmittelbar vor dem gueltigen Wert steht;
+ *      nicht zu fragen -> alle, aber nur unmittelbar vor einem Wert, der
+ *      ohnehin hinausgeht ('unbekannt'), kein Merker, einmal je Stunde ins
+ *      Protokoll.
+ * Der Merker traegt die Kennung "leer-bestaetigt <praefix>: <Themenliste>":
+ * ein anderer Inhalt - ein anderes Praefix, eine andere Liste - gilt nicht.
+ * Der Merker der Vorfassung (.mqtt_ok_geraeumt, nur status/ok) hat einen
+ * anderen Namen und gilt deshalb ebenfalls nicht; er wird beim Schreiben des
+ * neuen entfernt. purge_installation raeumt den Merker bei jedem Upgrade mit
+ * ab; dann wird genau einmal nachgefragt.
+ */
+function tb_mqtt_altlast($praefix)
+{
+    static $cache = array();
+    $praefix = (string) $praefix;
+    if (isset($cache[$praefix])) { return $cache[$praefix]; }
+    $liste = tb_mqtt_frueher_behalten();
+    $p = tb_paths();
+    $merker = $p['datadir'] . '/.mqtt_altlast_geraeumt';
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = tb_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
         if (@file_put_contents($merker, $kennung . "\n") === false) {
             tb_log_gebremst('mqtt_merker', 'MQTT: der Merker ' . $merker . ' liess sich '
                 . 'nicht schreiben - der Broker wird im naechsten Lauf wieder gefragt.');
         } else {
-            tb_log('MQTT: unter ' . $thema . ' steht im Broker kein zurueckbehaltener '
-                . 'Wert mehr (vom Broker bestaetigt). status/ok geht seit 0.9.18 '
-                . 'fluechtig hinaus.');
+            @unlink($p['datadir'] . '/.mqtt_ok_geraeumt');
+            tb_log('MQTT: unter ' . $praefix . '/ steht keines der ' . count($liste)
+                . ' frueher zurueckbehaltenen Themen mehr im Broker (vom Broker bestaetigt).');
         }
-        return false;
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
     }
-    if ($lage === 'unbekannt') {
-        tb_log_gebremst('mqtt_rueckfrage', 'MQTT: der Broker liess sich nicht befragen, ob '
-            . 'unter ' . $thema . ' noch ein zurueckbehaltener Wert steht. Der Altwert wird '
-            . 'deshalb bei jedem Lauf geloescht, bis der Broker antwortet.');
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
     }
-    return true;
+    tb_log_gebremst('mqtt_rueckfrage', 'MQTT: der Broker liess sich nicht befragen, ob '
+        . 'unter ' . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden '
+        . 'deshalb unmittelbar vor jedem Senden geloescht, bis der Broker antwortet.');
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
 }
 
 /**
  * Werte ueber den UDP-Eingang des Gateways veroeffentlichen.
  * So braucht das Senden keine Broker-Zugangsdaten; die braucht nur die
- * Rueckfrage in tb_mqtt_behalten_fragen(), und die laeuft nur, bis der
- * Altwert von status/ok nachweislich fort ist.
+ * Rueckfrage in tb_mqtt_behalten_liste(), und die laeuft nur, bis die
+ * Altwerte frueher zurueckbehaltener Themen nachweislich fort sind
+ * (tb_mqtt_altlast()).
  *
  * Zwei Dinge, die bis 0.9.6 anders waren:
  *
@@ -2722,10 +3008,14 @@ function tb_mqtt_ok_abraeumen($praefix)
 function tb_mqtt_senden(array $paare, $praefix)
 {
     $z = tb_mqtt_zustand();
+    /* Drei Glieder in JEDEM Rueckweg - der Aufrufer liest drei
+     * (versucht, gescheitert, zurueckbehalten). Bis 0.9.18 hatten die drei
+     * fruehen Rueckwege nur zwei, und tb_cron.php schrieb "Undefined array
+     * key 2" (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19, N1b/N1c). */
     if (!$z['udpport']) {
         tb_log_gebremst('mqtt_kein_port',
             'MQTT: kein UDP-Eingangsport in der general.json gefunden - nichts gesendet.');
-        return array(0, 0);
+        return array(0, 0, 0);
     }
     if (!$z['autostart']) {
         tb_log_gebremst('mqtt_aus', 'MQTT: das Gateway ist nicht auf Autostart gestellt '
@@ -2735,7 +3025,7 @@ function tb_mqtt_senden(array $paare, $praefix)
     if ($praefix === '' || strpos($praefix, ' ') !== false) {
         tb_log_gebremst('mqtt_praefix', 'MQTT: das Themen-Praefix ist unbrauchbar '
             . '(leer oder mit Leerraum) - es wird nichts veroeffentlicht.');
-        return array(0, 0);
+        return array(0, 0, 0);
     }
     /* Erst filtern, dann zaehlen. Ein fehlender Wert wird nicht gesendet -
      * er darf deshalb im Fehlerzweig auch nicht als Fehlschlag erscheinen.
@@ -2760,15 +3050,16 @@ function tb_mqtt_senden(array $paare, $praefix)
         if ($wert === '') { continue; }
         $sendbar[$thema] = $wert;
     }
-    /* Den Altwert von status/ok abraeumen, solange der Broker ihn noch
-     * zurueckbehaelt - tb_mqtt_ok_abraeumen() fragt ihn VORHER. */
-    $raeumen = isset($sendbar['status/ok']) && tb_mqtt_ok_abraeumen($praefix);
+    /* Die Altwerte frueher zurueckbehaltener Themen abraeumen, solange der
+     * Broker sie noch haelt - tb_mqtt_altlast() fragt ihn VORHER. */
+    $alt = $sendbar ? tb_mqtt_altlast($praefix) : array('lage' => 'erledigt', 'themen' => array());
+    $raeumen = array_flip($alt['themen']);
     $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'],
                                    $errno, $errstr, 2);
     if (!$strom) {
         tb_log_gebremst('mqtt_socket', 'MQTT: der UDP-Eingang des Gateways war nicht '
             . 'erreichbar (' . $errstr . ').');
-        return array(0, $fehler + count($sendbar));
+        return array(0, $fehler + count($sendbar), 0);
     }
     $versucht = 0;
     $behalten = 0;
@@ -2781,8 +3072,9 @@ function tb_mqtt_senden(array $paare, $praefix)
          * nicht erst im naechsten Lauf. Das ist die eine gewollte leere
          * Nutzlast dieses Plugins; tb_mqtt_wert_saeubern() laesst sonst keine
          * durch. */
-        if ($raeumen && $thema === 'status/ok') {
-            @fwrite($strom, 'retain ' . $praefix . '/status/ok ');
+        if (isset($raeumen[$thema])) {
+            @fwrite($strom, 'retain ' . $praefix . '/' . $thema . ' ');
+            unset($raeumen[$thema]);
         }
         /* Der UDP-Eingang des Gateways kennt vier Befehle; 'retain' ist
          * einer davon (mqttgateway.pl:293, ausgefuehrt in :354-357). Ein
@@ -2793,6 +3085,15 @@ function tb_mqtt_senden(array $paare, $praefix)
         $msg = $befehl . ' ' . $praefix . '/' . $thema . ' ' . $wert;
         $versucht++;
         if (@fwrite($strom, $msg) === false) { $fehler++; }
+    }
+    /* Was der Broker als belegt meldet, in diesem Lauf aber keinen Wert hat
+     * (ein fehlender Wert wird nicht gesendet), wird allein geloescht - der
+     * Altwert ist ohnehin falsch. Bei unbekannter Lage nicht: dann gehen nur
+     * die Loeschungen unmittelbar vor einem Wert hinaus. */
+    if ($alt['lage'] === 'belegt') {
+        foreach (array_keys($raeumen) as $thema) {
+            @fwrite($strom, 'retain ' . $praefix . '/' . $thema . ' ');
+        }
     }
     fclose($strom);
     return array($versucht, $fehler, $behalten);
@@ -2842,17 +3143,32 @@ function tb_mqtt_ausgeschlossen()
  *                    einem Plugin, das nicht mehr laeuft. Entscheidung des
  *                    Hausherrn 18./19.09.2026 (Regeln/07, Abschnitt 2): ok und
  *                    jede Dienstaussage nie retained. Der Altwert wird einmal
- *                    geloescht (tb_mqtt_ok_abraeumen).
+ *                    geloescht (tb_mqtt_altlast).
  *   status/ts        der Zeitstempel des letzten gelungenen Abrufs. Loxone
  *                    rechnet daraus das Alter; steht er nicht da, laesst
  *                    sich ein haengender Cron gar nicht erkennen. Er ist
  *                    NICHT das Lebenszeichen - das ist status/zaehler.
  *   status/pulse_ts  dasselbe fuer die Pulse
- *   morgen_ok        liegen die Preise fuer morgen vor
- *   fix              der eingetragene Festpreis - eine reine Einstellung
- *   die Verbrauchs- und Kostenwerte von gestern und dieses Monats sowie
- *   der Dreissig-Tage-Vergleich: sie aendern sich taeglich, nicht
- *   stuendlich, und bleiben ueber einen Neustart richtig.
+ *   fix              der eingetragene Festpreis - eine reine Einstellung.
+ *                    Seit 0.9.19 das EINZIGE zurueckbehaltene Thema: er
+ *                    bleibt wahr, bis der Anwender ihn aendert, und dann
+ *                    aendert sich die Signatur und er geht neu hinaus.
+ *
+ * BERICHTIGT in 0.9.19 (Hausstandard "Messwerte mit Zeitbezug nicht
+ * retained", Regeln/07; Anweisung vom 24.09.2026): bis 0.9.18 standen hier
+ * auch morgen_ok, die Werte von gestern (verbr_gestern, kosten_gestern,
+ * ersparnis_gestern, guenstiganteil), die des laufenden Monats (verbr_monat,
+ * kosten_monat, dyn_monat, diff_monat, euro_monat) und der
+ * Dreissig-Tage-Vergleich (avg_30t, rank_30t) - mit der Begruendung, sie
+ * aenderten sich nur taeglich. Die Frage ist aber, ob ein Wert OHNE neue
+ * Nachricht allein durch den Lauf der Zeit falsch wird: morgen_ok und alles
+ * "gestern" um Mitternacht, der laufende Monat zum Monatswechsel, avg_30t mit
+ * jedem Tag, rank_30t (der Rang der laufenden Stunde, beim Abruf
+ * eingefroren, bin/tb_cron.php) zur naechsten Stunde. Stirbt der Dienst,
+ * stuende das weiter im Broker und kaeme nach jedem Neustart von Broker oder
+ * Gateway wieder. Die Altwerte raeumt tb_mqtt_altlast() einmal ab (in WSL
+ * gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle R1 bis R12). Preis:
+ * nach einem Neustart fehlen sie, bis sich ein Wert aendert.
  *
  * Fluechtig bleibt alles mit Zeitbezug - der laufende Preis, das Niveau,
  * der Rang, die Fenster, die Pulse-Momentanwerte, die Stundenpreise des
@@ -2867,11 +3183,7 @@ function tb_mqtt_retain($thema)
     if ($tab === null) {
         $tab = array();
         foreach (array(
-            'morgen_ok', 'fix',
-            'verbr_gestern', 'kosten_gestern',
-            'verbr_monat', 'kosten_monat', 'dyn_monat', 'diff_monat', 'euro_monat',
-            'ersparnis_gestern', 'guenstiganteil',
-            'avg_30t', 'rank_30t',
+            'fix',
         ) as $t) { $tab[$t] = true; }
     }
     /* BERICHTIGT in 0.9.14: status/ts und status/pulse_ts standen in 0.9.13
@@ -3156,10 +3468,17 @@ function tb_t($schluessel)
         // nichts. Der fest verdrahtete Systempfad stand hier bis 0.9.17 -
         // an genau dieser zweiten Fundstelle wurde er bei Zendure 0.9.24
         // uebersehen (Stand-Protokolle/2026-09-18_Welle1).
-        $home = tb_lbhome();
+        //
+        // Ohne Wurzel NICHTS ab der Laufwerkswurzel: bis 0.9.18 hiess das
+        // '' . '/templates/plugins/html/lang', und was dort lag, galt vor den
+        // eigenen Sprachdateien (in WSL gemessen, Pruefung-Spotpreis-Tibber-
+        // 0.9.19, Fall C1; dieselbe Stelle fand ZendureSolarFlow 0.9.26 in
+        // zd_t()). Die Wurzel kommt aus tb_paths(), damit ein Archiv unter
+        // einer echten Wurzel auch hier im eigenen Ordner bleibt.
+        $home = tb_paths()['home'];
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        $pfad = $home !== '' ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
         $texte = @parse_ini_file($pfad . '/language_' . tb_sprache() . '.ini', true, INI_SCANNER_RAW);

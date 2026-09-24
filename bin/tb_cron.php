@@ -23,6 +23,8 @@
  *   tb_cron.php --preise       Preise sofort holen
  *   tb_cron.php --verbrauch    Verbrauch sofort holen
  *   tb_cron.php --selbsttest   Pruefungen ohne Konto, Klartextausgabe
+ *   tb_cron.php --mqtt-leeren  aus der Deinstallation: zurueckbehaltene
+ *                              Themen der Linie leeren und nachlesen
  *
  * Warum die Taktsteuerung hier steckt und nicht im Cron: Tibber bremst
  * haeufige Abrufe. Der Takt soll sich in der Oberflaeche einstellen lassen,
@@ -34,18 +36,24 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
-$tb_gefunden = false;
-foreach (array(
-    dirname(__DIR__) . '/webfrontend/html/tb_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-) as $tb_kandidat) {
-    if (is_file($tb_kandidat)) {
-        require_once $tb_kandidat;
-        $tb_gefunden = true;
-        break;
-    }
+/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort, nicht
+ * die Reihenfolge der Versuche. Installiert liegt diese Datei unter
+ * <Wurzel>/bin/plugins/<ordner> und die Bibliothek unter
+ * <Wurzel>/webfrontend/html/plugins/<ordner>, im ausgepackten Archiv unter
+ * <archiv>/bin und <archiv>/webfrontend/html. Bis 0.9.18 standen drei
+ * Kandidaten in Reihe; fehlte die eigene Bibliothek, galt aus einem Archiv
+ * unter /<name> der Pfad /webfrontend/html/plugins/bin/tb_lib.php ab der
+ * Laufwerkswurzel, und was dort lag, lief als Bibliothek (in WSL gemessen,
+ * Pruefung-Spotpreis-Tibber-0.9.19, Faelle C8 bis C10; Bauart
+ * ZendureSolarFlow 0.9.26). bin/tb_cron.php, bin/tb_pulse.php und
+ * bin/healthcheck tragen denselben Block. */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $tb_kandidat = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php';
+} else {
+    $tb_kandidat = dirname(__DIR__) . '/webfrontend/html/tb_lib.php';
 }
+$tb_gefunden = is_file($tb_kandidat);
+if ($tb_gefunden) { require_once $tb_kandidat; }
 if (!$tb_gefunden) {
     fwrite(STDERR, "tb_lib.php nicht gefunden - Plugin neu installieren.\n");
     exit(1);
@@ -573,7 +581,11 @@ function tb_monatsbericht()
 function tb_veroeffentlichen()
 {
     $cfg = tb_config();
-    if (empty($cfg['mqtt_ein'])) { return array(0, 0, 'aus'); }
+    /* Vier Glieder wie unten: der Aufrufer liest vier. Bis 0.9.18 waren es
+     * hier drei, und jeder Minutenlauf mit MQTT aus (Werkseinstellung) schrieb
+     * "Undefined array key 3" (in WSL gemessen, Pruefung-Spotpreis-Tibber-
+     * 0.9.17 N2 und 0.9.19 N1a). */
+    if (empty($cfg['mqtt_ein'])) { return array(0, 0, 'aus', 0); }
     $p = tb_paths();
     $topic = trim((string) $cfg['mqtt_topic'], '/');
     if ($topic === '') { $topic = 'tibber'; }
@@ -614,6 +626,19 @@ function tb_veroeffentlichen()
     $merker = $p['datadir'] . '/.mqtt_signatur';
     $alt = is_file($merker) ? trim((string) @file_get_contents($merker)) : '';
     $geaendert = ($alt !== $signatur);
+    /* Haelt der Broker noch Altwerte frueher zurueckbehaltener Themen
+     * (tb_mqtt_altlast()), geht dieser Lauf VOLL hinaus - die leere
+     * retain-Nutzlast steht dann unmittelbar vor dem gueltigen Wert, auch
+     * wenn sich an den Werten nichts geaendert hat. Bei unbekannter Lage
+     * nicht: sonst ginge ohne erreichbaren Broker jede Minute alles hinaus
+     * (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle R8, R9). */
+    if (!$geaendert) {
+        $tb_pr = trim(tb_mqtt_wert_saeubern($topic), '/ ');
+        if ($tb_pr !== '' && strpos($tb_pr, ' ') === false && tb_mqtt_zustand()['udpport']) {
+            $tb_alt = tb_mqtt_altlast($tb_pr);
+            if ($tb_alt['lage'] === 'belegt') { $geaendert = true; }
+        }
+    }
 
     // Das Lebenszeichen IMMER, die Werte nur bei Aenderung.
     $senden = tb_mqtt_lebenszeichen();
@@ -1034,7 +1059,7 @@ $tb_argv = isset($argv) ? $argv : array();
  * soll eine Antwort sehen und keinen stillen Normallauf, der Preise holt
  * und MQTT-Nachrichten verschickt. Gemessen am Zendure-Plugin: dort
  * landete derselbe Tippfehler in der Dienstschleife. */
-$tb_bekannt = array('--selbsttest', '--preise', '--verbrauch');
+$tb_bekannt = array('--selbsttest', '--preise', '--verbrauch', '--mqtt-leeren');
 foreach ($tb_argv as $tb_i => $tb_a) {
     if ($tb_i === 0) { continue; }
     /* Bis 0.9.9 wurde nur geprueft, was mit -- beginnt. 'php tb_cron.php
@@ -1050,6 +1075,11 @@ foreach ($tb_argv as $tb_i => $tb_a) {
 /* Der Selbsttest rechnet nur - er braucht die Sperre nicht und darf deshalb
  * auch nicht an ihr scheitern. Er steht VOR dem Ziehen der Sperre. */
 if (in_array('--selbsttest', $tb_argv, true)) { exit(tb_selbsttest()); }
+
+/* Aus der Deinstallation (uninstall/uninstall): die zurueckbehaltenen Themen
+ * der Linie leeren und beim Broker nachlesen - ohne Sperre, ohne Abruf, ohne
+ * Protokoll (tb_mqtt_leeren() in tb_lib.php). */
+if (in_array('--mqtt-leeren', $tb_argv, true)) { exit(tb_mqtt_leeren()); }
 
 $tb_sperre = tb_sperre_ziehen();
 if ($tb_sperre === null) {

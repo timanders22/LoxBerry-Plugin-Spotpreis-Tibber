@@ -38,18 +38,24 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
-$tb_gefunden = false;
-foreach (array(
-    dirname(__DIR__) . '/webfrontend/html/tb_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-) as $tb_kandidat) {
-    if (is_file($tb_kandidat)) {
-        require_once $tb_kandidat;
-        $tb_gefunden = true;
-        break;
-    }
+/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort, nicht
+ * die Reihenfolge der Versuche. Installiert liegt diese Datei unter
+ * <Wurzel>/bin/plugins/<ordner> und die Bibliothek unter
+ * <Wurzel>/webfrontend/html/plugins/<ordner>, im ausgepackten Archiv unter
+ * <archiv>/bin und <archiv>/webfrontend/html. Bis 0.9.18 standen drei
+ * Kandidaten in Reihe; fehlte die eigene Bibliothek, galt aus einem Archiv
+ * unter /<name> der Pfad /webfrontend/html/plugins/bin/tb_lib.php ab der
+ * Laufwerkswurzel, und was dort lag, lief als Bibliothek (in WSL gemessen,
+ * Pruefung-Spotpreis-Tibber-0.9.19, Faelle C8 bis C10; Bauart
+ * ZendureSolarFlow 0.9.26). bin/tb_cron.php, bin/tb_pulse.php und
+ * bin/healthcheck tragen denselben Block. */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $tb_kandidat = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php';
+} else {
+    $tb_kandidat = dirname(__DIR__) . '/webfrontend/html/tb_lib.php';
 }
+$tb_gefunden = is_file($tb_kandidat);
+if ($tb_gefunden) { require_once $tb_kandidat; }
 if (!$tb_gefunden) {
     fwrite(STDERR, "tb_lib.php nicht gefunden - Plugin neu installieren.\n");
     exit(1);

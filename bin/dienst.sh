@@ -104,14 +104,24 @@ PNAME="${PNAME##*/}"
 PBIN="$WURZEL/bin/plugins/$PNAME"
 
 # Die Gegenprobe steht VOR allem, was schreibt (Vorbild VolkswagenID 0.9.24,
-# Govee 0.9.20): liegt dieses Skript nicht im bin-Ordner der Anlage, und ist
-# <ordner> dort auch kein eingerichtetes Plugin, dann kommt der Aufruf aus
-# einem ausgepackten Archiv oder einem Pruefordner - es wird nichts angelegt
-# und nichts angefasst (Faelle H1, H4, H5, H8, H10).
-if [ "$SELF" != "$(readlink -f "$PBIN" 2>/dev/null)" ] \
-   && [ ! -d "$WURZEL/config/plugins/$PNAME" ]; then
-    echo "FEHLER: '$PNAME' ist unter $WURZEL kein eingerichtetes Plugin,"
-    echo "        und $SELF ist nicht dessen bin-Ordner."
+# Govee 0.9.20): die Anlage gilt nur, wenn dieses Skript in ihrem bin-Ordner
+# liegt oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR
+# und $LBPPLUGINDIR, und <ordner> ist dort eingerichtet) - dieselbe Regel wie
+# tb_paths() in tb_lib.php. Sonst kommt der Aufruf aus einem ausgepackten
+# Archiv oder einem Pruefordner - es wird nichts angelegt und nichts
+# angefasst (Faelle H1, H4, H5, H8, H10).
+# Bis 0.9.18 genuegte $LBPPLUGINDIR allein: ein Pruefarchiv unter der Wurzel
+# fand sie per Suche, und 'stop' hielt den Dienst der Anlage an (in WSL
+# gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle S1, S2).
+TB_AUSDRUECKLICH=0
+if [ -n "${LBPPLUGINDIR:-}" ] && [ -n "${LBHOMEDIR:-}" ] \
+   && [ "$WURZEL" = "$(cd "$LBHOMEDIR" 2>/dev/null && pwd -P)" ] \
+   && [ -d "$WURZEL/config/plugins/$PNAME" ]; then
+    TB_AUSDRUECKLICH=1
+fi
+if [ "$SELF" != "$(readlink -f "$PBIN" 2>/dev/null)" ] && [ "$TB_AUSDRUECKLICH" != "1" ]; then
+    echo "FEHLER: $SELF ist nicht der bin-Ordner von '$PNAME' unter $WURZEL,"
+    echo "        und LBHOMEDIR und LBPPLUGINDIR nennen die Anlage nicht beide."
     echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder"
     echo "        einem Pruefordner. Es wurde nichts angelegt."
     echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh"
