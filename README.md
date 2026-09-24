@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.20
+Version 0.9.21
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,14 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.21
+
+Eine Zweitschrift ohne Inhalt (`token.json` ohne Token, `tibber.json` ohne einen
+einzigen Wert) wird bei der Installation nicht mehr kopiert und als
+„wiederhergestellt“ gemeldet, sondern mit „Sicherung ohne Einstellungen - nichts
+zurueckgespielt“; eine vorhandene Datei wird wie bisher nie überschrieben
+(gemessen in WSL, `Pruefung-Spotpreis-Tibber-0.9.21/postinstall_hinweis.md`).
 
 ## Neu in 0.9.20
 

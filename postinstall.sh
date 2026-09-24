@@ -66,14 +66,40 @@ chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 # ---------- Sicherungen zurueckspielen ----------
 # Nur, wenn die vorhandene Datei leer ist oder fehlt. Eine bestehende
 # Konfiguration wird NICHT ueberschrieben.
-for PAAR in "tibber.json:.backup.json" "token.json:.backup.token.json"; do
+#
+# Und nur aus einer Zweitschrift MIT Inhalt. Bis 0.9.20 wurde auch eine
+# Zweitschrift ohne Inhalt kopiert und als "wiederhergestellt" gemeldet
+# (gemessen 24.09.2026 in WSL, Pruefung-Spotpreis-Tibber-0.9.21, Fall c:
+# token.json mit leerem Token). Inhalt heisst fuer token.json ein nicht
+# leeres "token" (wie am Ende dieses Skripts und in tb_token_lesen()), fuer
+# tibber.json mindestens ein nicht leerer Wert. PHP wird erst weiter unten
+# verlangt - fehlt es hier, wird wie bisher kopiert (Rueckgabe 2).
+tb_inhalt() {   # $1 Datei, $2 Art: token | konfig; 0 Inhalt, 1 keiner, 2 nicht pruefbar
+    command -v php >/dev/null 2>&1 || return 2
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+if (!is_array($d)) { exit(1); }
+if ($argv[2] === "token") { exit(isset($d["token"]) && (string) $d["token"] !== "" ? 0 : 1); }
+foreach ($d as $w) { if (is_scalar($w) && trim((string) $w) !== "") { exit(0); } }
+exit(1);' -- "$1" "$2" >/dev/null 2>&1
+    tb_rc=$?
+    [ "$tb_rc" = 0 ] || [ "$tb_rc" = 1 ] || return 2
+    return "$tb_rc"
+}
+for PAAR in "tibber.json:.backup.json:konfig" "token.json:.backup.token.json:token"; do
     ZIEL="$PCONFIG/${PAAR%%:*}"
-    QUELLE="$BASE/config/plugins/$PFOLDER${PAAR##*:}"
+    TB_REST="${PAAR#*:}"
+    QUELLE="$BASE/config/plugins/$PFOLDER${TB_REST%%:*}"
+    TB_ART="${PAAR##*:}"
     if [ -f "$QUELLE" ]; then
         INHALT=$(cat "$ZIEL" 2>/dev/null)
         if [ ! -s "$ZIEL" ] || [ "$INHALT" = "{}" ]; then
-            cp -p "$QUELLE" "$ZIEL" && chmod 600 "$ZIEL" \
-                && echo "<OK> $(basename "$ZIEL") aus der Sicherung wiederhergestellt."
+            tb_inhalt "$QUELLE" "$TB_ART"
+            if [ "$?" = 1 ]; then
+                echo "<INFO> $(basename "$ZIEL"): Sicherung ohne Einstellungen - nichts zurueckgespielt."
+            else
+                cp -p "$QUELLE" "$ZIEL" && chmod 600 "$ZIEL" \
+                    && echo "<OK> $(basename "$ZIEL") aus der Sicherung wiederhergestellt."
+            fi
         fi
     fi
 done
