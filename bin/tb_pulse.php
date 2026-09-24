@@ -595,6 +595,10 @@ $tb_direkt = !isset($_SERVER['SCRIPT_FILENAME'])
     || basename((string) $_SERVER['SCRIPT_FILENAME']) === basename(__FILE__);
 if (!$tb_direkt) { return; }
 
+/* Ohne LoxBerry-Wurzel nichts tun: Meldung, Rueckgabewert 1 - VOR allem,
+ * was schreibt (tb_keine_wurzel_abbruch() in tb_lib.php, Regeln/06). */
+tb_keine_wurzel_abbruch('tb_pulse.php');
+
 $tb_argv = isset($argv) ? $argv : array();
 
 if (in_array('--pruefen', $tb_argv, true)) {

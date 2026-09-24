@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.17
+Version 0.9.18
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,70 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.18
+
+- **Die Kachel „MQTT" zeigt jetzt, ob dieses Plugin veröffentlicht.** Bis 0.9.17
+  stand dort als großer Wert der Autostart des MQTT-Gateways von LoxBerry, und
+  „MQTT ein" las sich, als sende das Plugin — auch wenn es im Reiter MQTT
+  ausgeschaltet war. Der Autostart des Gateways steht jetzt klein darunter;
+  fehlt der MQTT-Abschnitt in der LoxBerry-Konfiguration, heißt er dort
+  „nicht feststellbar" statt „aus".
+- **`status/ok` geht nicht mehr zurückbehalten hinaus.** Es sagt nur, dass der
+  *laufende* Dienst seinen letzten eigenen Preisabruf für gelungen hält. Bis
+  0.9.17 blieb die letzte `1` im Broker stehen, auch wenn das Plugin gar nicht
+  mehr lief, und nach einem Neustart von Broker oder Gateway las Loxone daraus
+  „in Ordnung". Der alte Wert wird einmal gelöscht: das Plugin fragt den
+  Broker (mit Benutzer und Kennwort aus der LoxBerry-Konfiguration), ob unter
+  `<präfix>/status/ok` noch ein zurückbehaltener Wert steht; steht einer da,
+  geht eine leere zurückbehaltene Nachricht hinaus, unmittelbar gefolgt vom
+  gültigen Wert — so lange, bis der Broker bestätigt, dass nichts mehr
+  dasteht. Erst dann wird ein Merker gesetzt. Nach dem Update kann ein
+  Loxone-Eingang auf `status/ok` deshalb einen Augenblick lang leer sein.
+  Nach einem Neustart von Broker oder Gateway fehlt `status/ok`, bis der
+  nächste Minutenlauf sendet. `morgen_ok`, `fix` und die Tages- und
+  Monatswerte bleiben zurückbehalten. Eine neue Zeile im Reiter *Test* prüft,
+  dass kein Lebenszeichen-Thema zurückbehalten gesendet wird.
+- **Die LoxBerry-Wurzel wird gelesen, nicht geraten.** `bin/dienst.sh`,
+  die Programme unter `bin/`, die Bibliothek und alle Hakenskripte nehmen
+  `$LBHOMEDIR` (bzw. das fünfte Argument des Installers) und suchen sonst
+  aufwärts nach einem Verzeichnis mit `config/plugins`, `data/plugins` **und**
+  `config/system/general.json`. Einen festen Rückfall danach gibt es nicht
+  mehr: ohne Wurzel melden sie einen Fehler, tun nichts und enden mit einem
+  Rückgabewert ungleich 0 (`dienst.sh status`: 4). Der Ordnername kommt aus
+  `$LBPPLUGINDIR`, sonst aus dem Ablageort. Ein `dienst.sh` aus einem
+  ausgepackten Archiv legt nichts mehr an und verwaltet, wenn überhaupt, den
+  Dienst der Anlage; `status` legt keinen Ordner mehr an. Bis 0.9.17 legte
+  schon ein `status` aus einem Prüfarchiv unter der Wurzel in der Installation
+  `data/plugins/bin` an, und `uninstall` räumte ohne fünftes Argument nichts
+  ab. Im Normalbetrieb ändert sich nichts: der Installer übergibt die Wurzel,
+  und eine installierte Anlage findet sie selbst.
+- **Die Marke einer laufenden Aktualisierung gilt auch, wenn sie bis 300 s
+  „aus der Zukunft" stammt** — die Uhr kann nach dem Setzen ein Stück
+  zurückspringen. Bis 0.9.17 fiel sie schon bei 2 s aus. Der Reiter *Test*
+  zeigt sie nach derselben Regel als gültig an; bis 0.9.17 hieß eine
+  vorauseilende Marke dort „verfallen".
+- **Der Pulse-Dienst wird argumentweise erkannt.** `bin/dienst.sh` hält einen
+  Prozess nur dann für den eigenen Dienst, wenn er ein PHP ist, genau das
+  Dienstskript dieser Anlage als einziges Argument trägt und dem
+  Dienstbenutzer gehört. Bis 0.9.17 genügte der Dateiname: unter der Nummer
+  aus der PID-Datei galt auch ein `tb_pulse.php` einer zweiten Installation
+  oder ein Einmallauf als Dienst — `status` meldete „läuft", `start` startete
+  nichts, `stop` beendete den fremden Prozess. Fehlt `dienst.sh`, beendeten
+  `preupgrade.sh` und die Deinstallation jeden Prozess unter der Nummer
+  (auch ein `tail -f` auf das Skript); jetzt prüfen sie vor jedem Signal
+  genauso.
+
+**Bekannte Grenze:** `bin/tb_cron.php` aus einem ausgepackten Archiv, das
+*unterhalb* einer echten LoxBerry-Wurzel liegt (etwa ein Prüfarchiv im
+Heimatverzeichnis), findet diese Wurzel und arbeitet auf der Anlage — mit
+deren Token und deren Daten. Prüfarchive gehören nach `/tmp`, nicht unter die
+Wurzel. `bin/dienst.sh` sagt in dieser Lage ab.
+
+Gemessen in WSL (nicht am Gerät), Prüfstand unter
+`Pruefung-Spotpreis-Tibber-0.9.18/`: 54 + 21 + 22 + 15 + 12 Fälle, vorher
+25 + 13 + 11 + 7 + 4 rot, nachher 0; jede Korrektur einzeln zurückgebaut und
+rot geeicht.
 
 ## Neu in 0.9.17
 
@@ -283,8 +347,12 @@ macht entweder das Lebenszeichen dauerhaft oder die Zustände flüchtig.
 
 | | Themen |
 |---|---|
-| **zurückbehalten** | `status/ok`, `morgen_ok`, `fix`, `verbr_gestern`, `kosten_gestern`, `verbr_monat`, `kosten_monat`, `dyn_monat`, `diff_monat`, `euro_monat`, `ersparnis_gestern`, `guenstiganteil`, `avg_30t`, `rank_30t` |
-| **flüchtig** | der laufende Preis, Niveau und Rang, die Fenster, die Pulse-Momentanwerte, die Stundenpreise, die Tageskennzahlen — und das Lebenszeichen: `status/zaehler`, `status/ts`, `status/pulse_ts` |
+| **zurückbehalten** | `morgen_ok`, `fix`, `verbr_gestern`, `kosten_gestern`, `verbr_monat`, `kosten_monat`, `dyn_monat`, `diff_monat`, `euro_monat`, `ersparnis_gestern`, `guenstiganteil`, `avg_30t`, `rank_30t` |
+| **flüchtig** | der laufende Preis, Niveau und Rang, die Fenster, die Pulse-Momentanwerte, die Stundenpreise, die Tageskennzahlen — und das Lebenszeichen: `status/ok`, `status/zaehler`, `status/ts`, `status/pulse_ts` |
+
+**Seit 0.9.18:** `status/ok` stand von 0.9.13 bis 0.9.17 bei den
+zurückbehaltenen Themen. Es ist eine Aussage des Dienstes über sich selbst und
+geht seither flüchtig hinaus (Abschnitt „Neu in 0.9.18").
 
 **In 0.9.14 berichtigt:** `status/ts` und `status/pulse_ts` standen in 0.9.13
 bei den zurückbehaltenen Themen. Das war falsch. Beide gehören zum

@@ -52,12 +52,50 @@ TB_ARGV3=$3
 TB_ARGV5=$5
 TB_PFOLDER="${TB_ARGV3:-spotpreistibber}"
 TB_BASE="${TB_ARGV5:-$LBHOMEDIR}"
-if [ -z "$TB_BASE" ] || [ ! -d "$TB_BASE" ]; then
-    TB_SELF=$(cd "$(dirname "$0")" && pwd)
-    TB_BASE=$(cd "$TB_SELF/../.." 2>/dev/null && pwd)
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+#
+# Bis 0.9.17 stand hier der Rueckfall $(cd "$SELF/../.."). Installiert liegt
+# uninstall unter <Wurzel>/data/system/uninstall/<ordner>; zwei Ebenen hoch
+# ist dort <Wurzel>/data, und die Deinstallation ohne $5 raeumte nichts ab.
+# Aus einem Archiv zwei Ebenen unter einem fremden Baum loeschte sie dort, und
+# die uebrigen Hakenskripte legten dort an, spielten zurueck oder loeschten
+# (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.18, messung_haken_vorher.txt,
+# Faelle K1 bis K11). general.json ist die Bedingung aus dem Raumklima-Vorfall
+# (Regeln/06): ein LoxBerry hat die Datei immer, ein Pruefstandsrest nie.
+# Findet sich nichts, wird GEWARNT statt vollzogen.
+tb_wurzel_suchen() {
+    tb_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    tb_i=0
+    while [ -n "$tb_v" ] && [ "$tb_v" != "/" ] && [ "$tb_i" -lt 8 ]; do
+        if [ -d "$tb_v/config/plugins" ] && [ -d "$tb_v/data/plugins" ] \
+           && [ -f "$tb_v/config/system/general.json" ]; then
+            echo "$tb_v"
+            return 0
+        fi
+        tb_v=$(dirname "$tb_v")
+        tb_i=$((tb_i + 1))
+    done
+    return 1
+}
+if [ -z "$TB_BASE" ] || [ ! -d "$TB_BASE/config/plugins" ] || [ ! -d "$TB_BASE/data/plugins" ]; then
+    TB_BASE=$(tb_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || TB_BASE=""
 fi
-TB_MARKE="$TB_BASE/data/plugins/$TB_PFOLDER.upgrade_laeuft"
+# Ohne Wurzel wird die Marke NICHT angefasst (Fall K11) - ein rm auf einen
+# geratenen Pfad loeschte die Marke eines fremden Baums. Die PHP-Erweiterungen
+# darunter brauchen keine Wurzel und laufen weiter.
+TB_MARKE=""
+if [ -n "$TB_BASE" ]; then
+    TB_MARKE="$TB_BASE/data/plugins/$TB_PFOLDER.upgrade_laeuft"
+else
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - die Marke"
+    echo "<WARNING> der Aktualisierung wird deshalb nicht entfernt. Sie verfaellt nach"
+    echo "<WARNING> einer Stunde von selbst (bin/dienst.sh)."
+fi
 tb_marke_weg() {
+    [ -n "$TB_MARKE" ] || return 0
     rm -f "$TB_MARKE" 2>/dev/null
 }
 trap tb_marke_weg EXIT

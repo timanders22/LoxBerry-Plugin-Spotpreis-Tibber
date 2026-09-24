@@ -85,6 +85,23 @@ if ($tb_was === 'title') {
     exit(0);
 }
 
+/* Ohne Wurzel wird nichts gelesen und nichts behauptet. Bis 0.9.17 nahm die
+ * Bibliothek in einem fremden Baum ohne general.json diesen Baum als Wurzel,
+ * und die Antwort beschrieb dessen Zustand samt dessen Logdatei (in WSL
+ * gemessen, Pruefung-Spotpreis-Tibber-0.9.18, Fall T7). Status 0 heisst in
+ * der LoxBerry-Skala "unbekannt". */
+if (tb_paths()['home'] === '') {
+    tb_hc_ausgeben(array(
+        'desc'   => 'Spotpreis Tibber',
+        'status' => 0,
+        'result' => 'Der LoxBerry-Wurzelordner liess sich von hier aus nicht bestimmen '
+                  . '(weder $LBHOMEDIR noch eine Suche oberhalb von ' . __DIR__
+                  . ' fuehrten zu einem Verzeichnis mit config/plugins, data/plugins und '
+                  . 'config/system/general.json). Es wurde nichts gelesen.',
+    ));
+    exit(0);
+}
+
 /* Der Befund. Die Reihenfolge ist die der Ursachen, nicht die der Wirkungen:
  * wer bei "keine Preise" anfaengt, waehrend gar kein Token hinterlegt ist,
  * schickt den Leser in die falsche Ecke. */
