@@ -209,10 +209,18 @@ function tb_pruefungen($voll = false)
         $zeilen[] = tb_pruefzeile(1, tb_t('TEST.F_MARKE'), tb_t('TEST.A_MARKE_KEINE'));
     } else {
         $tb_seit = trim((string) @file_get_contents($tb_marke));
-        $tb_alt  = preg_match('/^[0-9]+$/', $tb_seit) ? (time() - (int) $tb_seit) : -1;
-        if ($tb_alt >= 0 && $tb_alt < 3600) {
+        /* Dieselbe Regel wie marke_gilt() in bin/dienst.sh: gilt von 300 s
+         * "aus der Zukunft" bis 3599 s alt - die Uhr kann nach dem Setzen ein
+         * Stueck zurueckspringen. Bis 0.9.17 nannte diese Zeile eine 2 s
+         * vorauseilende Marke "verfallen", waehrend dienst.sh sie seit 0.9.18
+         * gelten laesst (Pruefung-Spotpreis-Tibber-0.9.18, messe_testmarke.py).
+         * Ein unlesbarer Inhalt gilt nicht; angezeigt wird nie ein negatives
+         * Alter. */
+        $tb_ok   = (bool) preg_match('/^[0-9]{1,12}$/', $tb_seit);
+        $tb_alt  = $tb_ok ? (time() - (int) $tb_seit) : 0;
+        if ($tb_ok && $tb_alt >= -300 && $tb_alt < 3600) {
             $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_MARKE'),
-                sprintf(tb_t('TEST.A_MARKE_GILT'), $tb_alt));
+                sprintf(tb_t('TEST.A_MARKE_GILT'), max(0, $tb_alt)));
         } else {
             $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_MARKE'),
                 sprintf(tb_t('TEST.A_MARKE_ALT'), basename($tb_marke)));
@@ -399,6 +407,18 @@ function tb_pruefungen($voll = false)
     $zeilen[] = tb_pruefzeile($fehlt ? 0 : 1, tb_t('TEST.F_THEMEN'),
         $fehlt ? sprintf(tb_t('TEST.A_THEMEN_FEHLT'), tb_e(implode(', ', $fehlt)))
                : sprintf(tb_t('TEST.A_THEMEN_OK'), count($themen) - 1));
+
+    /* --- Geht das Lebenszeichen nie zurueckbehalten hinaus? ---
+     *
+     * status/ok ging bis 0.9.17 retained hinaus (Regeln/07, Abschnitt 2:
+     * ok und jede Aussage des Dienstes ueber sich selbst nie retained). Die
+     * Zeile fragt dieselben Funktionen, die senden; sie haette in 0.9.17
+     * "status/ok" genannt. */
+    $tb_lz_behalten = tb_mqtt_lebenszeichen_behalten();
+    $zeilen[] = tb_pruefzeile($tb_lz_behalten ? 0 : 1, tb_t('TEST.F_LEBEN_RETAIN'),
+        $tb_lz_behalten
+            ? sprintf(tb_t('TEST.A_LEBEN_RETAIN_FEHL'), tb_e(implode(', ', $tb_lz_behalten)))
+            : sprintf(tb_t('TEST.A_LEBEN_RETAIN_OK'), count(tb_mqtt_lebenszeichen())));
 
     /* --- Der Kommentar der Vorlage wird zum ANZEIGENAMEN ---
      *

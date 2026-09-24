@@ -150,11 +150,20 @@ function tb_fassung()
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer abfangen muss).
+ *
+ * general.json ist die entscheidende Bedingung. Bis 0.9.17 genuegten
+ * config/plugins und webfrontend - genau diese Ordner hinterlaesst ein
+ * Pruefstand auf einem Arbeitsrechner, und am 05.09.2026 hat eine solche
+ * Suche dort C:\ als "LoxBerry" erkannt und Daten geloescht (Regeln/06). In
+ * WSL gemessen (Pruefung-Spotpreis-Tibber-0.9.18, messung_h1_vorher.txt,
+ * Faelle T1 bis T3): in einem fremden Baum ohne general.json nahm diese
+ * Bibliothek den Baum als Wurzel, tb_cron.php schrieb dort Stand, Marker und
+ * Protokoll, und bin/healthcheck meldete dessen Zustand.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -164,7 +173,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -175,19 +185,54 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und DANACH NICHTS MEHR.
+ *
+ * Bis 0.9.17 stand hier als dritte Stufe ein fest verdrahteter Systempfad
+ * (das Heimatverzeichnis des Benutzers loxberry), an zwei Stellen: in
+ * tb_paths() und in tb_t(). Er macht jede Suche wirkungslos und trifft auf
+ * einem anders installierten LoxBerry die falsche Anlage; dieselbe Stelle
+ * wurde am 19.09.2026 in ZendureSolarFlow 0.9.25 und Weissware 0.9.29 und am
+ * 24.09.2026 in VolkswagenID 0.9.24 entfernt.
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter -
+ * general.json wird hier nicht verlangt, damit Attrappen ohne sie
+ * (Werkzeuge/lb) weiter tragen. Rueckgabe '' heisst "keine Wurzel"; jeder
+ * Aufrufer muss das abfangen. */
+function tb_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
+/* Fuer die Programme unter bin/ (tb_cron.php, tb_pulse.php): ohne Wurzel
+ * nichts tun, eine Fehlermeldung auf stderr, Rueckgabewert 1.
+ *
+ * Bis 0.9.17 liefen beide in einem fremden Baum ohne general.json einfach
+ * los: tb_cron.php schrieb dort stand.json, die Taktmarker und das
+ * Protokoll, tb_pulse.php blieb als Dienst stehen (in WSL gemessen,
+ * Pruefung-Spotpreis-Tibber-0.9.18, Faelle T1 und T2). Der Aufruf steht in
+ * beiden Dateien VOR allem, was schreibt. */
+function tb_keine_wurzel_abbruch($programm)
+{
+    if (tb_paths()['home'] !== '') { return; }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts geholt, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
 function tb_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) { $home = $k; break; }
-        }
-        if (!$home) { $home = lb_wurzel_ermitteln(); }
-    }
+    $home = tb_lbhome();
     // Der Ordnername ergibt sich aus dem Ablageort dieser Datei. Der
     // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
@@ -203,13 +248,42 @@ function tb_paths()
      * der Ordner spotpreistibber_01 und ist sein Konfigordner noch nicht
      * angelegt - bei der ERSTEN Installation ist er das nie -, fiel die
      * Ermittlung auf 'spotpreistibber' zurueck. Beide Installationen haetten
-     * dann auf dieselbe Konfiguration und dasselbe Tibber-Token gezeigt. */
-    $lbp = getenv('LBPPLUGINDIR');
-    if ($lbp) {
+     * dann auf dieselbe Konfiguration und dasselbe Tibber-Token gezeigt.
+     *
+     * Von LBPPLUGINDIR zaehlt nur der letzte Pfadteil, und die Namen, die
+     * nachweislich kein Pluginordner sind, gelten auch dort nicht (Bauart
+     * VolkswagenID 0.9.24). */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    if ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true)) {
         $dir = $lbp;
     } elseif ($dir === '' || $dir === '.' || $dir === '/'
-              || $dir === 'html' || $dir === 'plugins') {
+              || $dir === 'html' || $dir === 'bin' || $dir === 'plugins') {
         $dir = 'spotpreistibber';
+    }
+    if ($home === '') {
+        /* Keine Wurzel (Entwicklung, ausgepacktes Archiv, fremder Baum):
+         * neben dem Plugin arbeiten, nie an der Laufwerkswurzel. Bis 0.9.17
+         * wurden die Pfade hier mit leerem home zusammengesetzt und lauteten
+         * /config/plugins/..., /data/plugins/... - absolute Pfade ausserhalb
+         * jedes LoxBerry. Die Programme unter bin/ steigen ohne Wurzel ohnehin
+         * vorher aus (tb_keine_wurzel_abbruch()); dieser Zweig bedient nur
+         * noch die Oberflaeche auf einem Bau-Rechner. */
+        $basis = dirname(dirname(__DIR__));
+        $p = array(
+            'home'        => '',
+            'plugin'      => $dir,
+            'configdir'   => $basis . '/config',
+            'config'      => $basis . '/config/tibber.json',
+            'token'       => $basis . '/config/token.json',
+            'sicherung'   => $basis . '/config/tibber.backup.json',
+            'sicherungt'  => $basis . '/config/token.backup.json',
+            'datadir'     => $basis . '/data',
+            'bindir'      => $basis . '/bin',
+            'logdir'      => $basis . '/log',
+            'log'         => $basis . '/log/tibber.log',
+            'lief_vorher' => $basis . '/data.lief_vorher',
+        );
+        return $p;
     }
     $p = array(
         'home'       => $home,
@@ -2424,8 +2498,200 @@ function tb_abo_text()
 
 
 /**
+ * Den Broker fragen, ob unter $thema ein zurueckbehaltener Wert steht.
+ *
+ * Rueckgabe: 'leer'      der Broker hat das Abonnement bestaetigt und keinen
+ *                        zurueckbehaltenen Wert geschickt
+ *            'belegt'    er hat einen geschickt
+ *            'unbekannt' er war nicht zu fragen (keine Wurzel, keine
+ *                        Verbindung, Anmeldung abgewiesen, keine Antwort)
+ *
+ * Warum ueberhaupt fragen: das Abraeumen laeuft ueber den UDP-Eingang des
+ * Gateways, und dort meldet sendto() auch fuer ein verworfenes Datagramm
+ * Erfolg. Am Geraet gemessen (Regeln/07, "Ein Absender merkt nichts davon",
+ * Nachtraege vom 19.09.2026): Beschattungswaechter 0.9.19 und KODI-NG 1.2.7
+ * setzten ihren Merker nach dem Senden, der Eingang verwarf ~70 %, und der
+ * Altwert stand weiter im Broker, waehrend die Plugins die Sache fuer
+ * erledigt hielten. Belegt ist das Abraeumen erst, wenn der Broker selbst
+ * sagt, dass nichts mehr dasteht.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT - ohne
+ * fremde Bibliothek, wie der WebSocket-Nachbau in bin/tb_pulse.php. Die
+ * Anmeldung nimmt Brokeruser/Brokerpass aus der general.json (Regeln/07,
+ * Abschnitt 2); das Kennwort steht nur im CONNECT-Paket, nie in einem
+ * Protokoll und nie auf einer Kommandozeile.
+ */
+function tb_mqtt_behalten_fragen($thema)
+{
+    $p = tb_paths();
+    if ($p['home'] === '') { return 'unbekannt'; }
+    $gen = tb_json_lesen($p['home'] . '/config/system/general.json');
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return 'unbekannt'; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return 'unbekannt'; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('tbrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu (Abschnitt
+        // CONNECT, Kennwort-Merkmal).
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    $lage = 'unbekannt';
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1) . $zk((string) $thema) . chr(0);
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if ($t === (string) $thema && ($pk[0] & 1) && $wert !== '') {
+                        $lage = 'belegt';
+                        break;
+                    }
+                }
+            }
+            if ($lage !== 'belegt' && $bestaetigt) { $lage = 'leer'; }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $lage;
+}
+
+/**
+ * Muss der zurueckbehaltene Altwert von <praefix>/status/ok noch geloescht
+ * werden? Rueckgabe true heisst: in diesem Lauf die leere retain-Nutzlast
+ * senden (tb_mqtt_senden, unmittelbar vor dem gueltigen Wert).
+ *
+ * status/ok ging bis 0.9.17 zurueckbehalten hinaus. Es ist eine Aussage des
+ * Dienstes ueber sich selbst - "der letzte eigene Preisabruf gelang" - und
+ * nach der Entscheidung des Hausherrn vom 18./19.09.2026 nie retained
+ * (Regeln/07, Abschnitt 2). Ein spaeteres publish ersetzt einen
+ * zurueckbehaltenen Wert im Broker NICHT; ohne Loeschung stuende die letzte 1
+ * fuer immer dort, und nach einem Neustart von Broker oder Gateway laese
+ * Loxone "in Ordnung" von einem Plugin, das nicht mehr laeuft.
+ *
+ * Der Ablauf, je Lauf, bis der Merker liegt:
+ *   1. den Broker fragen (tb_mqtt_behalten_fragen);
+ *   2. 'leer'   -> Merker schreiben, nichts senden;
+ *      'belegt' -> abraeumen, kein Merker - der naechste Lauf fragt wieder;
+ *      'unbekannt' -> ebenso abraeumen, kein Merker, einmal je Stunde ins
+ *      Protokoll. Das kostet je Lauf ein Datagramm und eine Verbindung, bis
+ *      der Broker antwortet.
+ * Der Merker liegt im Datenordner und traegt die Kennung
+ * "belegt <praefix>/status/ok": ein anderer Inhalt - auch ein Merker einer
+ * Vorfassung oder eines anderen Praefixes - gilt nicht. purge_installation
+ * raeumt ihn bei jedem Upgrade mit ab; dann wird genau einmal nachgefragt.
+ */
+function tb_mqtt_ok_abraeumen($praefix)
+{
+    $thema = $praefix . '/status/ok';
+    $merker = tb_paths()['datadir'] . '/.mqtt_ok_geraeumt';
+    $kennung = 'belegt ' . $thema;
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return false;
+    }
+    $lage = tb_mqtt_behalten_fragen($thema);
+    if ($lage === 'leer') {
+        if (@file_put_contents($merker, $kennung . "\n") === false) {
+            tb_log_gebremst('mqtt_merker', 'MQTT: der Merker ' . $merker . ' liess sich '
+                . 'nicht schreiben - der Broker wird im naechsten Lauf wieder gefragt.');
+        } else {
+            tb_log('MQTT: unter ' . $thema . ' steht im Broker kein zurueckbehaltener '
+                . 'Wert mehr (vom Broker bestaetigt). status/ok geht seit 0.9.18 '
+                . 'fluechtig hinaus.');
+        }
+        return false;
+    }
+    if ($lage === 'unbekannt') {
+        tb_log_gebremst('mqtt_rueckfrage', 'MQTT: der Broker liess sich nicht befragen, ob '
+            . 'unter ' . $thema . ' noch ein zurueckbehaltener Wert steht. Der Altwert wird '
+            . 'deshalb bei jedem Lauf geloescht, bis der Broker antwortet.');
+    }
+    return true;
+}
+
+/**
  * Werte ueber den UDP-Eingang des Gateways veroeffentlichen.
- * So braucht das Plugin keine Broker-Zugangsdaten zu kennen.
+ * So braucht das Senden keine Broker-Zugangsdaten; die braucht nur die
+ * Rueckfrage in tb_mqtt_behalten_fragen(), und die laeuft nur, bis der
+ * Altwert von status/ok nachweislich fort ist.
  *
  * Zwei Dinge, die bis 0.9.6 anders waren:
  *
@@ -2494,6 +2760,9 @@ function tb_mqtt_senden(array $paare, $praefix)
         if ($wert === '') { continue; }
         $sendbar[$thema] = $wert;
     }
+    /* Den Altwert von status/ok abraeumen, solange der Broker ihn noch
+     * zurueckbehaelt - tb_mqtt_ok_abraeumen() fragt ihn VORHER. */
+    $raeumen = isset($sendbar['status/ok']) && tb_mqtt_ok_abraeumen($praefix);
     $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'],
                                    $errno, $errstr, 2);
     if (!$strom) {
@@ -2504,6 +2773,17 @@ function tb_mqtt_senden(array $paare, $praefix)
     $versucht = 0;
     $behalten = 0;
     foreach ($sendbar as $thema => $wert) {
+        /* Die leere retain-Nutzlast loescht den zurueckbehaltenen Wert
+         * (mqttgateway.pl:281, :311-315, :357 - am Geraet am 19.09.2026
+         * belegt, Regeln/07). Sie geht UNMITTELBAR vor dem gueltigen Wert
+         * hinaus: wer das Thema abonniert hat, bekommt die Loeschung als leere
+         * Nachricht zugestellt, und der naechste Wert steht gleich dahinter,
+         * nicht erst im naechsten Lauf. Das ist die eine gewollte leere
+         * Nutzlast dieses Plugins; tb_mqtt_wert_saeubern() laesst sonst keine
+         * durch. */
+        if ($raeumen && $thema === 'status/ok') {
+            @fwrite($strom, 'retain ' . $praefix . '/status/ok ');
+        }
         /* Der UDP-Eingang des Gateways kennt vier Befehle; 'retain' ist
          * einer davon (mqttgateway.pl:293, ausgefuehrt in :354-357). Ein
          * unbekanntes erstes Wort wuerde als THEMA gelesen - deshalb steht
@@ -2551,10 +2831,18 @@ function tb_mqtt_ausgeschlossen()
  * damit entweder das Lebenszeichen retained (falsch) oder die Zustaende
  * nicht (auch falsch). Belegt an ACTiKamera 1.9.19, 08.09.2026.
  *
- * Zurueckbehalten wird, was nach einem Neustart noch WAHR ist:
+ * Zurueckbehalten wird, was nach einem Neustart noch WAHR ist - und eine
+ * Aussage des Dienstes ueber sich selbst ist das nie:
  *
- *   status/ok        das Fehlerflag - ohne es weiss Loxone nach einem
- *                    Neustart nicht, ob der letzte Abruf gelungen ist
+ *   status/ok        BERICHTIGT in 0.9.18: stand bis 0.9.17 hier, als "das
+ *                    Fehlerflag". Es sagt aber nur, dass der LAUFENDE Dienst
+ *                    seinen letzten eigenen Abruf fuer gelungen haelt. Stirbt
+ *                    der Dienst, bliebe die 1 stehen, und nach einem Neustart
+ *                    von Broker oder Gateway laese Loxone "in Ordnung" von
+ *                    einem Plugin, das nicht mehr laeuft. Entscheidung des
+ *                    Hausherrn 18./19.09.2026 (Regeln/07, Abschnitt 2): ok und
+ *                    jede Dienstaussage nie retained. Der Altwert wird einmal
+ *                    geloescht (tb_mqtt_ok_abraeumen).
  *   status/ts        der Zeitstempel des letzten gelungenen Abrufs. Loxone
  *                    rechnet daraus das Alter; steht er nicht da, laesst
  *                    sich ein haengender Cron gar nicht erkennen. Er ist
@@ -2579,7 +2867,6 @@ function tb_mqtt_retain($thema)
     if ($tab === null) {
         $tab = array();
         foreach (array(
-            'status/ok',
             'morgen_ok', 'fix',
             'verbr_gestern', 'kosten_gestern',
             'verbr_monat', 'kosten_monat', 'dyn_monat', 'diff_monat', 'euro_monat',
@@ -2606,6 +2893,23 @@ function tb_mqtt_retain($thema)
      * Ein Thema OHNE Eintrag geht publish - es darf nicht auf Dauer im
      * Broker stehenbleiben, nur weil niemand an die Tabelle gedacht hat. */
     return isset($tab[(string) $thema]);
+}
+
+/**
+ * Welche Lebenszeichen-Themen wuerden zurueckbehalten gesendet? Soll: keines.
+ *
+ * Fuer die Pruefzeile im Reiter Test (CLAUDE.md, Abschnitt 6: zu jeder Regel
+ * das Werkzeug, das sie findet). Gefragt werden DIESELBEN zwei Funktionen,
+ * die auch senden - tb_mqtt_lebenszeichen() und tb_mqtt_retain() -, keine
+ * abgeschriebene Liste. Bis 0.9.17 haette die Zeile status/ok genannt.
+ */
+function tb_mqtt_lebenszeichen_behalten()
+{
+    $aus = array();
+    foreach (array_keys(tb_mqtt_lebenszeichen()) as $t) {
+        if (tb_mqtt_retain($t)) { $aus[] = $t; }
+    }
+    return $aus;
 }
 
 function tb_mqtt_themen()
@@ -2848,12 +3152,11 @@ function tb_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
-        }
+        // Dieselbe Wurzelregel wie tb_paths(): Umgebung, dann Suche, danach
+        // nichts. Der fest verdrahtete Systempfad stand hier bis 0.9.17 -
+        // an genau dieser zweiten Fundstelle wurde er bei Zendure 0.9.24
+        // uebersehen (Stand-Protokolle/2026-09-18_Welle1).
+        $home = tb_lbhome();
         $ordner = basename(dirname(__FILE__));
         $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
         if (!is_dir($pfad)) {

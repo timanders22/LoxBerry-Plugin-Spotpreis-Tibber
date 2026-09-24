@@ -12,9 +12,44 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-spotpreistibber}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+#
+# Bis 0.9.17 stand hier der Rueckfall $(cd "$SELF/../.."). Installiert liegt
+# uninstall unter <Wurzel>/data/system/uninstall/<ordner>; zwei Ebenen hoch
+# ist dort <Wurzel>/data, und die Deinstallation ohne $5 raeumte nichts ab.
+# Aus einem Archiv zwei Ebenen unter einem fremden Baum loeschte sie dort, und
+# die uebrigen Hakenskripte legten dort an, spielten zurueck oder loeschten
+# (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.18, messung_haken_vorher.txt,
+# Faelle K1 bis K11). general.json ist die Bedingung aus dem Raumklima-Vorfall
+# (Regeln/06): ein LoxBerry hat die Datei immer, ein Pruefstandsrest nie.
+# Findet sich nichts, wird GEWARNT statt vollzogen.
+tb_wurzel_suchen() {
+    tb_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    tb_i=0
+    while [ -n "$tb_v" ] && [ "$tb_v" != "/" ] && [ "$tb_i" -lt 8 ]; do
+        if [ -d "$tb_v/config/plugins" ] && [ -d "$tb_v/data/plugins" ] \
+           && [ -f "$tb_v/config/system/general.json" ]; then
+            echo "$tb_v"
+            return 0
+        fi
+        tb_v=$(dirname "$tb_v")
+        tb_i=$((tb_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(tb_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts geloescht."
+    exit 1
 fi
 
 PDATA="$BASE/data/plugins/$PFOLDER"
