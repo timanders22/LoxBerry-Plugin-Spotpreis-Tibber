@@ -163,6 +163,15 @@ for E in $FEHLT; do
     fi
 done
 
+# Die Anleitung nur, wenn noch kein Token eingetragen ist - dieselbe Pruefung
+# wie am Ende von postinstall.sh (dort begruendet). Nach einem gelungenen
+# Upgrade hat postinstall.sh die Abschlusszeile schon geschrieben. Ohne
+# gefundene Wurzel ist das nicht zu entscheiden, dann bleibt die Anleitung.
+if [ -n "$TB_BASE" ] && php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+exit(is_array($d) && isset($d["token"]) && (string) $d["token"] !== "" ? 0 : 1);' \
+    -- "$TB_BASE/config/plugins/$TB_PFOLDER/token.json" >/dev/null 2>&1; then
+    exit 0
+fi
 echo "<INFO> ------------------------------------------------------------"
 echo "<INFO> NOCH EIN SCHRITT, DANN IST ALLES BEREIT"
 echo "<INFO>"
