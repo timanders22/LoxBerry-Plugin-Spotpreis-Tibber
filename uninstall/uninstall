@@ -113,6 +113,28 @@ rm -f "$BASE/data/plugins/$PFOLDER.lief_vorher" 2>/dev/null
 # und startete bis zu einer Stunde lang nicht.
 rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
 
+# Die zurueckbehaltenen MQTT-Themen der Linie leeren - NACH dem Anhalten des
+# Dienstes und VOR dem Loeschen der Konfiguration (dort steht das Praefix).
+# Bis 0.9.18 blieben sie nach dem Deinstallieren im Broker stehen, und nach
+# jedem Neustart von Broker oder Gateway bekam der Miniserver sie wieder (in
+# WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle U1 bis U7). Geleert
+# wird ueber den Weg der Linie, den UDP-Eingang des Gateways, und beim Broker
+# nachgelesen (tb_mqtt_leeren() in webfrontend/html/tb_lib.php; Bauart
+# ZendureSolarFlow 0.9.26). Als loxberry, nicht als root; stdin geschlossen,
+# damit su nie auf eine Eingabe wartet.
+TB_CRON="$PBIN/tb_cron.php"
+if command -v php >/dev/null 2>&1 && [ -f "$TB_CRON" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout 60 php "$TB_CRON" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 php "$TB_CRON" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder tb_cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
+
 for DATEI in \
     "$BASE/config/plugins/$PFOLDER.backup.token.json" \
     "$BASE/config/plugins/$PFOLDER.backup.json" \
@@ -128,5 +150,8 @@ done
 echo "<INFO> Das Zugangstoken bleibt in Ihrem Tibber-Konto gueltig. Wer es"
 echo "<INFO> endgueltig ausser Kraft setzen will, loescht es unter"
 echo "<INFO> developer.tibber.com."
+echo "<INFO> Zurueckbehaltene MQTT-Themen unter einem FRUEHER eingestellten Praefix"
+echo "<INFO> raeumt dieses Skript nicht ab. Nachsehen:"
+echo "<INFO> mosquitto_sub -t '<praefix>/#' --retained-only"
 echo "<OK> Deinstallation abgeschlossen."
 exit 0

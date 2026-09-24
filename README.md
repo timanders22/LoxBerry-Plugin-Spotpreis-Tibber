@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.18
+Version 0.9.19
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,66 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.19
+
+- **Die Deinstallation räumt die zurückbehaltenen MQTT-Themen ab.** Bis 0.9.18
+  blieben `morgen_ok`, `fix` und die Tages- und Monatswerte nach dem Entfernen
+  im Broker stehen, und nach jedem Neustart von Broker oder Gateway bekam der
+  Miniserver sie wieder. Jetzt fragt die Deinstallation den Broker (mit
+  Benutzer und Kennwort aus der LoxBerry-Konfiguration), welche Themen der
+  Linie unter dem eingestellten Präfix noch zurückbehalten stehen, schickt
+  für genau diese eine leere zurückbehaltene Nachricht über den UDP-Eingang
+  des Gateways und liest nach — höchstens dreimal. Das Protokoll der
+  Deinstallation sagt, ob der Broker bestätigt hat, was noch steht, oder dass
+  er sich nicht fragen ließ. Mitgeleert werden `status/ok` (bis 0.9.17
+  zurückbehalten) und `status/ts`/`status/pulse_ts` (in 0.9.13). Themen unter
+  einem früher eingestellten Präfix räumt sie nicht ab.
+- **Die Anzeige „Pulse-Dienst läuft" prüft argumentweise** — wie `dienst.sh`
+  seit 0.9.18: ein PHP, genau das Dienstskript dieser Anlage als einziges
+  Argument, der Dienstbenutzer. Bis 0.9.18 genügte der Dateiname, und die
+  Kachel, der Reiter *Test*, der Healthcheck und der Selbsttest meldeten
+  „läuft, PID n" auch für einen Einmallauf, ein `tb_pulse.php` einer zweiten
+  Installation oder den Prozess eines anderen Benutzers.
+- **Ein ausgepacktes Archiv schreibt nicht mehr in die Anlage.** Die Pfade der
+  Anlage gelten nur noch, wenn die Bibliothek dort installiert liegt oder
+  `LBHOMEDIR` **und** `LBPPLUGINDIR` ausdrücklich gesetzt sind. Bis 0.9.18
+  arbeitete `bin/tb_cron.php` aus einem Archiv unterhalb einer echten Wurzel
+  — oder mit `LBHOMEDIR` allein, wie es am LoxBerry immer gesetzt ist — auf
+  der Anlage, mit deren Token und deren Daten; `bin/tb_pulse.php` lief dort
+  als zweiter Dienst. Jetzt steigen beide mit einer Meldung aus, und die
+  „Bekannte Grenze" aus 0.9.18 entfällt.
+- **Keine Pfade mehr ab der Laufwerkswurzel.** Ohne LoxBerry-Wurzel lasen die
+  Sprachtexte, die Benachrichtigung und die Suche nach der Bibliothek (in der
+  Oberfläche, in `tb_cron.php`, `tb_pulse.php` und im Healthcheck) Dateien
+  unter `/templates`, `/libs`, `/html` bzw. `/webfrontend` — was dort lag,
+  galt oder lief als Teil des Plugins. Jetzt entscheidet der eigene Ablageort.
+- **Nur noch der Festpreis `fix` geht zurückbehalten hinaus.** Alles mit
+  Zeitbezug ist flüchtig: `morgen_ok` und die Werte von gestern
+  (`verbr_gestern`, `kosten_gestern`, `ersparnis_gestern`, `guenstiganteil`)
+  werden um Mitternacht falsch, die des laufenden Monats (`verbr_monat`,
+  `kosten_monat`, `dyn_monat`, `diff_monat`, `euro_monat`) zum Monatswechsel,
+  `avg_30t` mit jedem Tag und `rank_30t` (der Rang der laufenden Stunde) zur
+  nächsten Stunde — ohne dass eine neue Nachricht käme, wenn das Plugin nicht
+  mehr läuft. Die alten zurückbehaltenen Werte dieser zwölf Themen und der
+  Lebenszeichen früherer Fassungen (`status/ok`, `status/ts`,
+  `status/pulse_ts`) werden einmal gelöscht: das Plugin fragt den Broker; was
+  dort noch steht, geht mit einer leeren zurückbehaltenen Nachricht
+  unmittelbar vor dem gültigen Wert hinaus, bis der Broker bestätigt, dass
+  nichts mehr dasteht. Erst dann wird ein Merker gesetzt. Nach einem Neustart
+  von Broker oder Gateway fehlen diese Werte, bis sich einer ändert.
+- **`bin/dienst.sh` aus einem Archiv verwaltet die Anlage nur noch, wenn
+  `LBHOMEDIR` und `LBPPLUGINDIR` beide gesetzt sind** — dieselbe Regel wie
+  die Bibliothek. Bis 0.9.18 genügte `LBPPLUGINDIR`: ein `stop` aus einem
+  Prüfarchiv unterhalb der Wurzel hielt den Dienst der Anlage an.
+- **Nebenbei:** die Warnung `Undefined array key 3` bei jedem Minutenlauf mit
+  MQTT aus (und `… key 2` ohne UDP-Port) ist fort; eine aus der Zweitschrift
+  geheilte Konfiguration und die beiseitegelegte unlesbare Datei tragen 0600
+  statt der Rechte der umask.
+
+Gemessen in WSL (nicht am Gerät), Prüfstand unter
+`Pruefung-Spotpreis-Tibber-0.9.19/`: 65 Fälle in zwei Runden, vorher 27 und 12
+rot, nachher 0; jede Korrektur einzeln zurückgebaut und rot geeicht.
 
 ## Neu in 0.9.18
 
@@ -67,7 +127,8 @@ LoxBerry 3.x und 4.
 *unterhalb* einer echten LoxBerry-Wurzel liegt (etwa ein Prüfarchiv im
 Heimatverzeichnis), findet diese Wurzel und arbeitet auf der Anlage — mit
 deren Token und deren Daten. Prüfarchive gehören nach `/tmp`, nicht unter die
-Wurzel. `bin/dienst.sh` sagt in dieser Lage ab.
+Wurzel. `bin/dienst.sh` sagt in dieser Lage ab. *(Seit 0.9.19 behoben, siehe
+oben.)*
 
 Gemessen in WSL (nicht am Gerät), Prüfstand unter
 `Pruefung-Spotpreis-Tibber-0.9.18/`: 54 + 21 + 22 + 15 + 12 Fälle, vorher
@@ -347,7 +408,7 @@ macht entweder das Lebenszeichen dauerhaft oder die Zustände flüchtig.
 
 | | Themen |
 |---|---|
-| **zurückbehalten** | `morgen_ok`, `fix`, `verbr_gestern`, `kosten_gestern`, `verbr_monat`, `kosten_monat`, `dyn_monat`, `diff_monat`, `euro_monat`, `ersparnis_gestern`, `guenstiganteil`, `avg_30t`, `rank_30t` |
+| **zurückbehalten** | bis 0.9.18: `morgen_ok`, `fix`, `verbr_gestern`, `kosten_gestern`, `verbr_monat`, `kosten_monat`, `dyn_monat`, `diff_monat`, `euro_monat`, `ersparnis_gestern`, `guenstiganteil`, `avg_30t`, `rank_30t` — **seit 0.9.19 nur noch `fix`** (Abschnitt „Neu in 0.9.19") |
 | **flüchtig** | der laufende Preis, Niveau und Rang, die Fenster, die Pulse-Momentanwerte, die Stundenpreise, die Tageskennzahlen — und das Lebenszeichen: `status/ok`, `status/zaehler`, `status/ts`, `status/pulse_ts` |
 
 **Seit 0.9.18:** `status/ok` stand von 0.9.13 bis 0.9.17 bei den

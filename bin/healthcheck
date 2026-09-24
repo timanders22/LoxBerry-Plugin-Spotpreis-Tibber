@@ -53,18 +53,24 @@ function tb_hc_ausgeben(array $felder)
     echo $json;
 }
 
-$tb_gefunden = false;
-foreach (array(
-    dirname(__DIR__) . '/webfrontend/html/tb_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-) as $tb_kandidat) {
-    if (is_file($tb_kandidat)) {
-        require_once $tb_kandidat;
-        $tb_gefunden = true;
-        break;
-    }
+/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort, nicht
+ * die Reihenfolge der Versuche. Installiert liegt diese Datei unter
+ * <Wurzel>/bin/plugins/<ordner> und die Bibliothek unter
+ * <Wurzel>/webfrontend/html/plugins/<ordner>, im ausgepackten Archiv unter
+ * <archiv>/bin und <archiv>/webfrontend/html. Bis 0.9.18 standen drei
+ * Kandidaten in Reihe; fehlte die eigene Bibliothek, galt aus einem Archiv
+ * unter /<name> der Pfad /webfrontend/html/plugins/bin/tb_lib.php ab der
+ * Laufwerkswurzel, und was dort lag, lief als Bibliothek (in WSL gemessen,
+ * Pruefung-Spotpreis-Tibber-0.9.19, Faelle C8 bis C10; Bauart
+ * ZendureSolarFlow 0.9.26). bin/tb_cron.php, bin/tb_pulse.php und
+ * bin/healthcheck tragen denselben Block. */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $tb_kandidat = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php';
+} else {
+    $tb_kandidat = dirname(__DIR__) . '/webfrontend/html/tb_lib.php';
 }
+$tb_gefunden = is_file($tb_kandidat);
+if ($tb_gefunden) { require_once $tb_kandidat; }
 if (!$tb_gefunden) {
     // Auch der Fehlerfall antwortet in der vorgesehenen Form. Ein Healthcheck,
     // der nichts ausgibt, ist von einem, der nicht laeuft, nicht zu
@@ -90,14 +96,23 @@ if ($tb_was === 'title') {
  * und die Antwort beschrieb dessen Zustand samt dessen Logdatei (in WSL
  * gemessen, Pruefung-Spotpreis-Tibber-0.9.18, Fall T7). Status 0 heisst in
  * der LoxBerry-Skala "unbekannt". */
-if (tb_paths()['home'] === '') {
+/* Seit 0.9.19 auch dann, wenn eine Wurzel da ist, diese Datei aber nicht
+ * darin installiert liegt (Archivmodus in tb_paths()): bis 0.9.18 beschrieb
+ * ein healthcheck aus einem Archiv unter der Wurzel den Zustand der Anlage
+ * samt deren Logdatei (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19,
+ * Fall B10). */
+$tb_hc_p = tb_paths();
+if ($tb_hc_p['home'] === '') {
     tb_hc_ausgeben(array(
         'desc'   => 'Spotpreis Tibber',
         'status' => 0,
-        'result' => 'Der LoxBerry-Wurzelordner liess sich von hier aus nicht bestimmen '
-                  . '(weder $LBHOMEDIR noch eine Suche oberhalb von ' . __DIR__
-                  . ' fuehrten zu einem Verzeichnis mit config/plugins, data/plugins und '
-                  . 'config/system/general.json). Es wurde nichts gelesen.',
+        'result' => $tb_hc_p['archiv'] !== ''
+            ? 'Diese Datei liegt nicht in der Installation unter ' . $tb_hc_p['archiv']
+              . ' (ausgepacktes Archiv oder Pruefordner). Es wurde nichts gelesen.'
+            : 'Der LoxBerry-Wurzelordner liess sich von hier aus nicht bestimmen '
+              . '(weder $LBHOMEDIR noch eine Suche oberhalb von ' . __DIR__
+              . ' fuehrten zu einem Verzeichnis mit config/plugins, data/plugins und '
+              . 'config/system/general.json). Es wurde nichts gelesen.',
     ));
     exit(0);
 }

@@ -20,18 +20,21 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
  * anderer als im entpackten Archiv - deshalb eine Kandidatenliste und kein
  * fester Pfad. Ein fester Pfad war die Ursache des HTTP 500, das am
  * 10.08.2026 fuer Docker NG gemeldet wurde. */
-$tb_gefunden = false;
-foreach (array(
-    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/tb_lib.php',
-    dirname(__DIR__) . '/html/tb_lib.php',
-) as $tb_kandidat) {
-    if (is_file($tb_kandidat)) {
-        require_once $tb_kandidat;
-        $tb_gefunden = true;
-        break;
-    }
+/* Welche Lage gilt, entscheidet der eigene Ablageort, nicht die Reihenfolge
+ * der Versuche: liegt diese Datei unter <Wurzel>/webfrontend/htmlauth/plugins/
+ * <ordner>, ist sie installiert, sonst liegt sie in einem ausgepackten Archiv.
+ * Bis 0.9.18 wurden drei Kandidaten der Reihe nach probiert, der zweite VOR
+ * der eigenen Bibliothek - aus einem Archiv unter / war das
+ * /html/plugins/htmlauth/tb_lib.php ab der Laufwerkswurzel, und was dort lag,
+ * lief als Bibliothek (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19,
+ * Fall C6; Bauart ZendureSolarFlow 0.9.26). */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $tb_kandidat = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/tb_lib.php';
+} else {
+    $tb_kandidat = dirname(__DIR__) . '/html/tb_lib.php';
 }
+$tb_gefunden = is_file($tb_kandidat);
+if ($tb_gefunden) { require_once $tb_kandidat; }
 if (!$tb_gefunden) {
     echo '<p><b>Fehler:</b> tb_lib.php wurde nicht gefunden. Bitte das Plugin neu installieren.</p>';
     exit;
