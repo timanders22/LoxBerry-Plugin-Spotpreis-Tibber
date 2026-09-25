@@ -2750,6 +2750,20 @@ function tb_mqtt_behalten_liste(array $themen)
                 if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
                 $art = $pk[0] >> 4;
                 if ($art === 9) {
+                    /* Je Filter ein Rueckgabebyte hinter der Paketkennung, in der
+                       Reihenfolge des SUBSCRIBE; ab 0x80 heisst abgelehnt (etwa
+                       durch eine ACL). Danach schickt der Broker nichts - ungeprueft
+                       hiesse das "nichts belegt", und der Merker laege auf einer
+                       Antwort, die keine war (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.22,
+                       Faelle S3, S4, S7, S9, S11). Bauart bw_mqtt_behalten_liste(),
+                       Beschattungswaechter 0.9.21. */
+                    $rc = (string) substr($pk[1], 2);
+                    if (strlen($rc) !== count($soll)) { break; }
+                    $abgelehnt = false;
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
                     $bestaetigt = true;
                     // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
                     $ende = min($ende, microtime(true) + 1.0);
