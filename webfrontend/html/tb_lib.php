@@ -1191,7 +1191,7 @@ function tb_gql($abfrage, $variablen = array(), $token = null)
         $antwort = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         if ($antwort === false) { $fehler = curl_error($ch); }
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } else {
         // Rueckfallebene ohne curl. Sie wird ANGEZEIGT, damit aus dem Ersatz
         // nicht unbemerkt der Normalfall wird.

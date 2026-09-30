@@ -73,7 +73,7 @@ function tb_endpunkt_probe($hoechstalter = 300)
         ));
         $rumpf = (string) curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } elseif (ini_get('allow_url_fopen')) {
         $konnte = 1;
         /* @ unterdrueckt die Anzeige, nicht einen gesetzten Fehler-Aufnehmer -
