@@ -213,6 +213,20 @@ laeuft() {
     tb_ist_dienst "$P"
 }
 
+# Ein laufender Dienst OHNE gueltige PID-Datei - argumentweise ueber alle
+# Prozesse gesucht (Bauliste I8 mit I5). Bis 0.9.24 hielt der Dienst selbst
+# die Startsperre und verhinderte damit nebenbei einen zweiten Start; seit er
+# sie nicht mehr erbt, muss starten() einen solchen Dienst FINDEN, statt einen
+# zweiten anzuwerfen. Ebenso anhalten() und status: bis 0.9.24 meldete stop
+# "laeuft nicht", waehrend der Dienst weiterlief (Codepruefer Nr. 7).
+tb_waise() {
+    local d
+    for d in /proc/[0-9]*; do
+        tb_ist_dienst "${d#/proc/}" && { echo "${d#/proc/}"; return 0; }
+    done
+    return 1
+}
+
 # Laeuft gerade eine Aktualisierung dieses Plugins?
 #
 # Gemessen am Geraet an der Einspeisebremse (Regeln/06): zwischen der neuen
@@ -272,6 +286,9 @@ sperre_holen() {
     return 0
 }
 
+# Rueckgabe von starten(): 0 gestartet oder laeuft bereits, 1 Fehler,
+# 3 "ein anderer Aufruf startet gerade" (Bauliste I8). Die 3 ist weder Erfolg
+# noch Fehlschlag; der Waechter laesst dabei seinen Rueckzugszaehler stehen.
 starten() {
     # Die Marke VOR allem anderen - auch vor der Sperrdatei. Sonst legte
     # dieser Aufruf noch data/plugins/<ordner>/dienst.lock in einem Ordner an,
@@ -291,10 +308,17 @@ starten() {
     ordner_anlegen || return 1
     if ! sperre_holen; then
         echo "ein anderer Aufruf startet gerade - dieser Lauf tut nichts"
-        return 0
+        return 3
     fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
+        return 0
+    fi
+    TB_W=$(tb_waise)
+    if [ -n "$TB_W" ]; then
+        echo "$TB_W" > "$PID"
+        echo "laeuft bereits (PID $TB_W; die PID-Datei fehlte und ist neu geschrieben)"
+        exec 9>&- 2>/dev/null
         return 0
     fi
     if ! command -v php >/dev/null 2>&1; then
@@ -312,15 +336,26 @@ starten() {
     touch "$SOLL"
     # Ausgabe geht in die Logdatei. Das PHP-Skript protokolliert deshalb NICHT
     # zusaetzlich nach stdout - sonst stuende jede Zeile doppelt darin.
-    nohup php "$SKRIPT" >> "$LOGDATEI" 2>&1 &
+    #
+    # 9>&-: der Dienst erbt den Griff auf dienst.lock NICHT (Bauliste I8).
+    # Bis 0.9.24 hielt der Dienst die Startsperre fuer immer: ging die
+    # PID-Datei verloren, meldete jeder Waechterlauf "ein anderer Aufruf
+    # startet gerade", zaehlte das als Erfolg und loeschte seinen
+    # Rueckzugszaehler - zwei Protokollzeilen je Minute (Codepruefer Nr. 7,
+    # Installerpruefer I8). Gemerkt: Sperre vererbt sich an Kinder.
+    nohup php "$SKRIPT" 9>&- >> "$LOGDATEI" 2>&1 &
     echo $! > "$PID"
     sleep 1
     if laeuft; then
         echo "gestartet (PID $(cat "$PID"))"
+        # Die Sperre gilt bis HIER - bis die PID-Datei steht und der Dienst
+        # bestaetigt ist -, dann wird sie freigegeben.
+        exec 9>&- 2>/dev/null
         return 0
     fi
     echo "FEHLER: Start fehlgeschlagen - siehe $LOGDATEI"
     rm -f "$PID"
+    exec 9>&- 2>/dev/null
     return 1
 }
 
@@ -374,7 +409,14 @@ waechter_lauf() {
     ordner_anlegen || return 1
     echo "$JETZT" > "$PDATA/.waechter_zeit"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Pulse-Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
-    if starten >> "$LOGDATEI" 2>&1; then
+    starten >> "$LOGDATEI" 2>&1
+    RC=$?
+    if [ "$RC" = 3 ]; then
+        # Ein anderer Aufruf startet gerade: weder Erfolg noch Fehlschlag -
+        # der Rueckzugszaehler bleibt, wie er ist (Bauliste I8).
+        return 0
+    fi
+    if [ "$RC" = 0 ]; then
         rm -f "$WARTE" "$PDATA/.waechter_zeit"
     else
         NEU=$((N * 2))
@@ -387,9 +429,13 @@ waechter_lauf() {
 anhalten() {
     rm -f "$SOLL"
     if ! laeuft; then
-        rm -f "$PID"
-        echo "laeuft nicht"
-        return 0
+        TB_W=$(tb_waise)
+        if [ -z "$TB_W" ]; then
+            rm -f "$PID"
+            echo "laeuft nicht"
+            return 0
+        fi
+        echo "$TB_W" > "$PID"
     fi
     P=$(cat "$PID")
     # SIGTERM, damit der Dienst die Verbindung ordentlich schliessen kann.
@@ -409,12 +455,17 @@ anhalten() {
 }
 
 case "$1" in
-    start)   starten ;;
+    start)   starten; RC=$?; [ "$RC" = 3 ] && exit 0; exit "$RC" ;;
     stop)    anhalten ;;
-    restart) anhalten; sleep 1; starten ;;
+    restart) anhalten; sleep 1; starten; RC=$?; [ "$RC" = 3 ] && exit 0; exit "$RC" ;;
     status)
         if laeuft; then
             echo "laeuft $(cat "$PID")"
+            exit 0
+        fi
+        TB_W=$(tb_waise)
+        if [ -n "$TB_W" ]; then
+            echo "laeuft $TB_W (ohne PID-Datei)"
             exit 0
         fi
         echo "gestoppt"

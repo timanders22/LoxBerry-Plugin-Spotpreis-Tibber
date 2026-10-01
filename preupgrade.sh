@@ -78,14 +78,32 @@ PBIN="$BASE/bin/plugins/$PFOLDER"
 #
 # Sie liegt NEBEN dem Datenordner - ein Kind von data/plugins/<ordner>/
 # loeschte purge_installation mit.
+#
+# Seit dem Durchgang (Entscheidung 1, ohne Altersgrenze nach Nr. 8) ist sie
+# AUCH das Merkmal "Aktualisierung": preinstall.sh legt ohne sie die
+# Zweitschriften beiseite, postinstall.sh spielt nur mit ihr zurueck. Laesst
+# sie sich nicht anlegen, endet dieses Skript deshalb mit Rueckgabewert 2 -
+# sonst hielte die Installation das Update fuer eine Neuinstallation und
+# legte die Einstellungen beiseite (Bauform Abfahrtsassistent 1.6.21).
+# Vorher festhalten, ob schon eine Marke lag: dann ist ein frueherer Versuch
+# DIESES Updates abgebrochen (siehe Update-Sicherung unten).
+case "$PFOLDER" in
+    ''|*/*|*..*)
+        echo "<FAIL> Unzulaessiger Ordnername '$PFOLDER' - dieses Skript endet mit Rueckgabewert 2."
+        exit 2 ;;
+esac
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+TB_MARKE_VORHER=0
+[ -f "$MARKE" ] && TB_MARKE_VORHER=1
 mkdir -p "$BASE/data/plugins" 2>/dev/null
-date +%s > "$MARKE" 2>/dev/null
-if [ -s "$MARKE" ]; then
+{ date +%s > "$MARKE"; } 2>/dev/null
+if grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - ein Startweg"
-    echo "<WARNING> koennte den Pulse-Dienst waehrend der Installation anwerfen."
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen."
+    echo "<FAIL> Ohne sie hielte die Installation dieses Update fuer eine Neuinstallation und legte"
+    echo "<FAIL> die Einstellungen beiseite. Dieses Skript endet mit Rueckgabewert 2."
+    exit 2
 fi
 
 # Laufenden Pulse-Dienst anhalten - er haelt eine Verbindung offen.
@@ -162,29 +180,129 @@ tb_ist_dienst() {
     [ "$ziel" = "$TB_SKRIPT" ] && return 0
     [ "$(readlink -f "$ziel" 2>/dev/null)" = "$(readlink -f "$TB_SKRIPT" 2>/dev/null)" ]
 }
+# Zusaetzlich ARGUMENTWEISE ueber alle Prozesse, nicht nur ueber die
+# PID-Datei (Bauliste I5): fehlt sie, waehrend der Dienst laeuft, blieb er bis
+# 0.9.24 ueber das Update hinweg stehen (Installerpruefer, Fall G3). Danach
+# wird nachgezaehlt und nur das Gemessene gemeldet (I4).
+tb_dienste_suchen() {
+    local d
+    for d in /proc/[0-9]*; do
+        tb_ist_dienst "${d#/proc/}" && echo "${d#/proc/}"
+    done
+    return 0
+}
 TB_P=$(cat "$PID" 2>/dev/null)
+TB_GEFUNDEN=$(tb_dienste_suchen)
 if [ -f "$PID" ] && tb_ist_dienst "$TB_P"; then
+    TB_GEFUNDEN="$TB_GEFUNDEN $TB_P"
+fi
+if [ -n "$(echo $TB_GEFUNDEN)" ]; then
     LIEF_WIRKLICH=1
-    kill "$TB_P" 2>/dev/null || true
+    for TB_P in $TB_GEFUNDEN; do kill "$TB_P" 2>/dev/null || true; done
     sleep 2
-    if tb_ist_dienst "$TB_P"; then
-        kill -9 "$TB_P" 2>/dev/null || true
-    fi
+    for TB_P in $(tb_dienste_suchen); do kill -9 "$TB_P" 2>/dev/null || true; done
 fi
 rm -f "$PID"
-if [ "$LIEF_WIRKLICH" -eq 1 ]; then
-    echo "<INFO> Laufender Pulse-Dienst angehalten."
+TB_REST=$(tb_dienste_suchen | wc -w)
+if [ "$LIEF_WIRKLICH" -eq 1 ] && [ "$TB_REST" -eq 0 ]; then
+    echo "<INFO> Laufender Pulse-Dienst angehalten (nachgezaehlt: keiner laeuft mehr)."
+elif [ "$TB_REST" -gt 0 ]; then
+    echo "<WARNING> Es laufen noch $TB_REST Pulse-Dienst(e) - sie liessen sich nicht anhalten."
 fi
 
+# Nur eine Datei, die sich als JSON-Objekt lesen laesst, wird ueber die
+# Zweitschrift gelegt (Bauliste I3). Bis 0.9.24 genuegte "nicht leer": eine
+# abgeschnittene tibber.json ueberschrieb die einzige gute Kopie, und
+# postinstall.sh spielte danach nichts zurueck (Installerpruefer, Fall C).
+# Rueckgabe 0 lesbar, 1 unlesbar, 2 nicht pruefbar (kein PHP).
+tb_json_lesbar() {
+    command -v php >/dev/null 2>&1 || return 2
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true); exit(is_array($d) ? 0 : 1);' \
+        -- "$1" >/dev/null 2>&1
+    tb_rc=$?
+    [ "$tb_rc" = 0 ] || [ "$tb_rc" = 1 ] || return 2
+    return "$tb_rc"
+}
 for PAAR in "tibber.json:.backup.json" "token.json:.backup.token.json"; do
     QUELLE="$PCONFIG/${PAAR%%:*}"
     ZIEL="$BASE/config/plugins/$PFOLDER${PAAR##*:}"
     if [ -s "$QUELLE" ]; then
+        tb_json_lesbar "$QUELLE"
+        TB_L=$?
+        if [ "$TB_L" = 1 ]; then
+            echo "<WARNING> $(basename "$QUELLE") ist unlesbar und wurde NICHT gesichert - die bisherige"
+            echo "<WARNING> Zweitschrift $(basename "$ZIEL") bleibt und wird nach dem Update zurueckgespielt."
+            continue
+        fi
         if cp -p "$QUELLE" "$ZIEL" && chmod 600 "$ZIEL"; then
-            echo "<OK> $(basename "$QUELLE") gesichert (Rechte 0600)."
+            if [ "$TB_L" = 2 ]; then
+                echo "<OK> $(basename "$QUELLE") gesichert (Rechte 0600; ohne PHP nicht auf Lesbarkeit geprueft)."
+            else
+                echo "<OK> $(basename "$QUELLE") gesichert (Rechte 0600)."
+            fi
         else
             echo "<FAIL> $(basename "$QUELLE") liess sich nicht sichern."
         fi
     fi
 done
+
+# ---------- Bestaende retten (Bauliste I2) ----------
+# purge_installation loescht data/plugins/<ordner>/ bei JEDEM Update. Darin
+# liegen der Preisverlauf (verlauf/, bis zu 3650 Tage, Grundlage von AVG_30T
+# und RANK_30T), die Hysterese (laufend.json - ein begonnener Block laeuft zu
+# Ende), die Berichtsmarken (bericht_<JJJJMM>.done - ohne sie kaeme der
+# Monatsbericht nach einem Update am Ersten ein zweites Mal) und die
+# vorgemerkten MQTT-Praefixe (mqtt_praefixe.json). Bis 0.9.24 rettete dieses
+# Skript nichts davon (Installerpruefer, Faelle B, B2, K: 60 Verlaufspunkte
+# vorher, 0 nachher). Sie gehen NEBEN den Ordner; postinstall.sh holt sie bei
+# vorhandener Marke zurueck.
+#
+# Eine Update-Sicherung aus einem FRUEHEREN Vorgang wird zuerst weggeraeumt
+# (Entscheidung 1: bei einem Upgrade wird nie ein Bestand aus einem frueheren
+# Vorgang eingespielt). Ausnahme: lag die Marke schon vor diesem Lauf, ist ein
+# Versuch DIESES Updates abgebrochen, womoeglich nach dem Abraeumen des
+# Datenordners - dann ist die alte Sicherung der einzige Stand und bleibt.
+TB_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+TB_DATEN="$BASE/data/plugins/$PFOLDER"
+if [ "$TB_MARKE_VORHER" = "0" ] && { [ -e "$TB_SICHER" ] || [ -L "$TB_SICHER" ]; }; then
+    case "$TB_SICHER" in
+        */data/plugins/?*.upgrade_sicherung) rm -rf "${TB_SICHER:?}" 2>/dev/null ;;
+    esac
+    if [ -e "$TB_SICHER" ] || [ -L "$TB_SICHER" ]; then
+        echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $TB_SICHER"
+        echo "<FAIL> postinstall.sh spielte sie sonst zurueck. Dieses Skript endet mit Rueckgabewert 2."
+        exit 2
+    fi
+    echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt: $TB_SICHER"
+fi
+if [ -d "$TB_DATEN" ]; then
+    mkdir -p "$TB_SICHER" 2>/dev/null
+    TB_OK=1
+    TB_NAMEN=""
+    if [ -d "$TB_DATEN/verlauf" ]; then
+        mkdir -p "$TB_SICHER/verlauf" 2>/dev/null
+        for TB_Q in "$TB_DATEN/verlauf/"*.csv; do
+            [ -f "$TB_Q" ] || continue
+            cp -p "$TB_Q" "$TB_SICHER/verlauf/" 2>/dev/null
+            cmp -s "$TB_Q" "$TB_SICHER/verlauf/$(basename "$TB_Q")" || TB_OK=0
+        done
+        TB_NAMEN="$TB_NAMEN verlauf($(cat "$TB_SICHER/verlauf/"*.csv 2>/dev/null | grep -c .) Punkte)"
+    fi
+    for TB_Q in "$TB_DATEN/laufend.json" "$TB_DATEN/mqtt_praefixe.json" "$TB_DATEN/"bericht_*.done; do
+        [ -f "$TB_Q" ] || continue
+        cp -p "$TB_Q" "$TB_SICHER/" 2>/dev/null
+        if cmp -s "$TB_Q" "$TB_SICHER/$(basename "$TB_Q")"; then
+            TB_NAMEN="$TB_NAMEN $(basename "$TB_Q")"
+        else
+            TB_OK=0
+        fi
+    done
+    if [ "$TB_OK" = 1 ] && [ -n "$TB_NAMEN" ]; then
+        echo "<OK> Fuer das Update gesichert:$TB_NAMEN."
+    elif [ "$TB_OK" = 1 ]; then
+        echo "<INFO> Es gab keinen Preisverlauf und keine Merker zu sichern."
+    else
+        echo "<WARNING> Nicht alles liess sich sichern ($TB_SICHER) - Preisverlauf oder Merker koennten nach dem Update fehlen."
+    fi
+fi
 exit 0

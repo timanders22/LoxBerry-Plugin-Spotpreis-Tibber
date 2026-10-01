@@ -63,6 +63,15 @@ mkdir -p "$PDATA/verlauf" "$PLOG" "$PCONFIG" || {
 }
 chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 
+# Aktualisierung oder Neuinstallation - das sagt allein die Marke von
+# preupgrade.sh (kein Altersvergleich, Entscheidung 1 und Nr. 8). Bis 0.9.24
+# entschied das Vorhandensein einer Zweitschrift, und eine Neuinstallation
+# spielte Tibber-Token und Aktionstoken einer frueheren Installation ein
+# (Installerpruefer, Fall D). Eine liegengebliebene Zweitschrift hat
+# preinstall.sh dann schon nach .alt gelegt.
+TB_MARKE=0
+[ -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ] && TB_MARKE=1
+
 # ---------- Sicherungen zurueckspielen ----------
 # Nur, wenn die vorhandene Datei leer ist oder fehlt. Eine bestehende
 # Konfiguration wird NICHT ueberschrieben.
@@ -74,15 +83,15 @@ chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 # leeres "token" (wie am Ende dieses Skripts und in tb_token_lesen()), fuer
 # tibber.json mindestens ein nicht leerer Wert. PHP wird erst weiter unten
 # verlangt - fehlt es hier, wird wie bisher kopiert (Rueckgabe 2).
-tb_inhalt() {   # $1 Datei, $2 Art: token | konfig; 0 Inhalt, 1 keiner, 2 nicht pruefbar
+tb_inhalt() {   # $1 Datei, $2 Art: token | konfig; 0 Inhalt, 1 keiner, 2 nicht pruefbar, 3 unlesbar
     command -v php >/dev/null 2>&1 || return 2
     php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
-if (!is_array($d)) { exit(1); }
+if (!is_array($d)) { exit(3); }
 if ($argv[2] === "token") { exit(isset($d["token"]) && (string) $d["token"] !== "" ? 0 : 1); }
 foreach ($d as $w) { if (is_scalar($w) && trim((string) $w) !== "") { exit(0); } }
 exit(1);' -- "$1" "$2" >/dev/null 2>&1
     tb_rc=$?
-    [ "$tb_rc" = 0 ] || [ "$tb_rc" = 1 ] || return 2
+    [ "$tb_rc" = 0 ] || [ "$tb_rc" = 1 ] || [ "$tb_rc" = 3 ] || return 2
     return "$tb_rc"
 }
 for PAAR in "tibber.json:.backup.json:konfig" "token.json:.backup.token.json:token"; do
@@ -90,11 +99,16 @@ for PAAR in "tibber.json:.backup.json:konfig" "token.json:.backup.token.json:tok
     TB_REST="${PAAR#*:}"
     QUELLE="$BASE/config/plugins/$PFOLDER${TB_REST%%:*}"
     TB_ART="${PAAR##*:}"
-    if [ -f "$QUELLE" ]; then
+    # Nur bei einer Aktualisierung (Marke von preupgrade.sh).
+    if [ "$TB_MARKE" = "1" ] && [ -f "$QUELLE" ]; then
         INHALT=$(cat "$ZIEL" 2>/dev/null)
         if [ ! -s "$ZIEL" ] || [ "$INHALT" = "{}" ]; then
             tb_inhalt "$QUELLE" "$TB_ART"
-            if [ "$?" = 1 ]; then
+            TB_I=$?
+            if [ "$TB_I" = 3 ]; then
+                # Der Grund wird genannt (Bauliste I3): unlesbar, nicht "ohne Einstellungen".
+                echo "<WARNING> $(basename "$ZIEL"): die Sicherung $(basename "$QUELLE") ist unlesbar - nichts zurueckgespielt."
+            elif [ "$TB_I" = 1 ]; then
                 echo "<INFO> $(basename "$ZIEL"): Sicherung ohne Einstellungen - nichts zurueckgespielt."
             else
                 cp -p "$QUELLE" "$ZIEL" && chmod 600 "$ZIEL" \
@@ -169,8 +183,10 @@ chmod 600 "$PCONFIG/tibber.json" "$PCONFIG/token.json" 2>/dev/null
 # Augenblick, in dem der neue Dienst noch nicht dasteht, weder Marke noch
 # Dienst (bei Chromecast4lox 1.3.10 mit 400 Waechterlaeufen gemessen: die
 # umgekehrte Reihenfolge ergab vier Dienste, diese Reihenfolge einen).
+# Nur bei einer Aktualisierung: einen Merker einer frueheren Installation hat
+# preinstall.sh nach .alt gelegt (Entscheidung 1).
 LIEF="$BASE/data/plugins/$PFOLDER.lief_vorher"
-if [ -f "$LIEF" ]; then
+if [ "$TB_MARKE" = "1" ] && [ -f "$LIEF" ]; then
     rm -f "$LIEF"
     if [ -x "$PBIN/dienst.sh" ]; then
         if TB_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
@@ -184,6 +200,116 @@ fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Plugin installiert oder aktualisiert." \
     >> "$PLOG/tibber.log" 2>/dev/null
+
+# ---------- Bestaende zurueckholen (Bauliste I2) ----------
+# Gegenstueck zu preupgrade.sh. Nur bei einer Aktualisierung (Marke); eine
+# Sicherung einer frueheren Installation hat preinstall.sh nach .alt gelegt.
+#
+# Uebernommen heisst: zurueckkopiert und mit cmp bestaetigt - oder, wenn der
+# Minutentakt in der Luecke zwischen dem Kopieren und diesem Skript schon
+# geschrieben hat, VEREINIGT. Der Takt holt in der Luecke Preise (die
+# Taktmarker sind mit dem Datenordner weg) und schreibt dabei eine Zeile in
+# die Verlaufsdatei des Monats; die Hysterese kann einen neuen Block
+# eintragen. Bei aWATTar ging genau dabei die Historie verloren (Lehre aWATTar
+# I4). Die Sicherung wird erst weggeraeumt, wenn ALLES uebernommen ist.
+#
+# Verlauf: Schluessel ist der Zeitpunkt (erste Spalte), jeder Zeitpunkt
+# einmal, bei gleichem Zeitpunkt gilt die NEUE Zeile, nach Zeitpunkt sortiert.
+# Geschrieben wird in eine Datei daneben mit den Rechten der bisherigen; erst
+# nach der Pruefung kommt sie per mv an ihren Platz.
+# Rueckgabe 0 = vereinigt und geprueft, sonst 1 (nichts veraendert).
+tb_verlauf_vereinen() {
+    tb_alt="$1"
+    tb_neu="$2"
+    tb_tmp="$2.vereint.$$"
+    rm -f "${tb_tmp:?}" 2>/dev/null
+    { awk -F';' '$1 ~ /^[0-9]+$/ && !($1 in s) { s[$1] = 1; print }' "$tb_neu" "$tb_alt" \
+        | LC_ALL=C sort -t';' -k1,1n > "$tb_tmp"; } 2>/dev/null
+    # Die Wirkung pruefen: jede Zeile der neuen Datei steht unveraendert darin,
+    # jeder Zeitpunkt der gesicherten ebenfalls.
+    tb_fehlt=$(awk -F';' '
+        FNR == NR { z[$0] = 1; k[$1] = 1; next }
+        FILENAME == ARGV[2] && $1 ~ /^[0-9]+$/ && !($0 in z) { n++ }
+        FILENAME == ARGV[3] && $1 ~ /^[0-9]+$/ && !($1 in k) { n++ }
+        END { print n + 0 }' "$tb_tmp" "$tb_neu" "$tb_alt" 2>/dev/null)
+    if [ "$tb_fehlt" != "0" ] || [ ! -s "$tb_tmp" ]; then
+        rm -f "${tb_tmp:?}" 2>/dev/null
+        return 1
+    fi
+    chmod --reference="$tb_neu" "$tb_tmp" 2>/dev/null
+    if ! mv -f "$tb_tmp" "$tb_neu" 2>/dev/null; then
+        rm -f "${tb_tmp:?}" 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+# JSON-Dateien vereinigen: laufend.json (Regel => bis) - die inzwischen
+# geschriebenen Eintraege gewinnen, die gesicherten kommen dazu;
+# mqtt_praefixe.json - die Vereinigungsmenge. Rueckgabe 0 = geschrieben.
+tb_json_vereinen() {
+    command -v php >/dev/null 2>&1 || return 1
+    php -r '$alt = json_decode((string) @file_get_contents($argv[1]), true);
+$neu = json_decode((string) @file_get_contents($argv[2]), true);
+if (!is_array($alt) || !is_array($neu)) { exit(1); }
+if ($argv[3] === "praefixe") {
+    $l = array();
+    foreach (array($alt, $neu) as $d) {
+        foreach ((array) (isset($d["praefixe"]) ? $d["praefixe"] : array()) as $x) {
+            if (is_string($x) && $x !== "") { $l[$x] = true; }
+        }
+    }
+    $erg = array("praefixe" => array_keys($l));
+} else {
+    $erg = $neu + $alt;
+}
+$j = json_encode($erg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+$t = $argv[2] . ".vereint." . getmypid();
+if ($j === false || @file_put_contents($t, $j) !== strlen($j) || !@rename($t, $argv[2])) { @unlink($t); exit(1); }
+exit(0);' -- "$1" "$2" "$3" >/dev/null 2>&1
+}
+TB_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+if [ "$TB_MARKE" = "1" ] && [ -d "$TB_SICHER" ]; then
+    TB_GERETTET=1
+    TB_NAMEN=""
+    if [ -d "$TB_SICHER/verlauf" ]; then
+        mkdir -p "$PDATA/verlauf" 2>/dev/null
+        for TB_Q in "$TB_SICHER/verlauf/"*.csv; do
+            [ -f "$TB_Q" ] || continue
+            TB_Z="$PDATA/verlauf/$(basename "$TB_Q")"
+            if [ -s "$TB_Z" ]; then
+                tb_verlauf_vereinen "$TB_Q" "$TB_Z" || TB_GERETTET=0
+            else
+                cp -p "$TB_Q" "$TB_Z" 2>/dev/null
+                cmp -s "$TB_Q" "$TB_Z" || TB_GERETTET=0
+            fi
+        done
+        TB_NAMEN="$TB_NAMEN verlauf($(cat "$PDATA/verlauf/"*.csv 2>/dev/null | grep -c .) Punkte)"
+    fi
+    for TB_Q in "$TB_SICHER/laufend.json" "$TB_SICHER/mqtt_praefixe.json" "$TB_SICHER/"bericht_*.done; do
+        [ -f "$TB_Q" ] || continue
+        TB_Z="$PDATA/$(basename "$TB_Q")"
+        if [ -s "$TB_Z" ]; then
+            case "$(basename "$TB_Q")" in
+                laufend.json)       tb_json_vereinen "$TB_Q" "$TB_Z" laufend || TB_GERETTET=0 ;;
+                mqtt_praefixe.json) tb_json_vereinen "$TB_Q" "$TB_Z" praefixe || TB_GERETTET=0 ;;
+                *) ;;   # bericht_*.done: die vorhandene Marke gilt
+            esac
+        else
+            cp -p "$TB_Q" "$TB_Z" 2>/dev/null
+            cmp -s "$TB_Q" "$TB_Z" || TB_GERETTET=0
+        fi
+        TB_NAMEN="$TB_NAMEN $(basename "$TB_Q")"
+    done
+    if [ "$TB_GERETTET" = "1" ]; then
+        [ -n "$TB_NAMEN" ] && echo "<OK> Ueber das Update gerettet:$TB_NAMEN."
+        case "$TB_SICHER" in
+            */data/plugins/?*.upgrade_sicherung) rm -rf "${TB_SICHER:?}" 2>/dev/null ;;
+        esac
+    else
+        echo "<WARNING> Preisverlauf oder Merker liessen sich nicht vollstaendig zurueckholen."
+        echo "<WARNING> Die Sicherung bleibt liegen: $TB_SICHER"
+    fi
+fi
 
 # ---------- Abschluss: Erstanleitung nur ohne eingetragenes Token ----------
 # Dieses Skript laeuft bei der Erstinstallation UND bei jedem Upgrade (siehe
@@ -199,13 +325,36 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Plugin installiert oder aktualisiert." \
 # abweist, wenn es fehlt? Fehlt es nach einem Upgrade, ist die Rueckholung
 # oben gescheitert, und dann ist die Anleitung genau richtig. PHP ist hier
 # sicher da (Pruefung weiter oben).
+#
+# Seit dem Durchgang entscheidet ueber das Wort "Aktualisierung" die MARKE,
+# nicht der Inhalt (Entscheidung 1; Installerpruefer Fall D: eine
+# Neuinstallation meldete "Aktualisierung abgeschlossen"), und es wird auch
+# tibber.json geprueft (Bauliste I3; Fall C: "Einstellungen uebernommen",
+# waehrend tibber.json {} war).
+TB_TOKEN_DA=0
 if php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
 exit(is_array($d) && isset($d["token"]) && (string) $d["token"] !== "" ? 0 : 1);' \
     -- "$PCONFIG/token.json" >/dev/null 2>&1; then
-    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+    TB_TOKEN_DA=1
+fi
+if [ "$TB_MARKE" = "1" ]; then
+    tb_inhalt "$PCONFIG/tibber.json" konfig
+    TB_K=$?
+    if [ "$TB_TOKEN_DA" = 1 ] && [ "$TB_K" = 0 ]; then
+        echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+    else
+        TB_W=""
+        [ "$TB_K" = 0 ] || TB_W="$TB_W Einstellungen"
+        [ "$TB_TOKEN_DA" = 1 ] || TB_W="$TB_W Zugangstoken"
+        echo "<WARNING> Aktualisierung abgeschlossen, aber nicht uebernommen:$TB_W."
+        echo "<INFO> Bitte die Oberflaeche oeffnen und pruefen; ein Zugangstoken gibt es unter"
+        echo "<INFO> developer.tibber.com im eigenen Konto."
+    fi
 else
     echo "<OK> Installation abgeschlossen."
-    echo "<INFO> Jetzt die Oberflaeche oeffnen und das persoenliche Zugangstoken"
-    echo "<INFO> eintragen. Es gibt es unter developer.tibber.com im eigenen Konto."
+    if [ "$TB_TOKEN_DA" != 1 ]; then
+        echo "<INFO> Jetzt die Oberflaeche oeffnen und das persoenliche Zugangstoken"
+        echo "<INFO> eintragen. Es gibt es unter developer.tibber.com im eigenen Konto."
+    fi
 fi
 exit 0

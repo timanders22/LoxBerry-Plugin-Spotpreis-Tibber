@@ -83,13 +83,11 @@ function tb_endpunkt_probe($hoechstalter = 300)
         $ctx = stream_context_create(array('http' => array(
             'timeout' => 3, 'ignore_errors' => true, 'follow_location' => 0)));
         set_error_handler(function () { return true; });
-        $rumpf = (string) @file_get_contents($url, false, $ctx);
+        /* tb_http_abruf() statt der alten Kopfzeilen-Variable (Bauliste W6,
+         * PHP 8.5 meldete sie hier zweimal als ueberholt). */
+        list($tb_r, $code) = tb_http_abruf($url, $ctx);
+        $rumpf = (string) $tb_r;
         restore_error_handler();
-        if (isset($http_response_header) && is_array($http_response_header)) {
-            foreach ($http_response_header as $z) {
-                if (preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) { $code = (int) $m[1]; }
-            }
-        }
     }
     $erg = array('ts' => time(), 'konnte' => $konnte, 'code' => $code,
                  'rumpf' => substr($rumpf, 0, 200), 'gepuffert' => 0);
@@ -111,6 +109,14 @@ function tb_pruefungen($voll = false)
     $st = tb_stand();
     $vb = tb_verbrauch();
     $zeilen = array();
+
+    /* Ist die Konfiguration lesbar? (Bauliste K1) Unlesbar heisst: es gelten
+     * die Werkseinstellungen, und der Endpunkt antwortet 503 KONFIG_KAPUTT. */
+    if (tb_config_lesbar()) {
+        $zeilen[] = tb_pruefzeile(1, tb_t('TEST.F_LESBAR'), tb_t('TEST.A_LESBAR_OK'));
+    } else {
+        $zeilen[] = tb_pruefzeile(0, tb_t('TEST.F_LESBAR'), tb_t('TEST.A_LESBAR_KAPUTT'));
+    }
 
     // Token: die FORM darf beurteilt werden, der WERT nie.
     $token = tb_token_lesen();
@@ -148,7 +154,8 @@ function tb_pruefungen($voll = false)
     } elseif (!empty($st['ok'])) {
         $n = isset($st['liste_heute']) ? count($st['liste_heute']) : 0;
         $m = isset($st['liste_morgen']) ? count($st['liste_morgen']) : 0;
-        $zeilen[] = tb_pruefzeile($alter < 7200 ? 1 : 0, tb_t('TEST.F_PREISE'),
+        // Dieselbe Schranke wie Endpunkt und Healthcheck (Bauliste W4).
+        $zeilen[] = tb_pruefzeile($alter <= tb_altersschranke($cfg) ? 1 : 0, tb_t('TEST.F_PREISE'),
             sprintf(tb_t('TEST.A_PREISE_OK'), (int) round($alter / 60), $n, $m));
     } else {
         $zeilen[] = tb_pruefzeile(0, tb_t('TEST.F_PREISE'),

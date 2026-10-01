@@ -250,7 +250,10 @@ function tb_ws_verbinden($url, $tmo = 15)
              . "Sec-WebSocket-Key: " . $schluessel . "\r\n"
              . "Sec-WebSocket-Version: 13\r\n"
              . "Sec-WebSocket-Protocol: graphql-transport-ws\r\n"
-             . "User-Agent: LoxBerry-Plugin-Spotpreis-Tibber/0.9.0 (+https://wiki.loxberry.de/)\r\n"
+             /* Die Fassung GELESEN (tb_fassung), wie in tb_kopfzeilen() - bis
+              * 0.9.24 stand hier fest 0.9.0, waehrend tb_lib.php das Gegenteil
+              * zusicherte (Bauliste W7, Codepruefer Nr. 12). */
+             . "User-Agent: LoxBerry-Plugin-Spotpreis-Tibber/" . tb_fassung() . " (+https://wiki.loxberry.de/)\r\n"
              . "Origin: https://api.tibber.com\r\n"
              . "\r\n";
     if (@fwrite($fh, $anfrage) === false) {
@@ -316,7 +319,10 @@ function tb_ws_senden($fh, array $nachricht)
             . 'Zeichen, das kein gueltiges UTF-8 ist?');
         return false;
     }
-    return @fwrite($fh, tb_ws_rahmen($json, 1)) !== false;
+    /* Gegen die Laenge, nicht gegen false: eine kurze Schreibung ist genauso
+     * kaputt wie keine (Regeln/03; Bauart B der Kette). */
+    $rahmen = tb_ws_rahmen($json, 1);
+    return @fwrite($fh, $rahmen) === strlen($rahmen);
 }
 
 /* ==================================================================

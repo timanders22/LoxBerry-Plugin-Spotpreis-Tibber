@@ -125,6 +125,10 @@ $tb_st = tb_stand();
 $tb_alter = tb_alter();
 $tb_status = 5;
 $tb_text = '';
+/* Dieselbe Schranke wie Endpunkt, Meldungen und Statuskachel (Bauliste W4).
+ * Bis 0.9.24 stand hier fest 7200: wer den Takt ueber 120 Minuten stellte,
+ * hatte einen dauerhaft gelben Healthcheck (Codepruefer Nr. 4). */
+$tb_schranke = tb_altersschranke($tb_cfg);
 
 if (tb_token_lesen() === '') {
     $tb_status = 3;
@@ -133,13 +137,23 @@ if (tb_token_lesen() === '') {
 } elseif ($tb_alter < 0) {
     $tb_status = 4;
     $tb_text = 'Es hat noch kein Preisabruf stattgefunden.';
-} elseif (empty($tb_st['ok'])) {
+} elseif (empty($tb_st['ok']) && $tb_alter > $tb_schranke) {
     $tb_status = 3;
     $tb_text = 'Der letzte Preisabruf ist misslungen: '
              . (isset($tb_st['fehler']) && $tb_st['fehler'] !== ''
                 ? $tb_st['fehler'] : 'ohne Text')
              . ' (letzter gelungener Abruf vor ' . (int) round($tb_alter / 60) . ' Minuten)';
-} elseif ($tb_alter > 7200) {
+} elseif (empty($tb_st['ok'])) {
+    /* Ein Fehlschlag innerhalb der Schranke: die Preise gelten noch, ein
+     * neuer Versuch kommt nach TB_WIEDERHOLUNG_S (Bauliste W3). Gelb, nicht
+     * rot. */
+    $tb_status = 4;
+    $tb_text = 'Der letzte Preisabruf ist misslungen: '
+             . (isset($tb_st['fehler']) && $tb_st['fehler'] !== ''
+                ? $tb_st['fehler'] : 'ohne Text')
+             . ' Ein neuer Versuch folgt in wenigen Minuten; die Preise sind '
+             . (int) round($tb_alter / 60) . ' Minuten alt und gelten noch.';
+} elseif ($tb_alter > $tb_schranke) {
     $tb_status = 4;
     $tb_text = 'Der letzte gelungene Preisabruf ist ' . (int) round($tb_alter / 60)
              . ' Minuten her. Laeuft der minuetliche Cron-Lauf?';

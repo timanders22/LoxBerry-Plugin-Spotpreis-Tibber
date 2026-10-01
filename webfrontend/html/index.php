@@ -72,12 +72,49 @@ if ($tb_ist === null || $tb_aktion === null) {
     exit;
 }
 
+$tb_selbsttest = tb_get('selftest') === '1';
+
+/* ---------------- Konfiguration unlesbar (Bauliste K1) ----------------
+ *
+ * Bis 0.9.24 antwortete der Endpunkt bei einer unlesbaren tibber.json mit
+ * "KEIN_TOKEN_GESETZT - Die Plugin-Oberflaeche wurde noch nie geoeffnet" -
+ * eine falsche Faehrte (Codepruefer Nr. 5). Jetzt 503 KONFIG_KAPUTT. Liegt
+ * eine lesbare Zweitschrift mit Merkwort daneben, gilt deren Merkwort fuer
+ * die Frage, wer die Auskunft bekommt; ohne eine solche gibt es nichts zu
+ * schuetzen, denn ausgegeben wird nur der Befund. Geschrieben wird nichts. */
+if (!tb_config_lesbar()) {
+    $tb_zw = tb_json_lesen(tb_paths()['sicherung']);
+    $tb_zws = (isset($tb_zw['aktionstoken']) && is_string($tb_zw['aktionstoken']))
+            ? trim($tb_zw['aktionstoken']) : '';
+    if ($tb_zws !== '' && !hash_equals($tb_zws, (string) $tb_ist)) {
+        http_response_code(403);
+        echo $tb_selbsttest ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
+        exit;
+    }
+    http_response_code(503);
+    if ($tb_selbsttest) {
+        echo "SELFTEST;OK=0;ERR=KONFIG_KAPUTT\n";
+        exit;
+    }
+    echo "FEHLER;OK=0;GRUND=KONFIG_KAPUTT\n";
+    echo "Die Konfigurationsdatei des Plugins ist unlesbar. Plugin-Oberflaeche oeffnen.\n";
+    exit;
+}
+
 /* ---------------- Token ---------------- */
 /* trim wie in tb_formtoken() und tb_aktionstoken(). Ohne ihn haelt der
  * Endpunkt ein Merkwort aus lauter Leerzeichen fuer gesetzt und vergleicht
- * damit, waehrend die Oberflaeche es als leer behandelt. */
+ * damit, waehrend die Oberflaeche es als leer behandelt.
+ *
+ * Keine Zeichenkette (von Hand eine Liste eingetragen) ist KEIN Merkwort
+ * (Bauliste K3). Bis 0.9.24 wurde daraus "Array", und ?token=Array bekam die
+ * volle Statuszeile (Codepruefer Nr. 9). Der Schutz faellt geschlossen aus. */
+if (isset($tb_cfg['aktionstoken']) && !is_string($tb_cfg['aktionstoken'])) {
+    http_response_code(403);
+    echo $tb_selbsttest ? "SELFTEST;OK=0;ERR=TOKEN_KAPUTT\n" : "FEHLER;OK=0;GRUND=TOKEN_KAPUTT\n";
+    exit;
+}
 $tb_soll = trim((string) $tb_cfg['aktionstoken']);
-$tb_selbsttest = tb_get('selftest') === '1';
 
 if ($tb_soll === '') {
     http_response_code(403);
@@ -136,7 +173,8 @@ function tb_w($v)
     return (string) (0 + $v);
 }
 
-$tb_st = tb_stand();
+// Zur Lesezeit (Bauliste W1): heute/morgen nach dem Datum von jetzt geteilt.
+$tb_st = tb_stand_jetzt(tb_stand(), $tb_cfg);
 $tb_werte = tb_werte();
 
 if ($tb_aktion === 'json') {

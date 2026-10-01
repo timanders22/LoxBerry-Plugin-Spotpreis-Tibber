@@ -74,7 +74,9 @@ rm -f "$PDATA/.letzter_"* 2>/dev/null
 #   mosquitto_sub -t '<praefix>/#' --retained-only
 # so viele Themen stehen, wie die Tabelle im Reiter MQTT zurueckbehaltene
 # fuehrt - nicht weniger.
-rm -f "$PDATA/.mqtt_signatur" 2>/dev/null
+# Seit dem Durchgang heisst der Merker .mqtt_gesendet.json (je Thema der
+# zuletzt gesendete Wert, Bauliste M1); der alte Name wird mit abgeraeumt.
+rm -f "$PDATA/.mqtt_signatur" "$PDATA/.mqtt_gesendet.json" 2>/dev/null
 
 echo "<OK> Zwischenspeicher geleert - beim naechsten Minutenlauf wird neu geholt."
 
