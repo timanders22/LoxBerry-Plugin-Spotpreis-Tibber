@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.23
+Version 0.9.24
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,37 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.24
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Tibber_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 8, 16, 19 und 26).
+Gemessen mit Attrappen für die Tibber-Schnittstelle, Broker und Gateway unter PHP 7.4, 8.3 und 8.5 sowie im Installer-Prüfstand; nicht am Gerät, nicht mit echtem Tibber-Konto.
+
+* **Preis der laufenden Stunde:** Aktueller Preis, nächste Stunde, Stufe, Rang, Fenster
+  und Tageswerte werden jetzt beim Lesen aus der Preisliste gerechnet. Bisher blieben sie
+  bis zum nächsten Abruf auf der Vorstunde stehen (ab Werk bis zu 30 min) – eine Regel
+  „laden bei Rang 1“ konnte so in der teuersten Stunde laufen. Über MQTT geht der neue
+  Wert gleich nach dem Stundenwechsel hinaus.
+* **`OK` mit Alter:** `OK=0` ab dem Dreifachen des Abruftakts (bisher blieb `OK=1` auch
+  bei totem Cron). Ein einzelner Fehlabruf wird nach 5 Minuten wiederholt statt sofort als
+  Störung gemeldet; der Healthcheck nutzt dieselbe Schranke. Ein Speicherstand gilt
+  höchstens 1 h.
+* **Endpunkt:** 503 `KONFIG_KAPUTT` bei unlesbarer Konfiguration, 403 bei einem Merkwort
+  als Liste.
+* **Speichern:** PRG; bei einer Beanstandung wird nichts gespeichert, die Eingaben kommen
+  markiert zurück, nichts wird still berichtigt; keine Scheinbeanstandungen mehr aus dem
+  Fahrplaner. Zurückspielen prüft dieselben Regeln, ein leeres Merkwort behält das
+  geltende, der Pulse-Dienst wird nachgezogen; „Einstellungen sichern“ warnt.
+* **MQTT:** nur Änderungen, voller Satz alle 30 Minuten (eine Pulse-Änderung schickt nicht
+  mehr den ganzen Satz); Abräumen bei Präfixwechsel und „MQTT aus“, auch für die
+  Deinstallation vorgemerkt.
+* **Installer:** Neuinstallation legt Reste einer früheren Installation nach `.alt`;
+  ein Update rettet Preisverlauf, Hysterese und Berichtsmarken (bisher war der Verlauf
+  nach jedem Update weg); nur lesbare Konfigurationen werden gesichert; die Deinstallation
+  findet den Pulse-Dienst auch ohne PID-Datei.
+* PHP 8.5 ohne Abkündigung (`$http_response_header` ersetzt).
+* **In Loxone:** Die Ausfallerkennung auf `OK` prüfen – es fällt jetzt nach dem
+  Dreifachen des Takts auf 0.
 
 ## Neu in 0.9.23
 
@@ -273,7 +304,10 @@ den Fall, dass Tibber etwas nicht mitrechnet — er steht ab Werk auf 0.
 - **Lebenszeichen über MQTT**: ein Zeitstempel, auch wenn sich sonst nichts
   geändert hat. Unveränderte Werte werden sonst nicht erneut gesendet
 - **Gesundheitsprüfung** für die LoxBerry-Oberfläche (`bin/healthcheck`)
-- Konfiguration und Token überleben Update und Neuinstallation
+- Konfiguration und Token überleben ein Update. Eine Neuinstallation fängt
+  frisch an: Reste einer früheren Installation werden beiseitegelegt (`.alt`,
+  mit einer Warnung im Installationsprotokoll) und von der Deinstallation
+  abgeräumt
 
 ## Voraussetzungen
 
@@ -465,7 +499,8 @@ Die Spalte *Zurückbehalten* im Reiter *MQTT* fragt dieselbe Funktion, die auch
 sendet. Ein Wert aus lauter Leerzeichen geht gar nicht hinaus: eine leere
 Nutzlast *löscht* ein zurückbehaltenes Thema im Broker.
 
-Beim Update räumt der Installer `.mqtt_signatur` ab — sonst würde alles, was
+Beim Update räumt der Installer `.mqtt_gesendet.json` ab (bis 0.9.24
+`.mqtt_signatur`) — sonst würde alles, was
 sich seither nicht geändert hat, nicht gesendet und stünde damit auch nicht im
 Broker. Nachsehen: `mosquitto_sub -t '<präfix>/#' --retained-only`.
 

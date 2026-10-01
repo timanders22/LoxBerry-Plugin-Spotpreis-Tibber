@@ -381,6 +381,22 @@ require_once __DIR__ . '/planer.php';
  */
 define('TB_REGELN', 4);
 
+/* Nach einem misslungenen Preisabruf wird nach dieser Frist erneut versucht,
+ * nicht erst nach dem vollen Abruftakt (Bauliste W3; Codepruefer Nr. 2:
+ * ein einzelner Fehlschlag setzte sofort OK=0 und eine Meldung, und bei Takt
+ * 1440 blieb das einen Tag so). Hoechstens der Takt selbst. */
+define('TB_WIEDERHOLUNG_S', 300);
+
+/* Wie alt darf ein Speicherstand (SOC) sein, damit er eine Schaltregel
+ * sperren oder freigeben darf? Aelter heisst "keine Aussage" (Bauliste W5;
+ * Codepruefer Nr. 8: ein drei Tage alter Wert galt unbegrenzt als aktuell). */
+define('TB_SOC_HOECHSTALTER', 3600);
+
+/* MQTT: je Thema geht nur Geaendertes hinaus, der volle Satz hoechstens im
+ * Abstand dieser Frist (Bauliste M1, Entscheidung 26; MQTT-Pruefer T3: mit
+ * Pulse jede Minute 87 Datagramme). */
+define('TB_MQTT_VOLL_S', 1800);
+
 /**
  * Vorgabe einer Schaltregel.
  *
@@ -545,6 +561,42 @@ function tb_kopie_0600($von, $nach)
     return true;
 }
 
+/* Liegt in $pfad ein lesbares JSON-Objekt? (K1: eine Zweitschrift wird nur
+ * kopiert, wenn sie selbst lesbar ist.) */
+function tb_datei_json_lesbar($pfad)
+{
+    if (!is_file($pfad)) { return false; }
+    $roh = trim((string) @file_get_contents($pfad));
+    if ($roh === '') { return false; }
+    return is_array(json_decode($roh, true));
+}
+
+/* Eine unlesbare Datei EINMAL beiseitelegen (Bauliste K1). Liegt schon eine
+ * .kaputt-Ablage mit demselben Inhalt daneben, gilt sie, und es entsteht
+ * keine weitere. Bis 0.9.24 kam bei kaputter Konfiguration UND kaputter
+ * Zweitschrift je Minutenlauf eine neue .kaputt-Datei dazu, samt vier
+ * Protokollzeilen (Codepruefer Nr. 5: 1, 2, 3 Dateien nach drei Laeufen).
+ * Rueckgabe: Pfad der Ablage oder '' (nicht anlegbar). */
+function tb_kaputt_beiseite($datei)
+{
+    $summe = @md5_file($datei);
+    if ($summe === false) { return ''; }
+    foreach ((array) glob($datei . '.kaputt.*') as $da) {
+        if (is_string($da) && @md5_file($da) === $summe) { return $da; }
+    }
+    $ziel = $datei . '.kaputt.' . date('Ymd_His');
+    return tb_kopie_0600($datei, $ziel) ? $ziel : '';
+}
+
+/* Was tb_config() in DIESEM Aufruf ueber eine unlesbare Konfiguration
+ * festgestellt hat - fuer die Oberflaeche (K1). Mit Argument setzen. */
+function tb_config_befund($setzen = null)
+{
+    static $b = null;
+    if ($setzen !== null) { $b = $setzen; }
+    return $b;
+}
+
 /**
  * Die Konfiguration lesen.
  *
@@ -574,30 +626,41 @@ function tb_config($erzeugen = true)
      *
      * Deshalb wird jetzt unterschieden: kaputt ist etwas anderes als leer. */
     $kaputt = ($roh !== '' && $roh !== '{}' && !is_array(json_decode($roh, true)));
-    if ($erzeugen && ($roh === '' || $roh === '{}' || $kaputt) && is_file($p['sicherung'])) {
+    /* Geheilt wird nur aus einer Zweitschrift, die selbst LESBAR ist (Bauliste
+     * K1). Bis 0.9.24 genuegte is_file(): eine abgeschnittene Zweitschrift
+     * wurde ueber die abgeschnittene Konfiguration kopiert, im naechsten Lauf
+     * wieder, und das Protokoll meldete jedes Mal "es gilt wieder die
+     * Zweitschrift" (Codepruefer Nr. 5). */
+    $zweit_lesbar = tb_datei_json_lesbar($p['sicherung']);
+    if ($erzeugen && ($roh === '' || $roh === '{}' || $kaputt) && $zweit_lesbar) {
         if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
         if ($kaputt) {
             /* Die beschaedigte Datei wird beiseitegelegt, nicht ueberschrieben.
              * Wer sie spaeter braucht, findet sie; wer sie nicht braucht,
              * merkt nichts davon. */
-            $beiseite = $p['config'] . '.kaputt.' . date('Ymd_His');
-            tb_kopie_0600($p['config'], $beiseite);
+            $beiseite = tb_kaputt_beiseite($p['config']);
             tb_log('Die Konfiguration war unlesbar und wurde als '
-                   . basename($beiseite) . ' beiseitegelegt; es gilt wieder die '
-                   . 'Zweitschrift.');
+                   . ($beiseite !== '' ? basename($beiseite) : '(nicht anlegbar)')
+                   . ' beiseitegelegt; es gilt wieder die Zweitschrift.');
         }
         tb_kopie_0600($p['sicherung'], $p['config']);
         $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
         $kaputt = ($roh !== '' && $roh !== '{}' && !is_array(json_decode($roh, true)));
     }
     if ($kaputt) {
-        /* Keine Zweitschrift, und die Datei ist unlesbar. Es gibt jetzt nichts
-         * zu lesen - aber auch nichts zurueckzuschreiben: tb_config_lesbar()
-         * sagt das den Schreibstellen. */
+        /* Konfiguration unlesbar und keine lesbare Zweitschrift. Es gibt jetzt
+         * nichts zu lesen - aber auch nichts zurueckzuschreiben:
+         * tb_config_lesbar() sagt das den Schreibstellen, und der Endpunkt
+         * antwortet 503 KONFIG_KAPUTT. Beiseitegelegt wird EINMAL (gleicher
+         * Inhalt, eine Ablage), gemeldet hoechstens stuendlich. */
+        $beiseite = $erzeugen ? tb_kaputt_beiseite($p['config']) : '';
+        tb_config_befund(array('lage' => 'kaputt', 'beiseite' => $beiseite,
+            'zweit' => is_file($p['sicherung']) ? 'kaputt' : 'fehlt'));
         tb_log_gebremst('config_kaputt', 'Die Konfigurationsdatei ' . $p['config']
-            . ' laesst sich nicht lesen und es gibt keine Zweitschrift. Es gelten '
-            . 'die Werkseinstellungen; gespeichert wird nichts, bis die Datei in '
-            . 'Ordnung ist.');
+            . ' laesst sich nicht lesen, und es gibt keine lesbare Zweitschrift'
+            . ($beiseite !== '' ? ' (beiseitegelegt als ' . basename($beiseite) . ')' : '')
+            . '. Es gelten die Werkseinstellungen; der Endpunkt antwortet 503 '
+            . 'KONFIG_KAPUTT, bis die Datei in Ordnung ist.');
     }
     return tb_fahrplan_normieren(array_merge(tb_vorgaben(), tb_json_lesen($p['config'])));
 }
@@ -742,12 +805,14 @@ function tb_config_speichern($cfg)
      * Konfigurationsordner beim Upgrade abgeraeumt wird. Ein stilles @copy
      * haette sie monatelang veralten lassen koennen, ohne dass es irgendwo
      * steht - die Konfiguration selbst gilt trotzdem als gespeichert. */
-    if (!@copy($p['config'], $p['sicherung'])) {
+    /* Ueber tb_kopie_0600(): erst eine leere Datei 0600, dann der Inhalt,
+     * dann umbenennen (Bauliste K4). Bis 0.9.24 legte @copy() die Zweitschrift
+     * samt Aktionstoken mit den Rechten der umask an, erst danach kam chmod
+     * (Codepruefer Nr. 11). */
+    if (!tb_kopie_0600($p['config'], $p['sicherung'])) {
         tb_log_gebremst('sicherung_kopie', 'Die Zweitschrift ' . $p['sicherung']
             . ' liess sich nicht schreiben. Die Einstellungen sind gespeichert, aber '
             . 'ein Upgrade koennte sie nicht wiederherstellen.');
-    } else {
-        @chmod($p['sicherung'], 0600);
     }
     return true;
 }
@@ -769,8 +834,15 @@ function tb_token_speichern($token)
     if (!tb_json_schreiben($p['token'], array('token' => (string) $token), 0600)) {
         return false;
     }
-    @copy($p['token'], $p['sicherungt']);
-    @chmod($p['sicherungt'], 0600);
+    /* Die Zweitschrift des Tokens ebenso: 0600 vor dem Inhalt, und der
+     * Erfolg wird geprueft (Bauliste K4). Bis 0.9.24 wurde die Rueckgabe von
+     * copy() verworfen - scheiterte sie, stand nirgends etwas, und ein Upgrade
+     * stellte das ALTE Token her (Codepruefer Nr. 11). */
+    if (!tb_kopie_0600($p['token'], $p['sicherungt'])) {
+        tb_log_gebremst('sicherung_token', 'Die Zweitschrift des Tibber-Tokens '
+            . $p['sicherungt'] . ' liess sich nicht schreiben. Das Token ist '
+            . 'gespeichert, aber ein Upgrade koennte es nicht wiederherstellen.');
+    }
     return true;
 }
 
@@ -821,6 +893,13 @@ function tb_aktionstoken_erzeugen($laenge = 24)
 function tb_aktionstoken()
 {
     $cfg = tb_config();
+    /* Keine Zeichenkette (von Hand eine Liste eingetragen) gilt wie leer -
+     * bis 0.9.24 wurde daraus "Array", und der Endpunkt nahm ?token=Array an
+     * (Bauliste K3, Codepruefer Nr. 9). */
+    if (!is_string($cfg['aktionstoken'])) {
+        tb_log('Das Merkwort fuer den Endpunkt war keine Zeichenkette - es wird neu erzeugt.');
+        $cfg['aktionstoken'] = '';
+    }
     if (trim((string) $cfg['aktionstoken']) === '') {
         $cfg['aktionstoken'] = tb_aktionstoken_erzeugen();
         if (!tb_config_speichern($cfg)) {
@@ -855,7 +934,7 @@ function tb_aktionstoken()
 function tb_formtoken($cfg = null)
 {
     if ($cfg === null) { $cfg = tb_config(); }
-    $t = trim((string) $cfg['aktionstoken']);
+    $t = is_string($cfg['aktionstoken']) ? trim($cfg['aktionstoken']) : '';
     return $t === '' ? '' : hash_hmac('sha256', 'formular-v1', $t);
 }
 
@@ -1150,6 +1229,37 @@ function tb_fehlertext($text, $code = 0)
 }
 
 /**
+ * Eine Adresse ueber einen Datenstrom abrufen und den HTTP-Code aus den
+ * Kopfzeilen lesen. Rueckgabe: array(Inhalt oder false, Code; 0 = keiner).
+ *
+ * Ueber fopen() und stream_get_meta_data() statt ueber die alte
+ * Kopfzeilen-Variable von PHP: 8.5 meldet sie beim Uebersetzen als
+ * ueberholt, PHP 9 soll sie abschaffen - dann hiesse jeder Code 0, der
+ * Ersatzweg ohne curl erkennte kein HTTP 401/429 mehr, und tb_holen() naehme
+ * auch einen 404-Rumpf an (Bauliste W6, Codepruefer Nr. 10). Bauform
+ * ap_http_abruf() (APC-UPS 1.2.17, ap_lib.php:1697-1714).
+ */
+function tb_http_abruf($url, $ctx)
+{
+    $fp = @fopen($url, 'r', false, $ctx);
+    if ($fp === false) {
+        return array(false, 0);
+    }
+    $meta = @stream_get_meta_data($fp);
+    $t = @stream_get_contents($fp);
+    @fclose($fp);
+    $code = 0;
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
+            $code = (int) $m[1];
+        }
+    }
+    return array($t, $code);
+}
+
+/**
  * Eine GraphQL-Abfrage absetzen.
  *
  * Rueckgabe: das Feld 'data' als Array, oder array('_fehler' => Text).
@@ -1204,12 +1314,7 @@ function tb_gql($abfrage, $variablen = array(), $token = null)
             'timeout'       => $tmo,
             'ignore_errors' => true,
         )));
-        $antwort = @file_get_contents('https://api.tibber.com/v1-beta/gql', false, $ctx);
-        if (isset($http_response_header) && is_array($http_response_header)) {
-            foreach ($http_response_header as $z) {
-                if (preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $code = (int) $m[1]; }
-            }
-        }
+        list($antwort, $code) = tb_http_abruf('https://api.tibber.com/v1-beta/gql', $ctx);
         if ($antwort === false) { $fehler = 'file_get_contents ist gescheitert.'; }
     }
 
@@ -1566,6 +1671,124 @@ function tb_stand()
     return tb_json_lesen(tb_paths()['datadir'] . '/stand.json');
 }
 
+/**
+ * Gilt der Preisstand noch? (Bauliste W2, Entscheidung 4)
+ *
+ * 1, wenn der letzte GELUNGENE Abruf hoechstens tb_altersschranke() alt ist
+ * - das Dreifache des Abruftakts, mindestens zwei Stunden. Ein einzelner
+ * misslungener Abruf aendert daran nichts (Bauliste W3); OK faellt erst,
+ * wenn der Stand zu alt ist. Bis 0.9.24 stand hier allein das Merkmal des
+ * letzten Abrufs: ein toter Cron meldete in Loxone dauerhaft OK=1 (Codepruefer
+ * Nr. 3, MQTT-Pruefer T2), ein einzelner Fehlschlag sofort OK=0 (Nr. 2).
+ */
+function tb_daten_ok($st = null, $cfg = null, $jetzt = null)
+{
+    if (!is_array($st)) { $st = tb_stand(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!isset($st['ts']) || !is_numeric($st['ts'])) { return 0; }
+    $alter = $jetzt - (int) $st['ts'];
+    if ($alter < 0) { $alter = 0; }
+    return ($alter <= tb_altersschranke($cfg)) ? 1 : 0;
+}
+
+/**
+ * Der Preisstand ZUR LESEZEIT (Bauliste W1).
+ *
+ * stand.json wird nur bei einem gelungenen Abruf geschrieben - ab Werk alle
+ * 30 Minuten, einstellbar bis 1440. Bis 0.9.24 standen CUR, NEXT, LEVEL,
+ * TLEVEL, RANK, NEG, die Fenster und die Tageskennzahlen so da, wie sie beim
+ * Abruf galten: nach jedem Stundenwechsel lieferten Endpunkt und MQTT bis zum
+ * naechsten Abruf den Preis der VORIGEN Stunde (Codepruefer Nr. 1, MQTT-Pruefer
+ * T1: Abruf 18:55, Lesen 19:19 -> CUR der Stunde 18). Der Fahrplaner rechnete
+ * schon zur Lesezeit; jetzt tun es alle Werte, mit denselben Funktionen wie
+ * der Abruf (tb_preis_zur_zeit, tb_rang, tb_fenster, tb_kennzahlen).
+ *
+ * Die Preislisten werden nach dem DATUM der Lesezeit in heute und morgen
+ * geteilt: nach Mitternacht ist die Liste von "morgen" die von heute, und
+ * MORGEN_OK faellt, bis neue Preise kommen.
+ *
+ * 'ok' ist danach das Merkmal nach Alter (tb_daten_ok); das Merkmal des
+ * letzten Abrufversuchs steht unter 'ok_abruf'. Ohne Preislisten bleibt der
+ * Stand bis auf 'ok' unveraendert.
+ */
+function tb_stand_jetzt($st = null, $cfg = null, $jetzt = null)
+{
+    if (!is_array($st)) { $st = tb_stand(); }
+    if (!is_array($cfg)) { $cfg = tb_config(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    $st['ok_abruf'] = !empty($st['ok']) ? 1 : 0;
+    $st['ok'] = tb_daten_ok($st, $cfg, $jetzt);
+    $nachts = array();
+    foreach (array('liste_heute', 'liste_morgen') as $tag) {
+        foreach ((array) (isset($st[$tag]) ? $st[$tag] : array()) as $e) {
+            if (!is_array($e) || !isset($e['ts'], $e['ct'])
+                || !is_numeric($e['ts']) || !is_numeric($e['ct'])) { continue; }
+            $nachts[(int) $e['ts']] = $e;
+        }
+    }
+    if (!$nachts) { return $st; }
+    ksort($nachts);
+    $alle = array_values($nachts);
+
+    $heute_tag = date('Y-m-d', $jetzt);
+    $morgen_tag = date('Y-m-d', strtotime('tomorrow', $jetzt));
+    $heute = array();
+    $morgen = array();
+    foreach ($alle as $e) {
+        $d = date('Y-m-d', (int) $e['ts']);
+        if ($d === $heute_tag) { $heute[] = $e; }
+        elseif ($d === $morgen_tag) { $morgen[] = $e; }
+    }
+    $schritt = tb_schrittweite($alle);
+    $cur = tb_preis_zur_zeit($alle, $jetzt);
+    $next = tb_preis_zur_zeit($alle, $jetzt + max(1, $schritt));
+    $curE = null; $curS = null; $curL = -1; $neg = 0;
+    foreach ($alle as $e) {
+        if ($e['ts'] <= $jetzt && $jetzt < $e['ts'] + $schritt) {
+            $curE = isset($e['energie']) ? $e['energie'] : null;
+            $curS = isset($e['steuer']) ? $e['steuer'] : null;
+            $curL = isset($e['level']) ? (int) $e['level'] : -1;
+            // Negativ ist der ENERGIEANTEIL, nicht der Endpreis (wie beim Abruf).
+            $neg = ($curE !== null && $curE < 0) ? 1 : 0;
+        }
+    }
+    list($rang, $rangd) = tb_rang($alle, $jetzt);
+    $fenster = tb_fenster($alle, (int) $cfg['fensterstunden'], $jetzt);
+    $laenge = tb_fensterlaenge($cfg['fensterstunden']);
+    $fenster2 = tb_fenster_zweites($alle, $laenge, $fenster, $jetzt);
+    $fmorgen = array('ts' => null, 'h' => null, 'in' => null, 'ct' => null);
+    if ($morgen) { $fmorgen = tb_fenster($morgen, $laenge, $morgen[0]['ts']); }
+    list($avg30, $rang30, $n30) = tb_verlauf_kennzahlen($cur, 30);
+
+    $st['cur']          = $cur;
+    $st['cur_energie']  = $curE;
+    $st['cur_steuer']   = $curS;
+    $st['next']         = $next;
+    $st['level']        = $cur === null ? null : tb_niveau($cur, $cfg);
+    $st['tlevel']       = $curL;
+    $st['rank']         = $rang;
+    $st['rankd']        = $rangd;
+    $st['neg']          = $neg;
+    $st['heute']        = tb_kennzahlen($heute);
+    $st['morgen']       = tb_kennzahlen($morgen);
+    $st['morgen_ok']    = count($morgen) > 0 ? 1 : 0;
+    $st['fenster_h']    = $fenster['h'];
+    $st['fenster_in']   = $fenster['in'];
+    $st['fenster_ct']   = $fenster['ct'];
+    $st['fenster2_h']   = $fenster2['h'];
+    $st['fenster2_in']  = $fenster2['in'];
+    $st['fenster2_ct']  = $fenster2['ct'];
+    $st['fenster_morgen_h']  = $fmorgen['h'];
+    $st['fenster_morgen_ct'] = $fmorgen['ct'];
+    $st['avg_30t']      = $avg30;
+    $st['rank_30t']     = $rang30;
+    $st['n_30t']        = $n30;
+    $st['liste_heute']  = $heute;
+    $st['liste_morgen'] = $morgen;
+    $st['gerechnet']    = $jetzt;
+    return $st;
+}
+
 function tb_live()
 {
     return tb_json_lesen(tb_paths()['datadir'] . '/live.json');
@@ -1864,7 +2087,8 @@ function tb_check_literal($check)
 function tb_werte()
 {
     $cfg = tb_config();
-    $st = tb_stand();
+    /* Zur Lesezeit gerechnet (W1), OK nach Alter (W2) - tb_stand_jetzt(). */
+    $st = tb_stand_jetzt(tb_stand(), $cfg);
     $live = tb_live();
     $vb = tb_verbrauch();
     $w = array();
@@ -2036,20 +2260,12 @@ function tb_holen($url, $sekunden = 12)
         'follow_location' => 0,
         'max_redirects'   => 1,
         'ignore_errors'   => true)));
-    $r = @file_get_contents($url, false, $ctx);
+    list($r, $code) = tb_http_abruf($url, $ctx);
     if ($alt !== false) { @ini_set('default_socket_timeout', $alt); }
     if ($r === false) { return null; }
     /* Eine Antwort ist noch kein Lebenszeichen. Mit ignore_errors kommt auch
-     * eine 404 als Zeichenkette an; gilt die LETZTE Statuszeile, denn bei
-     * einer Umleitung stehen mehrere im Feld. */
-    $code = 0;
-    if (isset($http_response_header) && is_array($http_response_header)) {
-        foreach ($http_response_header as $z) {
-            if (preg_match('#^HTTP/[0-9.]+\s+([0-9]{3})#', (string) $z, $m)) {
-                $code = (int) $m[1];
-            }
-        }
-    }
+     * eine 404 als Zeichenkette an; es gilt die LETZTE Statuszeile, denn bei
+     * einer Umleitung stehen mehrere im Feld (tb_http_abruf()). */
     if ($code !== 0 && ($code < 200 || $code > 299)) { return null; }
     $d = json_decode($r, true);
     return is_array($d) ? $d : null;
@@ -2082,7 +2298,7 @@ function tb_umwelt($holen = false, $slotlen = 3600)
     $frisch = is_array($alt) && isset($alt['ts'])
               && time() - (int) $alt['ts'] < 900;
     if (!$holen || $frisch) {
-        return is_array($alt) && $alt ? $alt + $leer : $leer;
+        return tb_umwelt_soc_alter(is_array($alt) && $alt ? $alt + $leer : $leer, $cfg);
     }
 
     $erg = $leer;
@@ -2113,6 +2329,8 @@ function tb_umwelt($holen = false, $slotlen = 3600)
             list($soc, $m) = plan_soc_lesen($roh, $cfg['soc_pfad']);
             $erg['soc_meldung'] = $m;
             $erg['soc'] = $soc;
+            // Das Alter des Speicherstands, getrennt vom Zeitpunkt des Versuchs (W5).
+            if ($soc !== null) { $erg['soc_ts'] = time(); }
         }
     }
     /* Eine Stoerung ueberschreibt die zuletzt gemessenen Werte nicht: was
@@ -2123,11 +2341,36 @@ function tb_umwelt($holen = false, $slotlen = 3600)
         $erg['pv'] = $alt['pv'];
         $erg['pv_summe'] = isset($alt['pv_summe']) ? $alt['pv_summe'] : null;
     }
-    if ($erg['soc'] === null && is_array($alt) && isset($alt['soc']) && $alt['soc'] !== null) {
+    /* Der Speicherstand nur, solange er JUNG ist (Bauliste W5). Bis 0.9.24
+     * wurde ein Altwert hier ohne Grenze uebernommen und 'ts' neu gesetzt -
+     * ein drei Tage alter SOC aus einer toten Quelle sperrte oder oeffnete
+     * Schaltregeln auf Dauer, und der neue Zeitstempel verdeckte das Alter
+     * (Codepruefer Nr. 8). Jetzt traegt er ein eigenes 'soc_ts'. */
+    if ($erg['soc'] === null && is_array($alt) && isset($alt['soc']) && $alt['soc'] !== null
+        && isset($alt['soc_ts']) && is_numeric($alt['soc_ts'])) {
         $erg['soc'] = $alt['soc'];
+        $erg['soc_ts'] = (int) $alt['soc_ts'];
     }
     tb_json_schreiben($cache, $erg);
-    return $erg;
+    return tb_umwelt_soc_alter($erg, $cfg);
+}
+
+/**
+ * Ein Speicherstand ohne eigenes Alter oder aelter als TB_SOC_HOECHSTALTER
+ * ist KEINE Aussage: soc wird null (Strich am Endpunkt), und die Meldung sagt
+ * warum ('ZU_ALT'). Damit sperrt oder oeffnet kein Altwert eine Regel
+ * (Bauliste W5). Gilt beim Lesen wie beim Holen - steht der Cron, altert der
+ * Zwischenspeicher trotzdem.
+ */
+function tb_umwelt_soc_alter(array $u, array $cfg)
+{
+    if (!isset($u['soc']) || $u['soc'] === null) { return $u; }
+    $ts = isset($u['soc_ts']) && is_numeric($u['soc_ts']) ? (int) $u['soc_ts'] : 0;
+    if ($ts <= 0 || time() - $ts > TB_SOC_HOECHSTALTER) {
+        $u['soc'] = null;
+        if (trim((string) $cfg['soc_url']) !== '') { $u['soc_meldung'] = 'ZU_ALT'; }
+    }
+    return $u;
 }
 
 /**
@@ -2236,7 +2479,8 @@ function tb_laufend_fortschreiben($regeln, $jetzt)
 function tb_fahrplan($st = null)
 {
     $cfg = tb_config();
-    if (!is_array($st)) { $st = tb_stand(); }
+    // Derselbe Stand zur Lesezeit wie in tb_werte() (W1).
+    if (!is_array($st)) { $st = tb_stand_jetzt(tb_stand(), $cfg); }
     $leer = array('regeln' => array(), 'plan' => array(), 'belegung' => array(),
                   'preise' => array(), 'slotlen' => 3600,
                   'pv_summe' => null, 'soc' => null, 'planlast' => 0.0);
@@ -2337,8 +2581,11 @@ function tb_fahrplan($st = null)
 function tb_regeln_pruefen($wert)
 {
     $mangel = array();
+    /* Dritter Rueckgabewert: die beanstandeten Felder als 'regel[i][feld]' -
+     * die Oberflaeche markiert sie (X-2, Bauliste O4). */
+    $felder = array();
     if (!is_array($wert)) {
-        return array(array(), array(sprintf(tb_t('EINST.SICH_WERT_REGELN'), 'regeln')));
+        return array(array(), array(sprintf(tb_t('EINST.SICH_WERT_REGELN'), 'regeln')), array());
     }
     if (count($wert) > TB_REGELN) {
         $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_ZUVIEL'), count($wert), TB_REGELN);
@@ -2376,12 +2623,14 @@ function tb_regeln_pruefen($wert)
             if (!tb_wert_taugt($v)) {
                 $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_UNTAUGLICH'),
                                     htmlspecialchars($k, ENT_QUOTES, 'UTF-8'), $i + 1);
+                $felder[] = 'regel[' . $i . '][' . $k . ']';
                 continue;
             }
             $s = trim((string) $v);
             if (in_array($k, $haken, true)) {
                 if (!in_array($s, array('0', '1'), true)) {
                     $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_FELD'), $k, $i + 1);
+                    $felder[] = 'regel[' . $i . '][' . $k . ']';
                     continue;
                 }
                 $neu[$k] = (int) $s;
@@ -2390,6 +2639,7 @@ function tb_regeln_pruefen($wert)
                     || (int) $s < $zahl[$k][0] || (int) $s > $zahl[$k][1]) {
                     $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_BEREICH'), $k, $i + 1,
                                         $zahl[$k][0], $zahl[$k][1]);
+                    $felder[] = 'regel[' . $i . '][' . $k . ']';
                     continue;
                 }
                 $neu[$k] = (int) $s;
@@ -2399,18 +2649,30 @@ function tb_regeln_pruefen($wert)
                     || (float) $s2 < $komma[$k][0] || (float) $s2 > $komma[$k][1]) {
                     $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_BEREICH'), $k, $i + 1,
                                         $komma[$k][0], $komma[$k][1]);
+                    $felder[] = 'regel[' . $i . '][' . $k . ']';
                     continue;
                 }
                 $neu[$k] = (float) $s2;
             } elseif ($k === 'art') {
                 if (!in_array($s, array('fenster', 'stunden', 'schwelle', 'mittel'), true)) {
                     $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_FELD'), $k, $i + 1);
+                    $felder[] = 'regel[' . $i . '][' . $k . ']';
                     continue;
                 }
                 $neu[$k] = $s;
             } elseif ($k === 'name') {
-                if (strlen($s) > 40) {
-                    $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_FELD'), $k, $i + 1);
+                /* ZEICHEN, nicht Byte (Bauliste O7). Das Formular laesst 40
+                 * Zeichen zu (maxlength); bis 0.9.24 zaehlte diese Stelle
+                 * strlen(), und ein Name mit Umlauten zwischen etwa 35 und 40
+                 * Zeichen liess den ganzen Fahrplaner ungespeichert - mit einer
+                 * Meldung, die den Grund nicht nannte (Oberflaechenpruefer
+                 * Nr. 11). preg_match mit u braucht kein mbstring; ungueltiges
+                 * UTF-8 faellt dabei durch. */
+                $nz = preg_match_all('/./su', $s);
+                if ($nz === false || $nz > 40) {
+                    $mangel[] = sprintf(tb_t('EINST.SICH_REGELN_NAME'), $i + 1,
+                                        $nz === false ? 0 : (int) $nz);
+                    $felder[] = 'regel[' . $i . '][' . $k . ']';
                     continue;
                 }
                 $neu[$k] = $s;
@@ -2428,7 +2690,7 @@ function tb_regeln_pruefen($wert)
         }
         ksort($rein);
     }
-    return array($rein, $mangel);
+    return array($rein, $mangel, $felder);
 }
 
 /**
@@ -2737,7 +2999,10 @@ function tb_mqtt_behalten_liste(array $themen)
         $nutz .= $zk($benutzer);
         if ($kennwort !== '') { $nutz .= $zk($kennwort); }
     }
-    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+    /* Gegen die Laenge, nicht gegen false: eine kurze Schreibung ist genauso
+     * kaputt wie keine (Regeln/03; Bauart B der Kette). */
+    $tb_connect = chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz;
+    if (@fwrite($s, $tb_connect) === strlen($tb_connect)) {
         $ack = $paket();
         if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
             $sub = pack('n', 1);
@@ -2809,7 +3074,7 @@ function tb_mqtt_leer_themen()
 }
 
 /**
- * Aus der Deinstallation: die zurueckbehaltenen Themen der Linie leeren.
+ * Die zurueckbehaltenen Themen der Linie unter EINEM Praefix leeren.
  *
  * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
  * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
@@ -2822,33 +3087,29 @@ function tb_mqtt_leer_themen()
  * (Regeln/07), ein blosses Senden ist kein Beleg. Bauart ZendureSolarFlow
  * 0.9.26 (zd_mqtt_leeren()).
  *
- * Bis 0.9.18 raeumte die Deinstallation nichts ab: die Zustaende der Linie
- * blieben im Broker, und nach jedem Neustart von Broker oder Gateway bekam
- * der Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt (in
- * WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle U1, U3, U4, U6).
+ * Seit dem Durchgang (Bauliste M2) eine eigene Funktion je Praefix: die
+ * Oberflaeche raeumt damit beim Praefixwechsel und bei "MQTT aus" das ALTE
+ * Praefix ab, die Deinstallation zusaetzlich jedes vorgemerkte.
  *
- * Liest die Konfiguration ohne Selbstheilung und schreibt weder Protokoll
- * noch Datei. Ausgabe im Format der Hakenskripte (<OK>/<INFO>/<WARNING>).
- * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw. der
- * Eingang war nicht erreichbar, 2 nicht moeglich.
+ * Rueckgabe array(rc, Zeilen im Format der Hakenskripte, bestaetigt):
+ * rc 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw. der
+ * Eingang war nicht erreichbar, 2 nicht moeglich; bestaetigt ist true nur,
+ * wenn der Broker selbst sagt, dass nichts mehr dasteht.
  */
-function tb_mqtt_leeren($runden = 3, $pause = 1.0)
+function tb_mqtt_praefix_leeren($praefix, $runden = 3, $pause = 1.0)
 {
-    $p = tb_paths();
-    $cfg = array_merge(tb_vorgaben(), tb_json_lesen($p['config']));
-    $praefix = trim((string) $cfg['mqtt_topic'], '/');
-    if ($praefix === '') { $praefix = 'tibber'; }
+    $zeilen = array();
     $praefix = trim(tb_mqtt_wert_saeubern($praefix), '/ ');
     if ($praefix === '' || preg_match('/[#+\s]/', $praefix)) {
-        echo "<WARNING> MQTT: das Themenpraefix ist leer oder enthaelt einen Platzhalter oder "
-           . "Leerraum - zurueckbehaltene Themen wurden nicht geleert.\n";
-        return 2;
+        $zeilen[] = "<WARNING> MQTT: das Themenpraefix ist leer oder enthaelt einen Platzhalter oder "
+           . "Leerraum - zurueckbehaltene Themen wurden nicht geleert.";
+        return array(2, $zeilen, false);
     }
     $z = tb_mqtt_zustand();
     if (!$z['udpport']) {
-        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 2;
+        $zeilen[] = "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.";
+        return array(2, $zeilen, false);
     }
     $alle = array();
     foreach (tb_mqtt_leer_themen() as $t) { $alle[] = $praefix . '/' . $t; }
@@ -2857,15 +3118,15 @@ function tb_mqtt_leeren($runden = 3, $pause = 1.0)
     $nachgelesen = ($f['lage'] === 'ok');
     $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
     if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
-           . "/ steht zurueckbehalten - nichts zu leeren.\n";
-        return 0;
+        $zeilen[] = "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
+           . "/ steht zurueckbehalten - nichts zu leeren.";
+        return array(0, $zeilen, true);
     }
     $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $errno, $errstr, 2);
     if (!$strom) {
-        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 1;
+        $zeilen[] = "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.";
+        return array(1, $zeilen, false);
     }
     $zu_leeren = count($offen);
     $datagramme = 0;
@@ -2887,24 +3148,91 @@ function tb_mqtt_leeren($runden = 3, $pause = 1.0)
         }
     }
     fclose($strom);
-    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
+    $zeilen[] = "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
        . "Nutzlast an den UDP-Eingang " . (int) $z['udpport'] . " des Gateways gesendet ("
-       . $datagramme . " Datagramme).\n";
+       . $datagramme . " Datagramme).";
     if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
-           . "zurueckbehalten.\n";
-        return 0;
+        $zeilen[] = "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
+           . "/ steht mehr zurueckbehalten.";
+        return array(0, $zeilen, true);
     }
     if ($nachgelesen) {
-        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+        $zeilen[] = "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
            . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
-           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
-        return 1;
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>";
+        return array(1, $zeilen, false);
     }
-    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+    $zeilen[] = "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
        . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
-       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
-    return 0;
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.";
+    return array(0, $zeilen, false);
+}
+
+/**
+ * Frueher benutzte Praefixe, deren Abraeumen der Broker noch nicht bestaetigt
+ * hat (Bauliste M2, Entscheidung 26). Die Oberflaeche merkt das alte Praefix
+ * beim Wechsel und bei "MQTT aus" hier vor und streicht es, sobald der Broker
+ * das Leeren bestaetigt; die Deinstallation leert jedes vorgemerkte mit.
+ * Datei data/plugins/<ordner>/mqtt_praefixe.json; preupgrade.sh traegt sie
+ * ueber ein Update.
+ */
+function tb_mqtt_praefixe_lesen()
+{
+    $d = tb_json_lesen(tb_paths()['datadir'] . '/mqtt_praefixe.json');
+    $aus = array();
+    foreach ((array) (isset($d['praefixe']) ? $d['praefixe'] : array()) as $x) {
+        if (!is_scalar($x)) { continue; }
+        $x = trim(tb_mqtt_wert_saeubern($x), '/ ');
+        if ($x !== '' && !preg_match('/[#+\s]/', $x)) { $aus[$x] = true; }
+    }
+    return array_keys($aus);
+}
+
+function tb_mqtt_praefix_vormerken($praefix, $streichen = false)
+{
+    $praefix = trim(tb_mqtt_wert_saeubern($praefix), '/ ');
+    if ($praefix === '') { return false; }
+    $liste = array_flip(tb_mqtt_praefixe_lesen());
+    if ($streichen) { unset($liste[$praefix]); } else { $liste[$praefix] = true; }
+    return tb_json_schreiben(tb_paths()['datadir'] . '/mqtt_praefixe.json',
+                             array('praefixe' => array_keys($liste)));
+}
+
+/**
+ * Aus der Deinstallation: die zurueckbehaltenen Themen der Linie leeren - unter
+ * dem eingestellten Praefix UND unter jedem vorgemerkten (Bauliste M2). Bis
+ * 0.9.24 nur unter dem eingestellten; ein frueheres blieb fuer immer im Broker
+ * (MQTT-Pruefer T4: alt/fix 34).
+ *
+ * Bis 0.9.18 raeumte die Deinstallation nichts ab: die Zustaende der Linie
+ * blieben im Broker, und nach jedem Neustart von Broker oder Gateway bekam
+ * der Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt (in
+ * WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle U1, U3, U4, U6).
+ *
+ * Liest die Konfiguration ohne Selbstheilung und schreibt weder Protokoll
+ * noch Datei. Ausgabe im Format der Hakenskripte (<OK>/<INFO>/<WARNING>).
+ * Rueckgabe: der groesste Rueckgabewert der einzelnen Praefixe.
+ */
+function tb_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    $p = tb_paths();
+    $cfg = array_merge(tb_vorgaben(), tb_json_lesen($p['config']));
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($praefix === '') { $praefix = 'tibber'; }
+    $liste = array($praefix);
+    foreach (tb_mqtt_praefixe_lesen() as $x) {
+        if (!in_array($x, $liste, true)) { $liste[] = $x; }
+    }
+    $rc = 0;
+    foreach ($liste as $nr => $pr) {
+        if ($nr > 0) {
+            echo "<INFO> MQTT: frueher benutztes Praefix " . $pr . "/ (vorgemerkt).\n";
+        }
+        list($r, $zeilen) = tb_mqtt_praefix_leeren($pr, $runden, $pause);
+        echo implode("\n", $zeilen) . "\n";
+        $rc = max($rc, (int) $r);
+    }
+    return $rc;
 }
 
 /**
@@ -2969,6 +3297,9 @@ function tb_mqtt_altlast($praefix)
                 . 'nicht schreiben - der Broker wird im naechsten Lauf wieder gefragt.');
         } else {
             @unlink($p['datadir'] . '/.mqtt_ok_geraeumt');
+            if (is_file($p['datadir'] . '/.mqtt_altlast_blind')) {
+                @unlink($p['datadir'] . '/.mqtt_altlast_blind');
+            }
             tb_log('MQTT: unter ' . $praefix . '/ steht keines der ' . count($liste)
                 . ' frueher zurueckbehaltenen Themen mehr im Broker (vom Broker bestaetigt).');
         }
@@ -2980,10 +3311,23 @@ function tb_mqtt_altlast($praefix)
         foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
         return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
     }
+    /* Nicht zu fragen: EINMAL je Zustand blind leeren, nicht in jedem Lauf
+     * (Bauliste M3). Bis 0.9.24 gingen ohne befragbaren Broker jede Minute
+     * drei leere retain vor den Lebenszeichen hinaus, und status/ok sprang in
+     * Loxone jede Minute kurz auf leer (MQTT-Pruefer T5). Der Merker
+     * .mqtt_altlast_blind traegt Praefix und Liste; liegt er, wird nichts mehr
+     * blind geleert, bis der Broker antwortet (dann raeumt der Weg oben
+     * richtig ab und loescht ihn). */
+    $blind = $p['datadir'] . '/.mqtt_altlast_blind';
+    if (is_file($blind) && trim((string) @file_get_contents($blind)) === $kennung) {
+        return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => array());
+    }
     tb_log_gebremst('mqtt_rueckfrage', 'MQTT: der Broker liess sich nicht befragen, ob '
         . 'unter ' . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden '
-        . 'deshalb unmittelbar vor jedem Senden geloescht, bis der Broker antwortet.');
-    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
+        . 'deshalb einmal unmittelbar vor dem Senden geloescht; danach erst wieder, wenn '
+        . 'der Broker antwortet.');
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste,
+                                    'blind' => $blind, 'kennung' => $kennung);
 }
 
 /**
@@ -3110,6 +3454,11 @@ function tb_mqtt_senden(array $paare, $praefix)
         }
     }
     fclose($strom);
+    // Blind geleert: das genuegt EINMAL (M3, tb_mqtt_altlast()).
+    if ($alt['lage'] === 'unbekannt' && !empty($alt['themen']) && isset($alt['blind'])
+        && $fehler === 0) {
+        @file_put_contents($alt['blind'], $alt['kennung'] . "\n");
+    }
     return array($versucht, $fehler, $behalten);
 }
 
@@ -3117,7 +3466,7 @@ function tb_mqtt_senden(array $paare, $praefix)
  * Alle Themen, die veroeffentlicht werden, mit ihrer Bedeutung.
  *
  * Die drei Lebenszeichen stehen VORNE und gehen bei jedem Durchgang hinaus -
- * auch unveraendert. Siehe tb_mqtt_signatur().
+ * auch unveraendert. Siehe tb_mqtt_auswahl().
  */
 /**
  * Welche Statusfelder gehen NICHT unter ihrem eigenen Namen hinaus?
@@ -3273,7 +3622,8 @@ function tb_mqtt_lebenszeichen()
     $st = tb_stand();
     $live = tb_live();
     return array(
-        'status/ok'       => !empty($st['ok']) ? 1 : 0,
+        // OK nach Alter wie am Endpunkt (W2), nicht das Merkmal des letzten Versuchs.
+        'status/ok'       => tb_daten_ok($st),
         'status/ts'       => isset($st['ts']) ? (int) $st['ts'] : 0,
         'status/zaehler'  => tb_zaehler_lesen(),
         /* Der Zeitstempel der Pulse - aus demselben Grund wie status/ts und
@@ -3288,35 +3638,61 @@ function tb_mqtt_lebenszeichen()
 }
 
 /**
- * Die Signatur ueber die WERTE - ohne die Lebenszeichen.
+ * Welche Werte gehen in diesem Lauf hinaus? (Bauliste M1, Entscheidung 26)
  *
- * Gesendet wird nur, wenn sie sich geaendert hat. Bis 0.9.6 gab es keinen
- * Filter: bei bis zu 38 Statusfeldern und 24 Stundenpreisen waren das rund
- * 62 Datagramme je Minute, also gegen 89 000 am Tag, auch wenn sich am Preis
- * eine Stunde lang nichts ruehrte.
+ * Je THEMA nur, was sich gegenueber dem zuletzt gesendeten Wert geaendert hat;
+ * der volle Satz geht hinaus, wenn es keinen Merker gibt, das Praefix ein
+ * anderes ist, $erzwingen gilt (Altlast im Broker) oder seit dem letzten
+ * vollen Satz TB_MQTT_VOLL_S vergangen sind. Bis 0.9.24 stand hier EINE
+ * Signatur ueber alle Werte: aenderte sich der Pulse-Wert, ging jede Minute der
+ * volle Satz hinaus (MQTT-Pruefer T3: 87 Datagramme, rund 125 000 am Tag), und
+ * ohne Pulse gab es keinen festen vollen Satz.
+ *
+ * Verglichen wird der Wert so, wie er auf die Leitung geht
+ * (tb_mqtt_wert_saeubern). Die Lebenszeichen stehen nicht in $paare.
+ * Rueckgabe: array(zu sendende Paare, voll ja/nein).
  */
-function tb_mqtt_signatur(array $paare)
+function tb_mqtt_auswahl(array $paare, $praefix, $erzwingen = false)
 {
-    $ohne = array();
-    $lz = tb_mqtt_lebenszeichen();
+    $g = tb_json_lesen(tb_paths()['datadir'] . '/.mqtt_gesendet.json');
+    $werte = (isset($g['werte']) && is_array($g['werte'])) ? $g['werte'] : array();
+    $voll_ts = isset($g['voll_ts']) && is_numeric($g['voll_ts']) ? (int) $g['voll_ts'] : 0;
+    $voll = $erzwingen || !isset($g['praefix']) || (string) $g['praefix'] !== (string) $praefix
+         || $voll_ts <= 0 || time() - $voll_ts >= TB_MQTT_VOLL_S || $voll_ts > time() + 300;
+    if ($voll) { return array($paare, true); }
+    $aus = array();
     foreach ($paare as $k => $v) {
-        if (array_key_exists($k, $lz)) { continue; }
-        $ohne[$k] = $v;
+        if ($v === null || $v === '') { continue; }        // geht ohnehin nicht hinaus
+        $s = tb_mqtt_wert_saeubern($v);
+        if ($s === '') { continue; }
+        if (!array_key_exists((string) $k, $werte) || (string) $werte[(string) $k] !== $s) {
+            $aus[$k] = $v;
+        }
     }
-    ksort($ohne);
-    $json = json_encode($ohne);
-    if ($json === false) {
-        /* md5(false) ist md5('') - fuer JEDE Wertemenge derselbe Wert. Der
-         * Doppelt-senden-Filter haette danach alles fuer unveraendert
-         * gehalten, und es gingen nur noch die Lebenszeichen hinaus: im
-         * Broker steht ein ruhiger Markt, in Wahrheit ein Stillstand.
-         * Deshalb hier fail OPEN - ein nie wiederkehrender Wert erzwingt das
-         * Senden, statt es dauerhaft zu unterbinden. */
-        tb_log_gebremst('mqtt_signatur', 'Die MQTT-Signatur liess sich nicht bilden ('
-            . json_last_error_msg() . ') - es wird sicherheitshalber alles gesendet.');
-        return 'unbekannt-' . microtime(true);
+    return array($aus, false);
+}
+
+/**
+ * Den Merker der zuletzt gesendeten Werte fortschreiben - nur, wenn wirklich
+ * alles hinaus ist (der Aufrufer prueft das). Nach einem vollen Satz ersetzt
+ * er den alten ganz; sonst werden die gesendeten Themen nachgetragen.
+ * Die Oberflaeche loescht ihn, wenn MQTT eingeschaltet oder das Praefix
+ * gewechselt wird - dann geht sofort der volle Satz hinaus (Bauliste M2);
+ * postupgrade.sh ebenso nach einem Update.
+ */
+function tb_mqtt_gesendet_merken(array $gesendet, $praefix, $voll)
+{
+    $f = tb_paths()['datadir'] . '/.mqtt_gesendet.json';
+    $g = $voll ? array() : tb_json_lesen($f);
+    $werte = (isset($g['werte']) && is_array($g['werte'])) ? $g['werte'] : array();
+    foreach ($gesendet as $k => $v) {
+        if ($v === null || $v === '') { continue; }
+        $s = tb_mqtt_wert_saeubern($v);
+        if ($s !== '') { $werte[(string) $k] = $s; }
     }
-    return md5($json);
+    $voll_ts = ($voll || !isset($g['voll_ts'])) ? time() : (int) $g['voll_ts'];
+    return tb_json_schreiben($f, array('praefix' => (string) $praefix, 'voll_ts' => $voll_ts,
+                                       'werte' => $werte));
 }
 
 /* ==================================================================
@@ -3622,7 +3998,11 @@ function tb_wert_pruefen($schluessel, $wert)
             return in_array($s, array('0', '1'), true) ? ''
                 : sprintf(tb_t('EINST.SICH_WERT_HAKEN'), $schluessel);
         case 'thema':
-            return preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $s) ? ''
+            /* Kein Schraegstrich am Rand und keiner doppelt (Bauliste O5, K5).
+             * Bis 0.9.24 nahm das Formular "/strom/" an und machte still
+             * "strom" daraus, das Zurueckspielen speicherte es unveraendert
+             * (Oberflaechenpruefer Nr. 5 und 7). Nach Nr. 19 wird beanstandet. */
+            return (strlen($s) <= 64 && preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$#', $s)) ? ''
                 : sprintf(tb_t('EINST.SICH_WERT_THEMA'), $schluessel);
         case 'merkwort':
             return ($s === '' || preg_match('/^[A-Za-z0-9]{8,64}$/', $s)) ? ''
@@ -3658,6 +4038,73 @@ function tb_wert_pruefen($schluessel, $wert)
                 : sprintf(tb_t('EINST.SICH_WERT_PFAD'), $schluessel);
     }
     return '';
+}
+
+/**
+ * Die Kreuzregeln der Konfiguration - EINE Stelle fuer Formular, Zurueckspielen
+ * und Sichern (Bauliste K5, K6, O5). Bis 0.9.24 standen sie nur in den
+ * Formular-Handlern: eine Sicherung mit guenstig 50 und teuer 30 oder mit einer
+ * PV-Adresse ohne Quellenart ging ohne Beanstandung durch (Oberflaechenpruefer
+ * Nr. 8), und ein Feld, das zur gewaehlten Quellenart nicht passt, wurde im
+ * Fahrplaner STILL geleert (Nr. 5).
+ *
+ * Rueckgabe: Liste aus array('felder' => Namen, 'text' => Meldung).
+ */
+function tb_config_kreuzpruefen(array $cfg)
+{
+    $aus = array();
+    $w = function ($k) use ($cfg) {
+        return (isset($cfg[$k]) && is_scalar($cfg[$k])) ? trim((string) $cfg[$k]) : '';
+    };
+    if (isset($cfg['guenstig'], $cfg['teuer']) && is_numeric($cfg['guenstig'])
+        && is_numeric($cfg['teuer']) && (float) $cfg['guenstig'] >= (float) $cfg['teuer']) {
+        $aus[] = array('felder' => array('guenstig', 'teuer'), 'text' => tb_t('EINST.FEHLER_SCHWELLEN'));
+    }
+    $quelle = $w('pv_quelle');
+    if ($quelle === '' && $w('pv_url') !== '') {
+        $aus[] = array('felder' => array('pv_url'), 'text' => tb_t('FP.M_URL_OHNE_QUELLE'));
+    }
+    if ($quelle !== '' && $w('pv_url') === '') {
+        $aus[] = array('felder' => array('pv_url'), 'text' => tb_t('FP.M_QUELLE_OHNE_URL'));
+    }
+    if ($quelle === 'forecast_solar' && $w('pv_pfad') !== '') {
+        $aus[] = array('felder' => array('pv_pfad'), 'text' => tb_t('FP.M_PFAD_FORECAST'));
+    }
+    if ($quelle !== 'liste') {
+        $f = array();
+        foreach (array('pv_zeitfeld', 'pv_wertfeld') as $k) {
+            if ($w($k) !== '') { $f[] = $k; }
+        }
+        if ($f) {
+            $aus[] = array('felder' => $f, 'text' => tb_t('FP.M_FELDER_NUR_LISTE'));
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Welche gespeicherten Werte wuerde das eigene Zurueckspielen abweisen?
+ * Rueckgabe: Liste der Schluesselnamen (nie Werte). Fuer die gelbe Warnung am
+ * Knopf und den Kopf '_warnung' der Sicherung (Bauliste K6, X-3).
+ */
+function tb_sicherung_maengel($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = tb_config(); }
+    $namen = array();
+    foreach (tb_vorgaben() as $k => $vorgabe) {
+        if (!array_key_exists($k, $cfg)) { continue; }
+        $v = $cfg[$k];
+        if ($k === 'regeln') {
+            $rp = tb_regeln_pruefen($v);
+            if ($rp[1]) { $namen[$k] = true; }
+            continue;
+        }
+        if (!tb_wert_taugt($v) || tb_wert_pruefen($k, $v) !== '') { $namen[$k] = true; }
+    }
+    foreach (tb_config_kreuzpruefen($cfg) as $m) {
+        foreach ($m['felder'] as $f) { $namen[$f] = true; }
+    }
+    return array_keys($namen);
 }
 
 /**
@@ -3698,6 +4145,18 @@ function tb_sicherung_bauen()
     $cfg = tb_config();
     foreach (tb_vorgaben() as $k => $vorgabe) {
         $daten[$k] = array_key_exists($k, $cfg) ? $cfg[$k] : $vorgabe;
+    }
+    /* X-3 (Bauliste K6): die Sicherung bleibt vollstaendig, traegt aber einen
+     * lesbaren Hinweis, wenn das eigene Zurueckspielen sie abweisen wuerde -
+     * nur die Namen, nie die Werte. Bis 0.9.24 merkte man das erst beim Umzug
+     * (Oberflaechenpruefer Nr. 9). */
+    $maengel = tb_sicherung_maengel($cfg);
+    if ($maengel) {
+        $daten = array_merge(array_slice($daten, 0, 4, true), array(
+            '_warnung' => 'Diese Sicherung enthaelt Werte, die beim Zurueckspielen abgewiesen '
+                        . 'wuerden: ' . implode(', ', $maengel) . '. Vorher in der Oberflaeche '
+                        . 'berichtigen und neu sichern.',
+        ), array_slice($daten, 4, null, true));
     }
     return $daten;
 }
@@ -3757,6 +4216,8 @@ function tb_sicherung_lesen($roh)
     $bekannt = array_keys($neu);
     $token = null;
     $anzahl = 0;
+    // Hinweise, die nichts abweisen, aber gesagt werden muessen (K2).
+    $hinweise = array();
     foreach ($daten as $k => $w) {
         $k = (string) $k;
         if ($k !== '' && $k[0] === '_') { continue; }    // lesbarer Kopf
@@ -3765,12 +4226,14 @@ function tb_sicherung_lesen($roh)
                 $mangel[] = sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'), tb_e($k));
                 continue;
             }
-            $grund = tb_token_form((string) $w);
-            if ((string) $w !== '' && $grund !== '') {
+            // Leerraum am Rand still, wie im Formular (K5, Nr. 19).
+            $w = trim((string) $w);
+            $grund = tb_token_form($w);
+            if ($w !== '' && $grund !== '') {
                 $mangel[] = tb_t($grund);
                 continue;
             }
-            $token = (string) $w;
+            $token = $w;
             $anzahl++;
             continue;
         }
@@ -3809,11 +4272,30 @@ function tb_sicherung_lesen($roh)
             $mangel[] = $grund;
             continue;
         }
-        $neu[$k] = $w;
+        /* Ein LEERES Aktionstoken nimmt das geltende nicht weg (Bauliste K2).
+         * Bis 0.9.24 wurde danach still ein neues Merkwort gewuerfelt, und
+         * jeder virtuelle Eingang in Loxone bekam 403 (Codepruefer Nr. 6,
+         * Oberflaechenpruefer Nr. 6). Es bleibt das geltende - mit Hinweis. */
+        if ($k === 'aktionstoken' && trim((string) $w) === '') {
+            $geltend = tb_config();
+            $neu[$k] = is_string($geltend['aktionstoken']) ? $geltend['aktionstoken'] : '';
+            $hinweise[] = tb_t('EINST.SICH_TOKEN_LEER_BEHALTEN');
+            continue;
+        }
+        /* Gespeichert wird der GEPRUEFTE Wert: Leerraum am Rand still
+         * abgeschnitten wie im Formular (Bauliste K5, Nr. 19). Bis 0.9.24
+         * pruefte die Funktion trim($w), speicherte aber $w - ein Merkwort
+         * " abc " stand danach mit Leerzeichen in der Datei, und die
+         * angezeigte Adresse bekam 403 (Oberflaechenpruefer Nr. 7). */
+        $neu[$k] = is_string($w) ? trim($w) : $w;
         $anzahl++;
     }
     if ($anzahl === 0) {
         $mangel[] = tb_t('EINST.SICH_LEER');
+    }
+    /* Dieselben Kreuzregeln wie im Formular (Bauliste K5). */
+    if (!$mangel) {
+        foreach (tb_config_kreuzpruefen($neu) as $km) { $mangel[] = $km['text']; }
     }
     /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
      *
@@ -3842,5 +4324,7 @@ function tb_sicherung_lesen($roh)
         $mangel[] = sprintf(tb_t('EINST.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $token);
+    /* Fuenfter Wert: Hinweise (K2). Die Hausform der ersten vier bleibt -
+     * Werkzeuge/sicherung_wirkung.py erkennt die Bauart an Stelle 1. */
+    return array($mangel ? null : $neu, $mangel, $anzahl, $token, $hinweise);
 }

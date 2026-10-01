@@ -124,9 +124,16 @@ function tb_sperre_ziehen()
  */
 function tb_merkmal_ok_faellt($meldung)
 {
+    /* Seit dem Durchgang (Bauliste W3) heisst 'ok' hier nur noch "der LETZTE
+     * VERSUCH ist gelungen". Endpunkt, MQTT und Meldungen richten sich nach dem
+     * Alter des letzten gelungenen Abrufs (tb_daten_ok()) - ein einzelner
+     * Fehlschlag laesst OK stehen, bis der Stand zu alt ist. 'fehler_seit'
+     * haelt den ersten Fehlschlag fest; ein gelungener Abruf schreibt den
+     * Stand neu und damit ohne. */
     $st = tb_stand();
     $st['ok'] = 0;
     $st['fehler'] = $meldung;
+    if (empty($st['fehler_seit'])) { $st['fehler_seit'] = time(); }
     if (!tb_json_schreiben(tb_paths()['datadir'] . '/stand.json', $st)) {
         tb_log_gebremst('stand_schreiben', 'stand.json liess sich nicht schreiben - '
             . 'das Merkmal OK bleibt deshalb auf dem alten Wert stehen.');
@@ -610,7 +617,8 @@ function tb_veroeffentlichen()
      * dieser Eintrag; eine bestehende Anlage merkt also nichts. Kaemen
      * einmal Viertelstundenpreise, stuende sonst der Preis der LETZTEN
      * Viertelstunde unter dem Namen der ganzen Stunde. */
-    $st = tb_stand();
+    // Die Stunden von HEUTE zur Lesezeit (W1): nach Mitternacht die neue Liste.
+    $st = tb_stand_jetzt(tb_stand(), $cfg);
     $summe = array(); $anzahl = array();
     foreach ((array) (isset($st['liste_heute']) ? $st['liste_heute'] : array()) as $e) {
         $h = (int) date('G', $e['ts']);
@@ -622,37 +630,34 @@ function tb_veroeffentlichen()
         $paare['stunde/' . $h . '/ct'] = round($s / max(1, $anzahl[$h]), 3);
     }
 
-    $signatur = tb_mqtt_signatur($paare);
-    $merker = $p['datadir'] . '/.mqtt_signatur';
-    $alt = is_file($merker) ? trim((string) @file_get_contents($merker)) : '';
-    $geaendert = ($alt !== $signatur);
-    /* Haelt der Broker noch Altwerte frueher zurueckbehaltener Themen
-     * (tb_mqtt_altlast()), geht dieser Lauf VOLL hinaus - die leere
-     * retain-Nutzlast steht dann unmittelbar vor dem gueltigen Wert, auch
-     * wenn sich an den Werten nichts geaendert hat. Bei unbekannter Lage
-     * nicht: sonst ginge ohne erreichbaren Broker jede Minute alles hinaus
-     * (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19, Faelle R8, R9). */
-    if (!$geaendert) {
-        $tb_pr = trim(tb_mqtt_wert_saeubern($topic), '/ ');
-        if ($tb_pr !== '' && strpos($tb_pr, ' ') === false && tb_mqtt_zustand()['udpport']) {
-            $tb_alt = tb_mqtt_altlast($tb_pr);
-            if ($tb_alt['lage'] === 'belegt') { $geaendert = true; }
-        }
+    /* Je THEMA nur Geaendertes, voller Satz alle TB_MQTT_VOLL_S (Bauliste M1,
+     * tb_mqtt_auswahl()). Haelt der Broker noch Altwerte frueher
+     * zurueckbehaltener Themen (tb_mqtt_altlast(), Lage 'belegt'), geht dieser
+     * Lauf VOLL hinaus - die leere retain-Nutzlast steht dann unmittelbar vor
+     * dem gueltigen Wert. Ebenso EINMAL bei unbekannter Lage, solange noch
+     * blind geleert werden soll (Bauliste M3); danach nicht mehr - sonst ginge
+     * ohne erreichbaren Broker jede Minute alles hinaus (in WSL gemessen,
+     * Pruefung-Spotpreis-Tibber-0.9.19, Faelle R8, R9). */
+    $tb_pr = trim(tb_mqtt_wert_saeubern($topic), '/ ');
+    $erzwingen = false;
+    if ($tb_pr !== '' && strpos($tb_pr, ' ') === false && tb_mqtt_zustand()['udpport']) {
+        $tb_alt = tb_mqtt_altlast($tb_pr);
+        $erzwingen = ($tb_alt['lage'] === 'belegt')
+                  || ($tb_alt['lage'] === 'unbekannt' && !empty($tb_alt['themen']));
     }
+    list($auswahl, $voll) = tb_mqtt_auswahl($paare, $tb_pr, $erzwingen);
 
     // Das Lebenszeichen IMMER, die Werte nur bei Aenderung.
     $senden = tb_mqtt_lebenszeichen();
-    if ($geaendert) {
-        foreach ($paare as $k => $v) { $senden[$k] = $v; }
-    }
+    foreach ($auswahl as $k => $v) { $senden[$k] = $v; }
     list($versucht, $fehler, $behalten) = tb_mqtt_senden($senden, $topic);
-    if ($geaendert && $fehler === 0) {
+    if ($versucht > 0 && $fehler === 0) {
         // Der Merker wird nur fortgeschrieben, wenn wirklich alles hinaus
         // ist. Sonst gilt ein halb gesendeter Stand als gesendet, und die
         // fehlenden Werte liegen bis zur naechsten Aenderung.
-        @file_put_contents($merker, $signatur);
+        tb_mqtt_gesendet_merken($auswahl, $tb_pr, $voll);
     }
-    return array($versucht, $fehler, $geaendert ? 'geaendert' : 'lebenszeichen',
+    return array($versucht, $fehler, $voll ? 'voll' : ($auswahl ? 'geaendert' : 'lebenszeichen'),
                  $behalten);
 }
 
@@ -959,6 +964,26 @@ function tb_selbsttest()
               . ' h (erwartet 11, 14 und 3)';
     if (!$ok13) { $fehler++; }
 
+    /* --- Werte zur LESEZEIT (Bauliste W1) ---
+     *
+     * Ein Stand, der um 03:01 Uhr abgerufen wurde, muss um 19:01 Uhr den Preis
+     * der Stunde 19 liefern (40 ct im Pruefstueck), nicht den von 3 Uhr
+     * (10 ct). Bis 0.9.24 gab der Endpunkt bis zum naechsten Abruf den Wert
+     * der Abrufstunde aus. Die Erwartung sind feste Zahlen aus dem Pruefstueck. */
+    $lz_st = array('ts' => $t0 + 3 * 3600 + 60, 'ok' => 1, 'cur' => 10.0,
+                   'liste_heute' => $liste, 'liste_morgen' => array());
+    $lz = tb_stand_jetzt($lz_st, $probe, $t0 + 19 * 3600 + 60);
+    $ok14 = ($lz['cur'] !== null) && (abs($lz['cur'] - 40.0) < 0.001)
+            && ($lz['next'] !== null) && (abs($lz['next'] - 40.0) < 0.001)
+            && ($lz['level'] === 2) && ($lz['rank'] === 4) && ($lz['rankd'] === 5);
+    $zeilen[] = ($ok14 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
+              . 'Werte zur Lesezeit: Abruf 03:01, gelesen 19:01 ergibt CUR '
+              . var_export($lz['cur'], true) . ', NEXT ' . var_export($lz['next'], true)
+              . ', LEVEL ' . var_export($lz['level'], true) . ', RANK '
+              . var_export($lz['rank'], true) . ' von ' . var_export($lz['rankd'], true)
+              . ' (erwartet 40, 40, 2, 4 von 5)';
+    if (!$ok14) { $fehler++; }
+
     // Die Loxone-Vorlage muss wohlgeformt sein.
     list($vname, $vinhalt) = tb_vorlage();
     $vorher = libxml_use_internal_errors(true);
@@ -1135,6 +1160,18 @@ function tb_takt_setzen($name)
     @file_put_contents($f, (string) time());
 }
 
+/* Nach einem Fehlschlag den Marker so setzen, dass der naechste Versuch nach
+ * TB_WIEDERHOLUNG_S faellig wird - hoechstens nach dem Takt (Bauliste W3).
+ * Bis 0.9.24 setzte tb_faellig() den Marker VOR dem Abruf auf jetzt, und der
+ * naechste Versuch kam erst nach dem vollen Takt (Codepruefer Nr. 2: 30 min,
+ * bei Takt 1440 ein Tag). */
+function tb_wiederholung_setzen($name, $minuten)
+{
+    $f = tb_paths()['datadir'] . '/.letzter_' . preg_replace('/[^a-z]/', '', $name);
+    $takt = max(1, (int) $minuten) * 60;
+    @file_put_contents($f, (string) (time() - $takt + min(TB_WIEDERHOLUNG_S, $takt)));
+}
+
 if ($tb_preise || ($tb_auto && tb_faellig('preise', (int) $tb_cfg['preistakt']))) {
     list($ok, $meldung) = tb_preise_holen();
     if ($ok) { tb_log('Preise geholt: ' . $meldung); }
@@ -1143,6 +1180,7 @@ if ($tb_preise || ($tb_auto && tb_faellig('preise', (int) $tb_cfg['preistakt']))
      * bremst haeufige Abrufe. Bei $tb_preise wird tb_faellig() wegen des
      * Kurzschlusses gar nicht gerufen, der Marker blieb also stehen. */
     if ($tb_preise && $ok) { tb_takt_setzen('preise'); }
+    if (!$ok && $tb_auto) { tb_wiederholung_setzen('preise', (int) $tb_cfg['preistakt']); }
 }
 if ($tb_verbrauch || ($tb_auto && tb_faellig('verbrauch', (int) $tb_cfg['verbrauchstakt']))) {
     list($ok, $meldung) = tb_verbrauch_holen();
@@ -1213,13 +1251,22 @@ $tb_alter_jetzt = tb_alter();
  * die Statuskachel der Oberflaeche einfaerbt. Zwei Stellen mit derselben
  * Zahl waeren zwei Stellen, die auseinanderlaufen koennen. */
 $tb_altersschranke = tb_altersschranke($tb_cfg);
+/* Ein misslungener Versuch meldet sich erst, wenn die Stoerung laenger als die
+ * Altersschranke dauert (Bauliste W3) - gemessen am letzten gelungenen Abruf,
+ * ohne einen solchen am ersten Fehlschlag ('fehler_seit'). Bis 0.9.24 ging
+ * schon beim ersten Fehlschlag eine rote Meldung hinaus (Codepruefer Nr. 2). */
+$tb_dauer = $tb_alter_jetzt >= 0 ? $tb_alter_jetzt
+          : (isset($tb_st_jetzt['fehler_seit']) ? time() - (int) $tb_st_jetzt['fehler_seit'] : 0);
 if (tb_token_lesen() === '') {
     tb_notify('token', 'fehler', 'Spotpreis Tibber: es ist kein Zugangstoken '
         . 'hinterlegt - es werden keine Preise geholt.');
 } elseif (empty($tb_st_jetzt['ok']) && isset($tb_st_jetzt['fehler'])
-          && $tb_st_jetzt['fehler'] !== '') {
+          && $tb_st_jetzt['fehler'] !== '' && $tb_dauer > $tb_altersschranke) {
     tb_notify('abruf', 'fehler', 'Spotpreis Tibber: der Preisabruf misslingt. '
         . $tb_st_jetzt['fehler']);
+} elseif (empty($tb_st_jetzt['ok']) && isset($tb_st_jetzt['fehler'])
+          && $tb_st_jetzt['fehler'] !== '') {
+    // Ein Fehlschlag innerhalb der Schranke: nichts melden, nichts entwarnen.
 } elseif ($tb_alter_jetzt >= 0 && $tb_alter_jetzt > $tb_altersschranke) {
     tb_notify('abruf', 'hinweis', 'Spotpreis Tibber: der letzte gelungene '
         . 'Preisabruf ist ' . (int) round($tb_alter_jetzt / 60) . ' Minuten her '
@@ -1238,7 +1285,7 @@ list($tb_v, $tb_f, $tb_lage, $tb_behalten) = tb_veroeffentlichen();
 if ($tb_f > 0) {
     tb_log_gebremst('mqtt_fehler', 'MQTT: ' . $tb_v . ' Themen versucht, '
         . $tb_f . ' gescheitert.');
-} elseif ($tb_lage === 'geaendert') {
+} elseif ($tb_lage === 'geaendert' || $tb_lage === 'voll') {
     tb_log_gebremst('mqtt_ok', 'MQTT: ' . $tb_v . ' Themen veroeffentlicht, davon '
         . (int) $tb_behalten . ' zurueckbehalten.', 3600);
 }

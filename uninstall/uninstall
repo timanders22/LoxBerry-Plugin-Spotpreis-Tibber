@@ -85,24 +85,44 @@ tb_ist_dienst() {
     [ "$ziel" = "$TB_SKRIPT" ] && return 0
     [ "$(readlink -f "$ziel" 2>/dev/null)" = "$(readlink -f "$TB_SKRIPT" 2>/dev/null)" ]
 }
-if [ -f "$PID" ]; then
-    # Ueber dienst.sh, nicht ueber die nackte Prozessnummer - siehe die
-    # ausfuehrliche Begruendung in preupgrade.sh. Beim Deinstallieren faellt
-    # ein falsch getroffener Prozess niemandem auf, weil ohnehin gerade
-    # etwas verschwindet.
-    if [ -x "$PBIN/dienst.sh" ]; then
-        "$PBIN/dienst.sh" stop >/dev/null 2>&1 || true
-    fi
-    TB_P=$(cat "$PID" 2>/dev/null)
-    if [ -f "$PID" ] && tb_ist_dienst "$TB_P"; then
-        kill "$TB_P" 2>/dev/null || true
-        sleep 2
-        if tb_ist_dienst "$TB_P"; then
-            kill -9 "$TB_P" 2>/dev/null || true
-        fi
-    fi
-    rm -f "$PID"
-    echo "<OK> Pulse-Dienst angehalten."
+# ERST FRAGEN, DANN ANHALTEN, DANN NACHZAEHLEN - und nur das Gemessene
+# melden (Bauliste I4, I5). Bis 0.9.24 hing alles an der PID-Datei: mit
+# einer veralteten meldete dieses Skript "<OK> Pulse-Dienst angehalten" fuer
+# einen Dienst, den es nicht gab (Installerpruefer, Fall G2), ohne sie
+# ueberlebte ein laufender Dienst die Deinstallation (Fall G3). Gesucht wird
+# jetzt zusaetzlich argumentweise ueber alle Prozesse (tb_ist_dienst()).
+tb_dienste_suchen() {
+    local d
+    for d in /proc/[0-9]*; do
+        tb_ist_dienst "${d#/proc/}" && echo "${d#/proc/}"
+    done
+    return 0
+}
+LIEF_WIRKLICH=0
+if [ -x "$PBIN/dienst.sh" ]; then
+    "$PBIN/dienst.sh" status >/dev/null 2>&1 && LIEF_WIRKLICH=1
+    "$PBIN/dienst.sh" stop >/dev/null 2>&1 || true
+fi
+TB_GEFUNDEN=$(tb_dienste_suchen)
+TB_P=$(cat "$PID" 2>/dev/null)
+if [ -f "$PID" ] && tb_ist_dienst "$TB_P"; then
+    TB_GEFUNDEN="$TB_GEFUNDEN $TB_P"
+fi
+if [ -n "$(echo $TB_GEFUNDEN)" ]; then
+    LIEF_WIRKLICH=1
+    for TB_P in $TB_GEFUNDEN; do kill "$TB_P" 2>/dev/null || true; done
+    sleep 2
+    for TB_P in $(tb_dienste_suchen); do kill -9 "$TB_P" 2>/dev/null || true; done
+    sleep 1
+fi
+rm -f "$PID"
+TB_REST=$(tb_dienste_suchen | wc -w)
+if [ "$TB_REST" -gt 0 ]; then
+    echo "<WARNING> Es laufen noch $TB_REST Pulse-Dienst(e) - sie liessen sich nicht anhalten."
+elif [ "$LIEF_WIRKLICH" = 1 ]; then
+    echo "<OK> Pulse-Dienst angehalten (nachgezaehlt: keiner laeuft mehr)."
+else
+    echo "<INFO> Es lief kein Pulse-Dienst."
 fi
 rm -f "$BASE/data/plugins/$PFOLDER/soll_laufen" 2>/dev/null
 # Der Rettungsmerker liegt NEBEN dem Datenordner und ueberlebt dessen
@@ -112,6 +132,20 @@ rm -f "$BASE/data/plugins/$PFOLDER.lief_vorher" 2>/dev/null
 # Installation abgebrochen ist; eine neu installierte Fassung faende sie vor
 # und startete bis zu einer Stunde lang nicht.
 rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
+# Die Update-Sicherung (Preisverlauf, Hysterese, Merker) und was eine
+# Neuinstallation beiseitegelegt hat (.alt) - Entscheidung 1: "uninstall
+# raeumt die .alt mit ab" (Bauliste I7).
+for TB_D in "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" \
+            "$BASE/data/plugins/$PFOLDER.upgrade_sicherung.alt" \
+            "$BASE/data/plugins/$PFOLDER.lief_vorher.alt"; do
+    case "$TB_D" in
+        */data/plugins/?*.upgrade_sicherung|*/data/plugins/?*.upgrade_sicherung.alt|*/data/plugins/?*.lief_vorher.alt)
+            if [ -e "$TB_D" ] || [ -L "$TB_D" ]; then
+                rm -rf "${TB_D:?}" 2>/dev/null
+                [ -e "$TB_D" ] || echo "<OK> $(basename "$TB_D") entfernt."
+            fi ;;
+    esac
+done
 
 # Die zurueckbehaltenen MQTT-Themen der Linie leeren - NACH dem Anhalten des
 # Dienstes und VOR dem Loeschen der Konfiguration (dort steht das Praefix).
@@ -138,6 +172,8 @@ fi
 for DATEI in \
     "$BASE/config/plugins/$PFOLDER.backup.token.json" \
     "$BASE/config/plugins/$PFOLDER.backup.json" \
+    "$BASE/config/plugins/$PFOLDER.backup.token.json.alt" \
+    "$BASE/config/plugins/$PFOLDER.backup.json.alt" \
     "$BASE/config/plugins/$PFOLDER/token.json" \
     "$BASE/config/plugins/$PFOLDER/tibber.json"
 do
@@ -151,7 +187,8 @@ echo "<INFO> Das Zugangstoken bleibt in Ihrem Tibber-Konto gueltig. Wer es"
 echo "<INFO> endgueltig ausser Kraft setzen will, loescht es unter"
 echo "<INFO> developer.tibber.com."
 echo "<INFO> Zurueckbehaltene MQTT-Themen unter einem FRUEHER eingestellten Praefix"
-echo "<INFO> raeumt dieses Skript nicht ab. Nachsehen:"
+echo "<INFO> raeumt dieses Skript nur ab, wenn das Praefix vorgemerkt war (Wechsel in"
+echo "<INFO> der Oberflaeche ab dieser Fassung). Nachsehen:"
 echo "<INFO> mosquitto_sub -t '<praefix>/#' --retained-only"
 echo "<OK> Deinstallation abgeschlossen."
 exit 0
