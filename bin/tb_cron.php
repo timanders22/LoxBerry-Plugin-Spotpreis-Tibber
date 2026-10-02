@@ -788,6 +788,14 @@ function tb_selbsttest()
               . ' von ' . $rgd . ' (erwartet 1)';
     if (!$ok4) { $fehler++; }
 
+    /* Tibber-k2: ohne jeden Preis ist der Rang -1 von 0 (kein Rang), nicht null -
+     * bei null gab der Endpunkt einen Strich aus, und Loxone behielt den alten Rang. */
+    list($rg0, $rgd0) = tb_rang(array(), $t0 + 3 * 3600 + 60);
+    $ok4b = ($rg0 === -1) && ($rgd0 === 0);
+    $zeilen[] = ($ok4b ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ') . 'Rang ohne Preise: '
+              . var_export($rg0, true) . ' von ' . var_export($rgd0, true) . ' (erwartet -1 von 0: kein Rang)';
+    if (!$ok4b) { $fehler++; }
+
     // Niveau gegen die eigenen Schwellen.
     $ok5 = (tb_niveau(10.0, $probe) === 0) && (tb_niveau(30.0, $probe) === 1)
            && (tb_niveau(40.0, $probe) === 2);

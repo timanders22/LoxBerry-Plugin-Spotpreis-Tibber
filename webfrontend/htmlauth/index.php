@@ -964,7 +964,9 @@ if ($tb_rahmen) {
     // Planer-30 (Entscheidung Nr. 30): ohne 12 kuenftige Preisstunden kein Rang.
 ?>
     <b>&ndash;</b>
-    <span class="sm-hilfe"><?= tb_e(sprintf(tb_t('ALLG.RANG_HORIZONT'), PLAN_RANG_MIN_STUNDEN)) ?></span>
+    <span class="sm-hilfe"><?= empty($tb_werte['RANKD'])
+        ? tb_e(tb_t('ALLG.RANG_KEINE_PREISE'))
+        : tb_e(sprintf(tb_t('ALLG.RANG_HORIZONT'), PLAN_RANG_MIN_STUNDEN)) ?></span>
 <?php } else { ?>
     <b><?= $tb_werte['RANK'] === null ? '&ndash;' : (int) $tb_werte['RANK'] ?></b>
     <span class="sm-hilfe"><?= sprintf(tb_e(tb_t('ALLG.VON_N')), (int) $tb_werte['RANKD']) ?></span>
