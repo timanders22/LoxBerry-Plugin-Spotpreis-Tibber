@@ -1637,6 +1637,14 @@ function tb_rang(array $liste, $jetzt = null)
     if (!$k) { return array(null, 0); }
     $aktuell = tb_preis_zur_zeit($liste, $jetzt);
     if ($aktuell === null) { return array(null, count($k)); }
+    /* Planer-30 (Entscheidung Nr. 30, hier sinngemaess): ein Rang braucht einen
+     * gedeckten Horizont - mindestens PLAN_RANG_MIN_STUNDEN kuenftige
+     * Preisstunden, die laufende mitgezaehlt. Abends ohne die Preise fuer morgen
+     * war sonst die teure Abendstunde "Rang 1 von 4". Dann -1 ("kein Rang"),
+     * dieselbe Schreibweise wie Octopus und aWATTar - kein Strich, denn bei einem
+     * Strich behaelt Loxone den alten Rang. RANKD nennt weiter, wie viele Eintraege
+     * bekannt sind. */
+    if (count($k) * $schritt < PLAN_RANG_MIN_STUNDEN * 3600) { return array(-1, count($k)); }
     sort($k);
     $rang = 1;
     foreach ($k as $ct) {
@@ -1909,7 +1917,7 @@ function tb_status_felder()
         'NEXT'           => $f('ct/kWh', 'NEXT',           0,      200),
         'LEVEL'          => $f('',       'LEVEL',          0,      2),
         'TLEVEL'         => $f('',       'TLEVEL',         -1,     4),
-        'RANK'           => $f('',       'RANK',           0,      48),
+        'RANK'           => $f('',       'RANK',           -1,     48),
         'RANKD'          => $f('',       'RANKD',          0,      48),
         'NEG'            => $f('',       'NEG',            0,      1,     0),
         'AVG_HEUTE'      => $f('ct/kWh', 'AVG_HEUTE',      0,      200),
@@ -2483,7 +2491,8 @@ function tb_fahrplan($st = null)
     if (!is_array($st)) { $st = tb_stand_jetzt(tb_stand(), $cfg); }
     $leer = array('regeln' => array(), 'plan' => array(), 'belegung' => array(),
                   'preise' => array(), 'slotlen' => 3600,
-                  'pv_summe' => null, 'soc' => null, 'planlast' => 0.0);
+                  'pv_summe' => null, 'soc' => null, 'planlast' => 0.0,
+                  'preisstunden' => 0.0);
 
     // Die Preisreihe aus heute und morgen, in ct/kWh - so, wie der Planer
     // sie erwartet, und so, wie tb_stand() sie ablegt.
@@ -2565,6 +2574,9 @@ function tb_fahrplan($st = null)
         'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
         'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
         'planlast' => $planlast,
+        /* Planer-30: wie viele kuenftige Preisstunden der Planer gesehen hat -
+         * dieselbe Zahl, mit der er ueber den Grund 'horizont' entscheidet. */
+        'preisstunden' => plan_preisstunden($liste, $jetzt, $slotlen),
     );
 }
 
