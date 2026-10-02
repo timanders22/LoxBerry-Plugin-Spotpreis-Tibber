@@ -1634,7 +1634,10 @@ function tb_rang(array $liste, $jetzt = null)
     foreach ($liste as $e) {
         if ($e['ts'] + $schritt > $jetzt && $e['ts'] < $jetzt + 24 * 3600) { $k[] = $e['ct']; }
     }
-    if (!$k) { return array(null, 0); }
+    /* Tibber-k2: ohne jeden Preis ist das kein Rang - -1 wie bei weniger als
+     * PLAN_RANG_MIN_STUNDEN Preisstunden (Nr. 30). Bis 0.9.25 stand hier null; der
+     * Endpunkt gab einen Strich aus, und Loxone behielt den alten Rang. */
+    if (!$k) { return array(-1, 0); }
     $aktuell = tb_preis_zur_zeit($liste, $jetzt);
     if ($aktuell === null) { return array(null, count($k)); }
     /* Planer-30 (Entscheidung Nr. 30, hier sinngemaess): ein Rang braucht einen
@@ -2124,6 +2127,11 @@ function tb_werte()
                    'AVG_30T' => 'avg_30t', 'RANK_30T' => 'rank_30t') as $gross => $klein) {
         if (isset($st[$klein])) { $w[$gross] = $st[$klein]; }
     }
+    /* Tibber-k2: ein unbekannter Rang geht als -1 hinaus, nicht als Strich. Ein
+     * Strich laesst Loxone den alten Rang behalten; -1 ist dieselbe Aussage wie bei
+     * weniger als 12 Preisstunden (Nr. 30): "kein Rang". Das trifft den Fall ohne
+     * jeden Stand (noch nie abgerufen) und einen Stand, der keinen Rang traegt. */
+    if ($w['RANK'] === null) { $w['RANK'] = -1; }
 
     /* Der Laufzaehler wird zur LESEZEIT geholt, nicht beim Schreiben
      * eingefroren - genauso wie ALTER. Ein eingefrorenes Lebenszeichen kann

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.25
+Version 0.9.26
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,16 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.26
+
+Rang ohne Preise ist −1 (Verbesserungsliste Tibber-k2, Entscheidung 30 sinngemäß).
+Gemessen mit Proben unter PHP 7.4 und 8.5 und am Selbsttest (19 Fälle); nicht am Gerät.
+
+* **Rang ohne Preise:** `RANK` ist jetzt auch dann −1 („kein Rang“), wenn noch gar kein Preis vorliegt, etwa nach der Installation vor dem ersten Abruf. Bisher kam dann ein Strich, und Loxone behielt den alten Rang; eine Regel „laden bei Rang ≤ N“ lief mit dem Wert von gestern weiter. −1 ist dieselbe Aussage wie bei weniger als 12 künftigen Preisstunden (seit 0.9.25). Die Kachel „Rang“ zeigt „kein Rang: keine Preise bekannt“.
+* **Selbsttest:** Der Rechenkern prüft jetzt 19 Fälle; neu ist „Rang ohne Preise: −1 von 0“.
+
+**In Loxone:** nichts zu tun; eine Regel „Rang ≤ N“ mit dem Baustein „Rang bekannt“ aus der Baustein-Liste schaltet bei −1 nicht.
 
 ## Neu in 0.9.25
 
