@@ -969,20 +969,46 @@ function tb_selbsttest()
      * Ein Stand, der um 03:01 Uhr abgerufen wurde, muss um 19:01 Uhr den Preis
      * der Stunde 19 liefern (40 ct im Pruefstueck), nicht den von 3 Uhr
      * (10 ct). Bis 0.9.24 gab der Endpunkt bis zum naechsten Abruf den Wert
-     * der Abrufstunde aus. Die Erwartung sind feste Zahlen aus dem Pruefstueck. */
+     * der Abrufstunde aus. Die Erwartung sind feste Zahlen aus dem Pruefstueck.
+     *
+     * RANK: um 19:01 sind ohne Morgenpreise nur noch 5 Preisstunden bekannt -
+     * nach Entscheidung Nr. 30 (Planer-30) ist das kein Rang, also -1; RANKD
+     * zaehlt weiter die 5 bekannten Eintraege. Bis 0.9.24 stand hier 4 von 5. */
     $lz_st = array('ts' => $t0 + 3 * 3600 + 60, 'ok' => 1, 'cur' => 10.0,
                    'liste_heute' => $liste, 'liste_morgen' => array());
     $lz = tb_stand_jetzt($lz_st, $probe, $t0 + 19 * 3600 + 60);
     $ok14 = ($lz['cur'] !== null) && (abs($lz['cur'] - 40.0) < 0.001)
             && ($lz['next'] !== null) && (abs($lz['next'] - 40.0) < 0.001)
-            && ($lz['level'] === 2) && ($lz['rank'] === 4) && ($lz['rankd'] === 5);
+            && ($lz['level'] === 2) && ($lz['rank'] === -1) && ($lz['rankd'] === 5);
     $zeilen[] = ($ok14 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
               . 'Werte zur Lesezeit: Abruf 03:01, gelesen 19:01 ergibt CUR '
               . var_export($lz['cur'], true) . ', NEXT ' . var_export($lz['next'], true)
               . ', LEVEL ' . var_export($lz['level'], true) . ', RANK '
               . var_export($lz['rank'], true) . ' von ' . var_export($lz['rankd'], true)
-              . ' (erwartet 40, 40, 2, 4 von 5)';
+              . ' (erwartet 40, 40, 2, -1 von 5: weniger als ' . PLAN_RANG_MIN_STUNDEN
+              . ' kuenftige Preisstunden, kein Rang)';
     if (!$ok14) { $fehler++; }
+
+    /* Gegenfall zu Nr. 30: dieselbe Lesezeit MIT Morgenpreisen (derselbe Tagesverlauf
+     * noch einmal, unmittelbar anschliessend). Dann sind genug Preisstunden bekannt,
+     * und der Rang wird wie bisher gebildet. In die Rangfolge gehen 25 Eintraege ein
+     * (heute 19 Uhr - die laufende - bis morgen 19 Uhr, das um 19:00 und damit vor
+     * 19:01 + 24 h beginnt). 19:01 kostet 40 ct, guenstiger sind heute 21-23 Uhr (3)
+     * und morgen 0-17 Uhr (18) - also Rang 22 von 25. */
+    $roh_m = array();
+    foreach ($roh as $i => $e) {
+        $e['startsAt'] = date('c', $t0 + (24 + $i) * 3600);
+        $roh_m[] = $e;
+    }
+    $lz_st2 = $lz_st;
+    $lz_st2['liste_morgen'] = tb_preisliste($roh_m, $probe);
+    $lz2 = tb_stand_jetzt($lz_st2, $probe, $t0 + 19 * 3600 + 60);
+    $ok15 = ($lz2['rank'] === 22) && ($lz2['rankd'] === 25);
+    $zeilen[] = ($ok15 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
+              . 'Rang mit Morgenpreisen: gelesen 19:01 ergibt RANK '
+              . var_export($lz2['rank'], true) . ' von ' . var_export($lz2['rankd'], true)
+              . ' (erwartet 22 von 25: genug Preisstunden, Rang wie bisher)';
+    if (!$ok15) { $fehler++; }
 
     // Die Loxone-Vorlage muss wohlgeformt sein.
     list($vname, $vinhalt) = tb_vorlage();

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.24
+Version 0.9.25
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,16 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.25
+
+Rang und Fahrplaner nur mit 12 Preisstunden, Baustein-Liste nach A4 (Planer-30, Entscheidung 30).
+Gemessen am Fahrplaner-Selbsttest (195 Fälle) und mit Proben abends/morgens unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Rang nur mit 12 künftigen Preisstunden (Entscheidung 30):** `RANK` ist −1, solange weniger als 12 künftige Preisstunden bekannt sind, also abends, bevor die Preise für morgen da sind. Bisher galt dann die teure Abendstunde als „Rang 1 von 4“. Es kommt bewusst −1 und kein Strich, denn bei einem Strich behält Loxone den alten Rang. Die Importvorlage erlaubt deshalb jetzt −1 bis 48. Die Kachel „Rang“ nennt den Grund. `RANKD` zählt weiter die bekannten Einträge.
+* **Schaltregeln:** „günstigste Stunden“, „Fenster“ und „günstigste Viertelstunden“ stehen dann auf 0 (Fahrplaner 1.1.8). Die Vorschau zeigt „aus: nur 4 künftige Preisstunden bekannt, nötig sind 12“.
+* **Baustein-Liste (Schritt 6), bitte in Loxone nachziehen:** Neu sind #18 „Rang bekannt“ (RANK ≥ 1) und #19 „Rang gilt“ (UND), weil −1 auch „kleiner gleich“ erfüllt. Die Freigabe läuft über zwei UND-Bausteine (#22, #23), weil ein UND höchstens zwei Eingänge hat. Ab #18 verschieben sich die Nummern.
+* **PV-Prognose:** Eine Antwort mit unendlich großen oder negativen Werten wird verworfen und in der Fahrplan-Vorschau gemeldet. Es gilt dann der zuletzt gemessene Wert.
 
 ## Neu in 0.9.24
 

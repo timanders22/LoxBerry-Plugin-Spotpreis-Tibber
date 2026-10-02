@@ -960,8 +960,15 @@ if ($tb_rahmen) {
     ?></span>
   </div>
   <div class="sm-kachel"><?= tb_e(tb_t('ALLG.RANG')) ?>
+<?php if ($tb_werte['RANK'] !== null && (int) $tb_werte['RANK'] === -1) {
+    // Planer-30 (Entscheidung Nr. 30): ohne 12 kuenftige Preisstunden kein Rang.
+?>
+    <b>&ndash;</b>
+    <span class="sm-hilfe"><?= tb_e(sprintf(tb_t('ALLG.RANG_HORIZONT'), PLAN_RANG_MIN_STUNDEN)) ?></span>
+<?php } else { ?>
     <b><?= $tb_werte['RANK'] === null ? '&ndash;' : (int) $tb_werte['RANK'] ?></b>
     <span class="sm-hilfe"><?= sprintf(tb_e(tb_t('ALLG.VON_N')), (int) $tb_werte['RANKD']) ?></span>
+<?php } ?>
   </div>
   <div class="sm-kachel"><?= sprintf(tb_e(tb_t('ALLG.FENSTER')), (int) $tb_cfg['fensterstunden']) ?>
     <b><?= $tb_werte['FENSTER_H'] === null ? '&ndash;' : sprintf('%02d', (int) $tb_werte['FENSTER_H']) . ':00' ?></b>
@@ -1270,6 +1277,9 @@ if (($tb_fpumw['pv_meldung'] === 'NICHT_ERREICHBAR')
     || ($tb_fpumw['soc_meldung'] === 'NICHT_ERREICHBAR')) { ?>
 <div class="sm-warnung"><?= tb_t('FP.NICHT_ERREICHBAR') ?></div>
 <?php } ?>
+<?php if ($tb_fpumw['pv_meldung'] === 'WERTE_UNGUELTIG') { ?>
+<div class="sm-warnung"><?= tb_t('FP.PV_WERTE_UNGUELTIG') ?></div>
+<?php } ?>
 <?php if ($tb_fpumw['soc_meldung'] === 'ZU_ALT') { ?>
 <div class="sm-warnung"><?= sprintf(tb_t('FP.SOC_ZU_ALT'), (int) round(TB_SOC_HOECHSTALTER / 60)) ?></div>
 <?php } ?>
@@ -1481,6 +1491,10 @@ if (!$tb_fpfp['preise']) { ?>
         $tb_fpzust = tb_t('FP.ZUSTAND_AUS');
     } elseif (!empty($tb_fpr['aktiv'])) {
         $tb_fpzust = tb_t('FP.ZUSTAND_LAEUFT');
+    } elseif (isset($tb_fpr['grund']) && $tb_fpr['grund'] === 'horizont') {
+        // Planer-30 (Entscheidung Nr. 30): ohne 12 kuenftige Preisstunden kein Rang.
+        $tb_fpzust = sprintf(tb_t('FP.ZUSTAND_HORIZONT'),
+            str_replace('.', ',', (string) (float) $tb_fpfp['preisstunden']), PLAN_RANG_MIN_STUNDEN);
     } elseif ($tb_fpr['gesperrt'] === 'pv') {
         $tb_fpzust = tb_t('FP.SPERRE_PV');
     } elseif ($tb_fpr['gesperrt'] === 'soc_min') {
@@ -1731,19 +1745,27 @@ function tb_bausteine()
         array(15, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I1 &larr; #1, I2 &larr; #14'),
         array(16, 'BAUSTEIN.T_VEZ',      'BAUSTEIN.N16', 'BAUSTEIN.P16', '&mdash;'),
         array(17, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N17', 'BAUSTEIN.P17', 'I1 &larr; #3, I2 &larr; #16'),
-        array(18, 'BAUSTEIN.T_ODER',     'BAUSTEIN.N18', '',             'I1 &larr; #15, I2 &larr; #17'),
-        array(19, 'BAUSTEIN.T_TASTER',   'BAUSTEIN.N19', 'BAUSTEIN.P19', '&mdash;'),
-        array(20, 'BAUSTEIN.T_UND',      'BAUSTEIN.N20', '',             'I1 &larr; #18, I2 &larr; #19, I3 &larr; #10 (negiert)'),
-        array(21, 'BAUSTEIN.T_EVZ',      'BAUSTEIN.N21', 'BAUSTEIN.P21', 'I &larr; #20'),
-        array(22, 'BAUSTEIN.T_MERKER',   'BAUSTEIN.N22', 'BAUSTEIN.P22', 'I &larr; #21'),
-        array(23, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N23', 'BAUSTEIN.P23', 'I1 &larr; #4, I2 &larr; ' . tb_t('BAUSTEIN.KONST0')),
-        array(24, 'BAUSTEIN.T_IMPULS',   'BAUSTEIN.N24', 'BAUSTEIN.P24', 'I &larr; #23'),
-        array(25, 'BAUSTEIN.T_BENACHR',  'BAUSTEIN.N25', 'BAUSTEIN.P25', 'I &larr; #24'),
-        array(26, 'BAUSTEIN.T_SWS',      'BAUSTEIN.N26', 'BAUSTEIN.P26', 'I &larr; #2'),
-        array(27, 'BAUSTEIN.T_STATUS',   'BAUSTEIN.N27', 'BAUSTEIN.P27', 'I1 &larr; #1, I2 &larr; #2'),
-        array(28, 'BAUSTEIN.T_VE',       'BAUSTEIN.N28', tb_muster_zelle('BAUSTEIN.P28', 'PULSE'), '&mdash;'),
-        array(29, 'BAUSTEIN.T_FORMEL',   'BAUSTEIN.N29', 'BAUSTEIN.P29', 'I1 &larr; #28, I2 &larr; #1'),
-        array(30, 'BAUSTEIN.T_STAT',     'BAUSTEIN.N30', 'BAUSTEIN.P30', 'I &larr; #29'),
+        /* Planer-30: RANK ist -1, solange weniger als 12 kuenftige Preisstunden
+         * bekannt sind - und -1 erfuellt "kleiner gleich" in #17 ebenfalls.
+         * #18 laesst nur einen bekannten Rang durch, #19 verknuepft beides. */
+        array(18, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N17B', 'BAUSTEIN.P17B', 'I1 &larr; #3, I2 &larr; ' . tb_t('BAUSTEIN.KONST1')),
+        array(19, 'BAUSTEIN.T_UND',      'BAUSTEIN.N17C', '',            'I1 &larr; #17, I2 &larr; #18'),
+        array(20, 'BAUSTEIN.T_ODER',     'BAUSTEIN.N18', '',             'I1 &larr; #15, I2 &larr; #19'),
+        array(21, 'BAUSTEIN.T_TASTER',   'BAUSTEIN.N19', 'BAUSTEIN.P19', '&mdash;'),
+        /* Regel A4: ein UND hat hoechstens zwei Eingaenge - die Ausfallerkennung
+         * (negiert) kommt in einen zweiten UND-Baustein. */
+        array(22, 'BAUSTEIN.T_UND',      'BAUSTEIN.N20A', '',            'I1 &larr; #20, I2 &larr; #21'),
+        array(23, 'BAUSTEIN.T_UND',      'BAUSTEIN.N20', '',             'I1 &larr; #22, I2 &larr; #10 (' . tb_t('BAUSTEIN.NEGIERT') . ')'),
+        array(24, 'BAUSTEIN.T_EVZ',      'BAUSTEIN.N21', 'BAUSTEIN.P21', 'I &larr; #23'),
+        array(25, 'BAUSTEIN.T_MERKER',   'BAUSTEIN.N22', 'BAUSTEIN.P22', 'I &larr; #24'),
+        array(26, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N23', 'BAUSTEIN.P23', 'I1 &larr; #4, I2 &larr; ' . tb_t('BAUSTEIN.KONST0')),
+        array(27, 'BAUSTEIN.T_IMPULS',   'BAUSTEIN.N24', 'BAUSTEIN.P24', 'I &larr; #26'),
+        array(28, 'BAUSTEIN.T_BENACHR',  'BAUSTEIN.N25', 'BAUSTEIN.P25', 'I &larr; #27'),
+        array(29, 'BAUSTEIN.T_SWS',      'BAUSTEIN.N26', 'BAUSTEIN.P26', 'I &larr; #2'),
+        array(30, 'BAUSTEIN.T_STATUS',   'BAUSTEIN.N27', 'BAUSTEIN.P27', 'I1 &larr; #1, I2 &larr; #2'),
+        array(31, 'BAUSTEIN.T_VE',       'BAUSTEIN.N28', tb_muster_zelle('BAUSTEIN.P28', 'PULSE'), '&mdash;'),
+        array(32, 'BAUSTEIN.T_FORMEL',   'BAUSTEIN.N29', 'BAUSTEIN.P29', 'I1 &larr; #31, I2 &larr; #1'),
+        array(33, 'BAUSTEIN.T_STAT',     'BAUSTEIN.N30', 'BAUSTEIN.P30', 'I &larr; #32'),
     );
 }
 ?>
