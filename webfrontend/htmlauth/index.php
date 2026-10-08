@@ -380,10 +380,51 @@ if ($tb_post && isset($_POST['speichern'])) {
     $tb_neucfg['pulse_ein']     = isset($_POST['pulse_ein']) ? 1 : 0;
     $tb_neucfg['monatsbericht'] = isset($_POST['monatsbericht']) ? 1 : 0;
 
+    /* Nr. 36 b (Stufe 2, seit 0.9.28): die Sprachausgabe. Der Baustein der
+     * gemeinsamen Sprachausgabe sammelt alle Beanstandungen; eine einzige
+     * verhindert das Speichern des ganzen Formulars (Nr. 16). Kein Sprechtoken
+     * steht in einer Meldung; ein leeres Tokenfeld heisst "behalten", der Haken
+     * loescht, beides zugleich ist ein Widerspruch. */
+    $tb_tmangel = array();
+    $tb_tbean = array();
+    $tb_neucfg['tts'] = ansage_formular_lesen($_POST, tb_tts($tb_cfg), $tb_tmangel, $tb_tbean,
+                                              tb_ansage_opt(), tb_ansage_k());
+    foreach ($tb_tmangel as $tb_tm) { $tb_fehler[] = tb_e($tb_tm['text']); }
+    foreach ($tb_tbean as $tb_tb) { $tb_falsch[] = $tb_tb; }
+    foreach (tb_ansage_anlaesse() as $tb_as) { $tb_neucfg[$tb_as] = isset($_POST[$tb_as]) ? 1 : 0; }
+    /* Seit 0.9.28: die Ansagezeit (hh:mm oder leer); eine Liste statt eines Textes ist eine
+     * Beanstandung, kein leeres Feld. Danach die Kreuzregel aus tb_config_kreuzpruefen(). */
+    $tb_azfalsch = 0;
+    foreach (array('ansage_von', 'ansage_bis') as $tb_as) {
+        $tb_az = !isset($_POST[$tb_as]) ? '' : (is_string($_POST[$tb_as]) ? trim((string) $_POST[$tb_as]) : null);
+        if ($tb_az === null || tb_wert_pruefen($tb_as, $tb_az) !== '') {
+            $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_UHRZEIT'), tb_e(tb_t('EINST.L_' . strtoupper($tb_as))));
+            $tb_falsch[] = $tb_as;
+            $tb_azfalsch++;
+        } else {
+            $tb_neucfg[$tb_as] = $tb_az;
+        }
+    }
+    if ($tb_azfalsch === 0) {
+        foreach (tb_config_kreuzpruefen($tb_neucfg) as $tb_km) {
+            if (!array_intersect($tb_km['felder'], array('ansage_von', 'ansage_bis'))) { continue; }
+            $tb_fehler[] = $tb_km['text'];
+            foreach ($tb_km['felder'] as $tb_kf) { $tb_falsch[] = $tb_kf; }
+        }
+    }
+
     if ($tb_fehler) {
         $tb_fehler[] = tb_t('EINST.NICHTS_GESPEICHERT');
-        $tb_eingaben = tb_eingaben_sammeln('einst', array_merge(array('home_id'), $tb_einst_felder),
-            array('verbrauch_ein', 'pulse_ein', 'monatsbericht'), $tb_falsch);
+        /* Nr. 36 b: die Felder der Sprachausgabe - nie die Sprechtoken (ansage_x2_felder()). */
+        $tb_ax2 = array();
+        $tb_ahk = array();
+        foreach (ansage_x2_felder(tb_ansage_opt()) as $tb_an) {
+            if (substr($tb_an, -9) === '_loeschen') { $tb_ahk[] = $tb_an; } else { $tb_ax2[] = $tb_an; }
+        }
+        $tb_eingaben = tb_eingaben_sammeln('einst', array_merge(array('home_id'), $tb_einst_felder, $tb_ax2,
+                                                                array('ansage_von', 'ansage_bis')),
+            array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht'),
+                        array_values(tb_ansage_anlaesse()), $tb_ahk), $tb_falsch);
         tb_log('Einstellungen nicht gespeichert: ' . count($tb_falsch) . ' Feld(er) beanstandet.');
     } else {
         $tb_tok_ok = true;
@@ -659,6 +700,24 @@ if ($tb_post && isset($_POST['test'])) {
         $tb_hinweise[] = tb_t('TEST.M_KONTO_OHNE_PULSE') . '<br>' . nl2br(tb_e($tb_text));
     } else {
         $tb_fehler[] = tb_e($tb_text);
+    }
+    $tb_tab = 'tab-test';
+}
+/* ---------------- Testansage (Nr. 36 b, seit 0.9.28) ----------------
+ * POST mit Einmalmeldung und 303 (PRG): Neuladen spricht nicht noch einmal. Ins
+ * Protokoll nur die Kurzform ohne Text und Token. */
+if ($tb_post && isset($_POST['ansage_test'])) {
+    $tb_ak = tb_ansage_k();
+    $tb_ar = ansage_testansage(tb_tts(), $tb_ak);
+    tb_log('Testansage: ' . ansage_kurz($tb_ar));
+    if ($tb_ar['stand'] === 1) {
+        $tb_meldungen[] = tb_t('TEST.M_ANSAGE_TEST_OK');
+    } elseif ($tb_ar['stand'] === -1) {
+        $tb_hinweise[] = sprintf(tb_t('TEST.M_ANSAGE_TEST_NICHTS'),
+                                 tb_e(ansage_kennung_text($tb_ar['kennung'], $tb_ak)));
+    } else {
+        $tb_fehler[] = sprintf(tb_t('TEST.M_ANSAGE_TEST_FEHL'),
+                               tb_e(ansage_kennung_text($tb_ar['kennung'], $tb_ak)));
     }
     $tb_tab = 'tab-test';
 }
@@ -1143,6 +1202,33 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 </div>
 <?php } ?>
 
+<h2><?= tb_e(tb_t('EINST.H_ANSAGE')) ?></h2>
+<div class="sm-hinweis"><?= tb_t('EINST.ANSAGE_TEXT') ?></div>
+<?= ansage_formular_html(tb_tts($tb_cfg), array(
+    'w' => function ($n, $g) { return tb_fw('einst', $n, $g); },
+    'm' => function ($n) { return tb_fm($n); },
+    'c' => function ($n, $g) { return tb_fh('einst', $n, $g); },
+    'modi' => tb_ansage_modi()), tb_ansage_k()) ?>
+<?php foreach (tb_ansage_anlaesse() as $tb_an => $tb_as) { ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="<?= tb_e($tb_as) ?>" value="1" <?= tb_fh('einst', $tb_as, $tb_cfg[$tb_as]) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('EINST.L_' . strtoupper($tb_as))) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('EINST.H_' . strtoupper($tb_as)) ?></div>
+</div>
+<?php } ?>
+<div class="sm-reihe">
+<?php foreach (array('ansage_von', 'ansage_bis') as $tb_as) { ?>
+<div class="sm-feld">
+  <label for="<?= tb_e($tb_as) ?>"><?= tb_e(tb_t('EINST.L_' . strtoupper($tb_as))) ?></label>
+  <input data-role="none" type="text" id="<?= tb_e($tb_as) ?>" name="<?= tb_e($tb_as) ?>" maxlength="5" placeholder="hh:mm" value="<?= tb_e(tb_fw('einst', $tb_as, $tb_cfg[$tb_as])) ?>"<?= tb_fm($tb_as) ?>>
+</div>
+<?php } ?>
+</div>
+<div class="sm-hilfe"><?= tb_t('EINST.H_ANSAGEZEIT') ?></div>
+<p class="sm-hilfe"><?= sprintf(tb_t('EINST.ANSAGE_TEST_HINWEIS'), '<b>' . tb_e(tb_t('REITER.TEST')) . '</b>') ?></p>
+
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
@@ -1174,6 +1260,7 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 <h2><?= tb_e(tb_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= tb_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= tb_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-hinweis"><?= tb_t('EINST.SICH_SPRECHTOKEN') ?></div>
 <?php if ($tb_sich_maengel) { ?>
 <div class="sm-warnung"><?= sprintf(tb_t('EINST.SICH_WARNUNG_WERTE'), tb_e(implode(', ', $tb_sich_maengel))) ?></div>
 <?php } ?>
@@ -1789,6 +1876,7 @@ function tb_bausteine()
     ?></td><td><?= $tb_b[4] ?></td></tr>
 <?php } ?>
 </table>
+<p class="sm-hilfe"><?= tb_t('LOX.S6_ANSAGE') ?></p>
 <?= tb_t('LOX.S6_ERLAEUTERUNG') ?>
 </div>
 
@@ -1909,6 +1997,16 @@ foreach ($tb_liste as $tb_tag => $tb_w) {
 <?php if ($tb_testausgabe !== '') { ?>
 <div class="sm-pre"><?= tb_e($tb_testausgabe) ?></div>
 <?php } ?>
+
+<h3><?= tb_e(tb_t('TEST.H_ANSAGE')) ?></h3>
+<p class="sm-hilfe"><?= tb_t('TEST.ANSAGE_ERKLAERUNG') ?></p>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="ansage_test" value="1"><?= tb_e(tb_t('TEST.K_ANSAGE_TEST')) ?></button>
+  </form>
+</div>
 
 <h3><?= tb_e(tb_t('TEST.H_VERLAUF')) ?></h3>
 <?php

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.26
+Version 0.9.28
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,30 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.28
+
+Eigene Sprachausgabe, ab Werk aus (Entscheidung 36/40; Anlass „günstiges Fenster“ nach Entscheidung 30).
+Gemessen unter PHP 7.4 und 8.5 gegen Attrappen (Music Server, Alexa-NG) mit dem echten Minutenlauf; nicht am Gerät,
+nicht an einem echten Lautsprecher, nicht mit einem Tibber-Konto.
+
+* **Neu: Sprachausgabe (ab Werk aus).** Reiter Einstellungen, Abschnitt „Sprachausgabe“: Loxone Music Server,
+  MusicServer4Home, eine eigene Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG).
+* Zwei Anlässe, je mit eigenem Haken, je einmal beim Eintritt: **das günstigste Fenster beginnt** (nur mit
+  mindestens 12 künftigen Preisstunden; solange das angesagte Fenster läuft, keine zweite Ansage) und **der
+  Preisabruf ist gestört** (kein Token, Anmeldung abgewiesen, Stand zu alt – dieselbe Lage wie die
+  Benachrichtigung; erst nach „läuft wieder“ eine neue Ansage).
+* **Ansagezeit „von–bis“** (ab Werk leer = immer, über Mitternacht möglich): Beginnt das günstigste Fenster
+  außerhalb, entfällt die Ansage; eine Störung wartet und wird zu Beginn der Ansagezeit angesagt, wenn sie dann
+  noch anhält. Die Testansage gilt immer.
+* Adresse und Vorlage müssen im Heimnetz liegen. Die Sätze kommen aus der Sprachdatei, in der Sprache des LoxBerry.
+* Testansage und Prüfzeile im Reiter Test. Die Sprechtoken stehen nie in Seite, Protokoll oder Sicherung; eine
+  Sicherung aus 0.9.26 oder älter wird weiter angenommen, ebenso eine aus dem Vorabbau 0.9.27.
+* Gemeinsame Dateien: Fahrplaner `planer.php` 1.1.9, Sprachmodul 1.1.1. Ein direkter Aufruf von `planer.php`,
+  `sprachausgabe.php` oder der Bibliothek `tb_lib.php` über den Webserver bekommt jetzt 403 statt einer leeren Seite.
+* Benachrichtigungen, MQTT, Endpunkt und Importvorlage sind unverändert.
+
+**In Loxone:** nichts zu tun; wer die Ansagen will, wählt im Reiter Einstellungen eine Ausgabeart.
 
 ## Neu in 0.9.26
 
@@ -298,6 +322,14 @@ den Fall, dass Tibber etwas nicht mitrechnet — er steht ab Werk auf 0.
   der Stundenpreise
 - **Monatsbericht** am Ersten ab 8 Uhr, mit Erledigt-Marker: fällt der Lauf um
   8 Uhr aus, holt der nächste ihn nach
+- **Sprachausgabe** (seit 0.9.28, ab Werk aus): über die gemeinsame Sprachausgabe
+  der Plugins dieses Hauses an den Loxone Music Server, MusicServer4Home, eine
+  eigene Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG).
+  Angesagt werden – je einmal beim Eintritt, einzeln abwählbar – der Beginn des
+  günstigsten Fensters (nur mit mindestens 12 künftigen Preisstunden) und ein
+  gestörter Preisabruf. Eine Ansagezeit „von–bis“ hält die Nacht frei (ab Werk
+  leer = immer). Adresse und Vorlage müssen im Heimnetz liegen; die
+  Sprechtoken stehen in keiner Sicherung. Testansage und Prüfzeile im Reiter Test
 - **Tibber Pulse**: Momentanleistung, Einspeisung, Tagesverbrauch, Tageskosten,
   Phasenströme und -spannungen über eine dauerhafte WebSocket-Verbindung
 - **MQTT** über das LoxBerry-Gateway, **HTTP-Endpunkt** mit fünf Abfragen
