@@ -1099,6 +1099,7 @@ if ($tb_lh || $tb_lm) { ?>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $tb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= tb_t('EINST.WAS_IST_DAS') ?></div>
 
 <?php /* Die Legende steht OBEN im Reiter, nicht in der Mitte.
          REGELN_2: "Eine gesammelte Legende oben im Reiter, darunter folgen
