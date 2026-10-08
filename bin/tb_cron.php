@@ -1291,17 +1291,27 @@ $tb_altersschranke = tb_altersschranke($tb_cfg);
  * schon beim ersten Fehlschlag eine rote Meldung hinaus (Codepruefer Nr. 2). */
 $tb_dauer = $tb_alter_jetzt >= 0 ? $tb_alter_jetzt
           : (isset($tb_st_jetzt['fehler_seit']) ? time() - (int) $tb_st_jetzt['fehler_seit'] : 0);
+/* Nr. 36 b (seit 0.9.28): dieselbe Lage geht an die Ansage (tb_ansage_lauf()) -
+ * '' keine Stoerung, null "nichts melden, nichts entwarnen". */
+$tb_stoer = '';
+$tb_stoer_min = 0;
 if (tb_token_lesen() === '') {
+    $tb_stoer = 'token';
     tb_notify('token', 'fehler', 'Spotpreis Tibber: es ist kein Zugangstoken '
         . 'hinterlegt - es werden keine Preise geholt.');
 } elseif (empty($tb_st_jetzt['ok']) && isset($tb_st_jetzt['fehler'])
           && $tb_st_jetzt['fehler'] !== '' && $tb_dauer > $tb_altersschranke) {
+    $tb_stoer = 'abruf';
+    $tb_stoer_min = (int) round($tb_dauer / 60);
     tb_notify('abruf', 'fehler', 'Spotpreis Tibber: der Preisabruf misslingt. '
         . $tb_st_jetzt['fehler']);
 } elseif (empty($tb_st_jetzt['ok']) && isset($tb_st_jetzt['fehler'])
           && $tb_st_jetzt['fehler'] !== '') {
     // Ein Fehlschlag innerhalb der Schranke: nichts melden, nichts entwarnen.
+    $tb_stoer = null;
 } elseif ($tb_alter_jetzt >= 0 && $tb_alter_jetzt > $tb_altersschranke) {
+    $tb_stoer = 'alt';
+    $tb_stoer_min = (int) round($tb_alter_jetzt / 60);
     tb_notify('abruf', 'hinweis', 'Spotpreis Tibber: der letzte gelungene '
         . 'Preisabruf ist ' . (int) round($tb_alter_jetzt / 60) . ' Minuten her '
         . '(gemeldet wird ab ' . (int) round($tb_altersschranke / 60) . ' Minuten).');
@@ -1322,5 +1332,12 @@ if ($tb_f > 0) {
 } elseif ($tb_lage === 'geaendert' || $tb_lage === 'voll') {
     tb_log_gebremst('mqtt_ok', 'MQTT: ' . $tb_v . ' Themen veroeffentlicht, davon '
         . (int) $tb_behalten . ' zurueckbehalten.', 3600);
+}
+
+/* Nr. 36 b (Stufe 2, seit 0.9.28): die Sprachausgabe - NACH allen bestehenden
+ * Meldewegen, nur im Minutentakt (ein Handabruf aus der Oberflaeche spricht nicht).
+ * Ab Werk aus: dann kein Zustand, keine Datei, keine Anfrage. */
+if ($tb_auto) {
+    tb_ansage_lauf($tb_stoer, $tb_stoer_min);
 }
 exit(0);

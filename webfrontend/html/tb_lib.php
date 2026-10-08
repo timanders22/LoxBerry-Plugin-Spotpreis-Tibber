@@ -42,6 +42,22 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
  */
 
+/* Kein Endpunkt (Regeln/03, seit 0.9.28): diese Bibliothek liegt im unangemeldeten
+ * Baum webfrontend/html/ und war direkt aufrufbar (HTTP 200, leere Seite). Ein
+ * direkter Aufruf ueber den Webserver bekommt 403 und tut sonst nichts - dieselbe
+ * Schranke wie sprachausgabe.php und planer.php. Eingebunden (Endpunkt, Oberflaeche,
+ * bin/) und auf der Kommandozeile greift sie nicht. */
+if (PHP_SAPI !== 'cli') {
+    $tb_einstieg = get_included_files();
+    if (isset($tb_einstieg[0]) && realpath($tb_einstieg[0]) === realpath(__FILE__)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "TIBBER;OK=0;GRUND=KEIN_ENDPUNKT\n";
+        exit;
+    }
+    unset($tb_einstieg);
+}
+
 if (!function_exists('tb_e')) {
     function tb_e($s)
     {
@@ -370,6 +386,10 @@ function tb_paths()
  * aus einem anderen Baum geladen wird.
  * ================================================================== */
 require_once __DIR__ . '/planer.php';
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php,
+ * Nr. 36 b, seit 0.9.28). Liegt neben dieser Datei; sie schuetzt sich selbst gegen
+ * doppeltes Laden und antwortet auf einen direkten Aufruf mit 403. */
+require_once __DIR__ . '/sprachausgabe.php';
 
 /**
  * Anzahl der Schaltregeln.
@@ -455,6 +475,15 @@ function tb_vorgaben()
         'verlauf_tage'     => 90,
         'aktionstoken'     => '',
         'zeitueberschreitung' => 15,
+        /* Sprachausgabe (Nr. 36 b, seit 0.9.28): ab Werk AUS. Die Haken der beiden
+         * Anlaesse stehen an - wer die Ausgabe einschaltet, hoert sofort etwas. */
+        'tts'              => ansage_vorgaben('aus'),
+        'ansage_fenster'   => 1,
+        'ansage_stoerung'  => 1,
+        /* Ansagezeit hh:mm (seit 0.9.28): ab Werk leer = immer. Ueber Mitternacht erlaubt
+         * (22:00-06:00); beide oder keines, nicht gleich (tb_config_kreuzpruefen()). */
+        'ansage_von'       => '',
+        'ansage_bis'       => '',
         /* ---------------- Fahrplaner (ab 0.9.11) ----------------
          *
          * Alles hier ist ab Werk AUS. Wer nichts einstellt, bekommt genau das
@@ -3853,6 +3882,304 @@ function tb_vorlage()
 }
 
 /* ==================================================================
+ * Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.9.28)
+ * ==================================================================
+ *
+ * Die Linie spricht ueber die gemeinsame Sprachausgabe (sprachausgabe.php,
+ * Abschrift neben dieser Datei). Ab Werk ist die Ausgabe AUS; die Haken der
+ * beiden Anlaesse stehen ab Werk an, damit wer die Ausgabe einschaltet, sofort
+ * etwas hoert. Gesprochen wird nur aus dem Minutenlauf (bin/tb_cron.php ->
+ * tb_ansage_lauf()) und mit der Testansage im Reiter Test. Ins Protokoll kommt
+ * nie der Text, nur ansage_kurz().
+ *
+ * Die zwei Anlaesse, beide als FLANKE - einmal beim Eintritt, nicht jeden Takt:
+ *   fenster   das guenstigste zusammenhaengende Fenster (Laenge
+ *             'fensterstunden', tb_fenster()) beginnt mit der laufenden
+ *             Zeitscheibe. Nur mit mindestens PLAN_RANG_MIN_STUNDEN kuenftigen
+ *             Preisstunden (Entscheidung Nr. 30), gezaehlt mit
+ *             plan_preisstunden() wie in tb_fahrplan(); ohne sie keine Ansage,
+ *             der Grund steht im Protokoll, nachgeholt wird sie nicht. Solange
+ *             das zuletzt angesagte Fenster laeuft (seine Laenge ab der Ansage),
+ *             kommt keine zweite - ein Fenster, das sich mit dem Horizont um eine
+ *             Stunde verschiebt, ist dieselbe guenstige Phase.
+ *   stoerung  dieselbe Lage, die der Meldungsbaum des Minutenlaufs an das
+ *             Benachrichtigungszentrum meldet (kein Token, Abruf misslingt
+ *             laenger als die Schranke, Stand zu alt). Erst nach "laeuft wieder"
+ *             spricht eine neue Stoerung wieder.
+ * Der Zustand liegt in data/plugins/<ordner>/ansage_anlaesse.json und wird nur
+ * geschrieben, wenn die Ausgabe eingeschaltet ist - ab Werk entsteht keine Datei.
+ */
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' - diese Linie hat
+ *  keinen Antwortweg, auf dem Loxone einen Text abholt. */
+function tb_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Optionen fuer Formular-Baustein und Formular-Lesen. */
+function tb_ansage_opt()
+{
+    return array('modi' => tb_ansage_modi());
+}
+
+/** Die Anlaesse: Name => Schluessel des Hakens in der Konfiguration. */
+function tb_ansage_anlaesse()
+{
+    return array('fenster' => 'ansage_fenster', 'stoerung' => 'ansage_stoerung');
+}
+
+/** Die Schluessel der Sprachausgabe in der Konfiguration. Eine Sicherung aus einer Fassung ohne sie
+ *  (oder ohne einen Teil davon) wird angenommen; fuer die fehlenden gilt weiter, was eingestellt ist. */
+function tb_ansage_neue_schluessel()
+{
+    return array_merge(array('tts'), array_values(tb_ansage_anlaesse()), array('ansage_von', 'ansage_bis'));
+}
+
+/**
+ * Liegt $jetzt in der Ansagezeit? (seit 0.9.28, Entscheidung des Hausherrn 08.10.2026)
+ * Rueckgabe 1 ja (auch: keine Ansagezeit eingestellt), 0 nein, -1 die gespeicherte Angabe taugt nicht
+ * (von Hand verbogen - Formular und Zurueckspielen weisen sie ab). -1 heisst: es wird NICHT gesprochen -
+ * die Ansagezeit schuetzt die Nachtruhe, und ein Schutz faellt geschlossen aus.
+ * von < bis: von <= Uhrzeit < bis. von > bis: ueber Mitternacht (22:00-06:00).
+ */
+function tb_ansage_zeit(array $cfg, $jetzt)
+{
+    $von = (isset($cfg['ansage_von']) && is_string($cfg['ansage_von'])) ? trim($cfg['ansage_von']) : null;
+    $bis = (isset($cfg['ansage_bis']) && is_string($cfg['ansage_bis'])) ? trim($cfg['ansage_bis']) : null;
+    if ($von === '' && $bis === '') { return 1; }
+    $muster = '/^([01][0-9]|2[0-3]):([0-5][0-9])$/';
+    if ($von === null || $bis === null || !preg_match($muster, $von, $a) || !preg_match($muster, $bis, $b)
+        || $von === $bis) {
+        return -1;
+    }
+    $v = (int) $a[1] * 60 + (int) $a[2];
+    $e = (int) $b[1] * 60 + (int) $b[2];
+    $m = (int) date('G', (int) $jetzt) * 60 + (int) date('i', (int) $jetzt);
+    if ($v < $e) { return ($m >= $v && $m < $e) ? 1 : 0; }
+    return ($m >= $v || $m < $e) ? 1 : 0;
+}
+
+/** Der Block tts, vervollstaendigt (ab Werk 'aus'). */
+function tb_tts($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = tb_config(); }
+    list($t) = ansage_vervollstaendigen(isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array(), 'aus');
+    return $t;
+}
+
+/** Ist die Sprachausgabe eingeschaltet? */
+function tb_ansage_an($cfg = null)
+{
+    $m = tb_tts($cfg);
+    return is_string($m['mode']) && $m['mode'] !== 'aus' && in_array($m['mode'], tb_ansage_modi(), true);
+}
+
+/** Die Sprache der Ansagen aus dem Minutenlauf (Regeln/03, Abschnitt 5): LBLANG
+ *  hat den Vorrang, sonst Base.Lang aus config/system/general.json, ohne Angabe
+ *  Deutsch; eine andere Sprache als de/en spricht Englisch (wie tb_sprache()). */
+function tb_ansage_sprache()
+{
+    $l = strtolower(substr(trim((string) getenv('LBLANG')), 0, 2));
+    if ($l === '') {
+        $home = tb_paths()['home'];
+        $g = $home !== '' ? tb_json_lesen($home . '/config/system/general.json') : array();
+        if (isset($g['Base']['Lang']) && is_string($g['Base']['Lang'])) {
+            $l = strtolower(substr(trim($g['Base']['Lang']), 0, 2));
+        }
+    }
+    if ($l === '') { return 'de'; }
+    return ($l === 'de' || $l === 'en') ? $l : 'en';
+}
+
+/** Ein Text in einer bestimmten Sprache - dieselbe Ablage und derselbe Rueckfall
+ *  auf Englisch wie tb_t(), das die Sprache der Oberflaeche nimmt. */
+function tb_t_in($sprache, $schluessel)
+{
+    static $texte = array();
+    $sprache = ($sprache === 'de' || $sprache === 'en') ? $sprache : 'en';
+    if (!isset($texte[$sprache])) {
+        $home = tb_paths()['home'];
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home !== '' ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $t = @parse_ini_file($pfad . '/language_' . $sprache . '.ini', true, INI_SCANNER_RAW);
+        if (!is_array($t)) { $t = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $t = array_replace_recursive($rueck, $t); }
+        foreach ($t as $ab => $paare) {
+            if (!is_array($paare)) { continue; }
+            foreach ($paare as $s => $w) { $t[$ab][$s] = trim((string) $w, '"'); }
+        }
+        $texte[$sprache] = $t;
+    }
+    $teile = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$sprache][$teile[0]][$teile[1]]) ? $texte[$sprache][$teile[0]][$teile[1]] : $schluessel;
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Ordner fuer <art>_letzte.json, Texte.
+ *  Ohne $sprache uebersetzt tb_t() (Oberflaeche), sonst tb_t_in() (Minutenlauf). */
+function tb_ansage_k($sprache = null)
+{
+    $p = tb_paths();
+    $t = ($sprache === null)
+        ? function ($s) { return tb_t($s); }
+        : function ($s) use ($sprache) { return tb_t_in($sprache, $s); };
+    return array(
+        'port'   => ansage_webport($p['home'] !== '' ? $p['home'] . '/config/system/general.json' : ''),
+        'kopf'   => array('User-Agent: LoxBerry Spotpreis Tibber'),
+        'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
+        't'      => $t,
+        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz in [ANSAGE]; ohne ihn
+         * stuende sie roh in der Sicherungsmeldung (wie Intercom 2.2.18). */
+        'schluessel' => array('K_TTS_EINTRAG' => 'EINST.SICH_TTS_EINTRAG'),
+    );
+}
+
+/**
+ * Die Lage des Anlasses 'fenster' zur Zeit $jetzt, aus dem Stand zur Lesezeit
+ * (tb_stand_jetzt()) - mit denselben Funktionen wie Endpunkt und Fahrplaner.
+ * Rueckgabe: 'lage' 1, wenn das guenstigste Fenster ab jetzt mit der laufenden
+ * Zeitscheibe beginnt; 'preisstunden' und 'rang_ok' (Entscheidung Nr. 30);
+ * 'ok' (Preisstand nicht zu alt); 'ct' Mittel des Fensters; 'laenge' in Stunden.
+ */
+function tb_ansage_fenster_lage(array $st, array $cfg, $jetzt)
+{
+    $aus = array('lage' => 0, 'preisstunden' => 0.0, 'rang_ok' => false, 'ok' => empty($st['ok']) ? 0 : 1,
+                 'ct' => null, 'laenge' => tb_fensterlaenge($cfg['fensterstunden']), 'ts' => null);
+    $liste = array();
+    foreach (array('liste_heute', 'liste_morgen') as $tag) {
+        foreach ((array) (isset($st[$tag]) ? $st[$tag] : array()) as $e) {
+            if (!is_array($e) || !isset($e['ts'], $e['ct']) || !is_numeric($e['ts'])
+                || !is_numeric($e['ct'])) { continue; }
+            $liste[(int) $e['ts']] = (float) $e['ct'];
+        }
+    }
+    if (!$liste) { return $aus; }
+    ksort($liste);
+    $roh = array();
+    foreach ($liste as $ts => $ct) { $roh[] = array('ts' => $ts, 'ct' => $ct); }
+    $slotlen = tb_schrittweite($roh);
+    if ($slotlen < 60) { $slotlen = 3600; }
+    $jetzt = (int) $jetzt;
+    $aus['preisstunden'] = plan_preisstunden($liste, $jetzt - ($jetzt % $slotlen), $slotlen);
+    $aus['rang_ok'] = $aus['preisstunden'] >= PLAN_RANG_MIN_STUNDEN;
+    $f = tb_fenster($roh, $aus['laenge'], $jetzt);
+    $aus['ts'] = $f['ts'];
+    $aus['ct'] = $f['ct'];
+    $aus['lage'] = ($f['ts'] !== null && (int) $f['ts'] <= $jetzt) ? 1 : 0;
+    return $aus;
+}
+
+/** Der Satz zum Anlass 'fenster' (Ein- und Mehrzahl getrennt in der Sprachdatei). */
+function tb_ansage_fenster_text(array $f, $sprache)
+{
+    $ct = $f['ct'] === null ? '-' : number_format((float) $f['ct'], 1, $sprache === 'de' ? ',' : '.', '');
+    if ((int) $f['laenge'] === 1) {
+        return sprintf(tb_t_in($sprache, 'TB_ANSAGE.FENSTER_1'), $ct);
+    }
+    return sprintf(tb_t_in($sprache, 'TB_ANSAGE.FENSTER_N'), (int) $f['laenge'], $ct);
+}
+
+/**
+ * Die Ansagen des Minutenlaufs (aus bin/tb_cron.php, nur im Minutentakt und nach
+ * allen bestehenden Meldewegen). $stoerung ist die Lage, die der Meldungsbaum
+ * desselben Laufs eben festgestellt hat: '' keine Stoerung, 'token', 'abruf' oder
+ * 'alt', null fuer "nichts melden, nichts entwarnen" (ein Fehlschlag innerhalb
+ * der Schranke); $minuten die Dauer dazu. Rueckgabe: Zahl der Sprechversuche.
+ */
+function tb_ansage_lauf($stoerung, $minuten, $jetzt = null)
+{
+    $cfg = tb_config();
+    if (!tb_ansage_an($cfg)) { return 0; }      // ab Werk: kein Zustand, keine Datei, keine Anfrage
+    $p = tb_paths();
+    if (!is_dir($p['datadir'])) { return 0; }
+    if ($jetzt === null) { $jetzt = time(); }
+    $datei = $p['datadir'] . '/ansage_anlaesse.json';
+    $alt = tb_json_lesen($datei);
+    $neu = $alt;
+    $sprache = tb_ansage_sprache();
+    $k = tb_ansage_k($sprache);
+    $tts = tb_tts($cfg);
+    $versuche = 0;
+    $zeit = tb_ansage_zeit($cfg, $jetzt);
+    $zeit_grund = ($zeit === -1) ? 'die gespeicherte Ansagezeit taugt nicht (von/bis)'
+                                 : 'ausserhalb der Ansagezeit ' . $cfg['ansage_von'] . '-' . $cfg['ansage_bis'];
+
+    /* ---- Anlass 'fenster' ----
+     * Ohne gemerkten Zustand (erster Lauf nach dem Einschalten oder nach einem
+     * Update, das data/ abraeumt) wird die Lage nur gemerkt: mitten in einem
+     * laufenden Fenster hiesse "beginnt jetzt" etwas Falsches. */
+    $f = tb_ansage_fenster_lage(tb_stand_jetzt(tb_stand(), $cfg, $jetzt), $cfg, $jetzt);
+    $fa = (isset($alt['fenster']) && is_array($alt['fenster'])) ? $alt['fenster'] : null;
+    $war = ($fa !== null && !empty($fa['lage'])) ? 1 : 0;
+    $gesprochen = ($fa !== null && isset($fa['gesprochen'])) ? (int) $fa['gesprochen'] : 0;
+    $neu['fenster'] = array('lage' => $f['lage'],
+        'seit' => ($fa !== null && $war === $f['lage'] && isset($fa['seit'])) ? (int) $fa['seit'] : $jetzt,
+        'gesprochen' => $gesprochen);
+    if ($fa !== null && $f['lage'] === 1 && $war === 0 && !empty($cfg['ansage_fenster'])) {
+        if (!$f['rang_ok']) {
+            tb_log('Ansage "guenstigstes Fenster" entfaellt: nur ' . $f['preisstunden']
+                . ' kuenftige Preisstunden bekannt, mindestens ' . PLAN_RANG_MIN_STUNDEN
+                . ' (Entscheidung Nr. 30).');
+        } elseif (!$f['ok']) {
+            tb_log('Ansage "guenstigstes Fenster" entfaellt: der Preisstand ist aelter als die Schranke.');
+        } elseif ($zeit !== 1) {
+            /* Nicht nachgeholt: "beginnt jetzt" waere zu Beginn der Ansagezeit falsch. */
+            tb_log('Ansage "guenstigstes Fenster" entfaellt: ' . $zeit_grund . '.');
+        } elseif ($gesprochen > 0 && $jetzt >= $gesprochen && $jetzt - $gesprochen < $f['laenge'] * 3600) {
+            tb_log('Ansage "guenstigstes Fenster" unterdrueckt: das zuletzt angesagte Fenster laeuft noch.');
+        } else {
+            $r = ansage_sprechen(tb_ansage_fenster_text($f, $sprache), $tts, $k);
+            tb_log('Ansage guenstigstes Fenster: ' . ansage_kurz($r));
+            $neu['fenster']['gesprochen'] = $jetzt;
+            $versuche++;
+        }
+    }
+
+    /* ---- Anlass 'stoerung' ----
+     * Fehlt der Zustand, gilt "keine Stoerung": eine anhaltende Stoerung spricht
+     * beim Einschalten einmal. Hat Tibber die Anmeldung abgewiesen
+     * (tb_fehlertext(), HTTP 401/403), sagt der Satz das - der Wortlaut des
+     * Anfangs steht dort. */
+    if ($stoerung !== null) {
+        $sa = (isset($alt['stoerung']) && is_array($alt['stoerung'])) ? $alt['stoerung'] : array();
+        $war_s = (isset($sa['lage']) && is_string($sa['lage'])) ? $sa['lage'] : '';
+        $ist_s = (string) $stoerung;
+        $neu['stoerung'] = array('lage' => $ist_s,
+            'gesprochen' => isset($sa['gesprochen']) ? (int) $sa['gesprochen'] : 0);
+        if ($ist_s !== '' && $war_s === '' && !empty($cfg['ansage_stoerung']) && $zeit !== 1) {
+            /* Ausserhalb der Ansagezeit wartet die Stoerung: der Eintritt wird nicht gemerkt,
+             * und haelt sie zu Beginn der Ansagezeit noch an, spricht sie dann. */
+            $neu['stoerung']['lage'] = '';
+            tb_log_gebremst('ansage_stoerung_zeit', 'Ansage "Abruf gestoert" wartet: ' . $zeit_grund . '.');
+        } elseif ($ist_s !== '' && $war_s === '' && !empty($cfg['ansage_stoerung'])) {
+            $st0 = tb_stand();
+            if ($ist_s === 'token') {
+                $text = tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_TOKEN');
+            } elseif (isset($st0['fehler']) && is_string($st0['fehler'])
+                      && strpos($st0['fehler'], 'Tibber hat die Anmeldung abgewiesen') === 0) {
+                $text = tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_ANMELDUNG');
+            } else {
+                $text = sprintf(tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_ALT'), max(1, (int) $minuten));
+            }
+            $r = ansage_sprechen($text, $tts, $k);
+            tb_log('Ansage Abruf gestoert (' . $ist_s . '): ' . ansage_kurz($r));
+            $neu['stoerung']['gesprochen'] = $jetzt;
+            $versuche++;
+        }
+    }
+
+    if (json_encode($neu) !== json_encode($alt) && !tb_json_schreiben($datei, $neu)) {
+        tb_log_gebremst('ansage_zustand', 'Der Zustand der Ansagen liess sich nicht nach ' . $datei
+            . ' schreiben - eine anhaltende Lage koennte erneut angesagt werden.');
+    }
+    return $versuche;
+}
+
+/* ==================================================================
  * Sprache (Pflicht: Deutsch und Englisch)
  *
  * Englisch ist die Rueckfallebene, nicht Deutsch.
@@ -3936,6 +4263,10 @@ function tb_feldregeln()
         'mqtt_ein'            => array('art' => 'haken'),
         'mqtt_topic'          => array('art' => 'thema'),
         'aktionstoken'        => array('art' => 'merkwort'),
+        'ansage_fenster'      => array('art' => 'haken'),
+        'ansage_stoerung'     => array('art' => 'haken'),
+        'ansage_von'          => array('art' => 'uhrzeit'),
+        'ansage_bis'          => array('art' => 'uhrzeit'),
         /* ---- Fahrplaner (ab 0.9.11) ----
          *
          * Dieselbe Positivliste, die das Formular benutzt - und dieselbe, die
@@ -4024,6 +4355,10 @@ function tb_wert_pruefen($schluessel, $wert)
              * (Oberflaechenpruefer Nr. 5 und 7). Nach Nr. 19 wird beanstandet. */
             return (strlen($s) <= 64 && preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$#', $s)) ? ''
                 : sprintf(tb_t('EINST.SICH_WERT_THEMA'), $schluessel);
+        case 'uhrzeit':
+            /* Seit 0.9.28 (Ansagezeit): leer oder hh:mm, 00:00 bis 23:59. */
+            return ($s === '' || preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]$/', $s)) ? ''
+                : sprintf(tb_t('EINST.SICH_WERT_UHRZEIT'), $schluessel);
         case 'merkwort':
             return ($s === '' || preg_match('/^[A-Za-z0-9]{8,64}$/', $s)) ? ''
                 : sprintf(tb_t('EINST.SICH_WERT_MERKWORT'), $schluessel);
@@ -4080,6 +4415,11 @@ function tb_config_kreuzpruefen(array $cfg)
         && is_numeric($cfg['teuer']) && (float) $cfg['guenstig'] >= (float) $cfg['teuer']) {
         $aus[] = array('felder' => array('guenstig', 'teuer'), 'text' => tb_t('EINST.FEHLER_SCHWELLEN'));
     }
+    /* Seit 0.9.28: die Ansagezeit - beide Felder oder keines, und nicht dieselbe Uhrzeit. */
+    if (($w('ansage_von') === '') !== ($w('ansage_bis') === '')
+        || ($w('ansage_von') !== '' && $w('ansage_von') === $w('ansage_bis'))) {
+        $aus[] = array('felder' => array('ansage_von', 'ansage_bis'), 'text' => tb_t('EINST.FEHLER_ANSAGEZEIT'));
+    }
     $quelle = $w('pv_quelle');
     if ($quelle === '' && $w('pv_url') !== '') {
         $aus[] = array('felder' => array('pv_url'), 'text' => tb_t('FP.M_URL_OHNE_QUELLE'));
@@ -4114,6 +4454,12 @@ function tb_sicherung_maengel($cfg = null)
     foreach (tb_vorgaben() as $k => $vorgabe) {
         if (!array_key_exists($k, $cfg)) { continue; }
         $v = $cfg[$k];
+        if ($k === 'tts') {
+            /* Nr. 36 b: geprueft wie beim Zurueckspielen, ohne Sprechtoken (die
+             * Sicherung traegt keine). Nur Namen, nie Werte. */
+            foreach (ansage_sicherung_x3($v, tb_ansage_modi()) as $tn) { $namen[$tn] = true; }
+            continue;
+        }
         if ($k === 'regeln') {
             $rp = tb_regeln_pruefen($v);
             if ($rp[1]) { $namen[$k] = true; }
@@ -4151,7 +4497,8 @@ function tb_sicherung_bauen()
     $daten = array(
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Spotpreis Tibber. '
                     . 'Enthaelt das persoenliche Tibber-Zugangstoken und das Merkwort '
-                    . 'fuer den Loxone-Endpunkt - wie ein Passwort behandeln.',
+                    . 'fuer den Loxone-Endpunkt - wie ein Passwort behandeln. '
+                    . 'Die Sprechtoken der Sprachausgabe sind nie enthalten.',
         '_stand'   => date('Y-m-d H:i:s'),
         '_plugin'  => 'spotpreistibber',
         '_fassung' => tb_fassung(),
@@ -4170,6 +4517,12 @@ function tb_sicherung_bauen()
      * lesbaren Hinweis, wenn das eigene Zurueckspielen sie abweisen wuerde -
      * nur die Namen, nie die Werte. Bis 0.9.24 merkte man das erst beim Umzug
      * (Oberflaechenpruefer Nr. 9). */
+    /* Nr. 36 b (seit 0.9.28): die Sprechtoken der Sprachausgabe gehen nie in eine
+     * Sicherung - anders als Tibber-Token und Merkwort: sie gehoeren einem anderen
+     * Plugin auf demselben LoxBerry und sind dort jederzeit neu zu holen. */
+    if (isset($daten['tts']) && is_array($daten['tts'])) {
+        $daten['tts'] = ansage_sicherung_bereinigen($daten['tts']);
+    }
     $maengel = tb_sicherung_maengel($cfg);
     if ($maengel) {
         $daten = array_merge(array_slice($daten, 0, 4, true), array(
@@ -4282,6 +4635,29 @@ function tb_sicherung_lesen($roh)
             $anzahl++;
             continue;
         }
+        /* Nr. 36 b (seit 0.9.28): der Block der Sprachausgabe. Eine Sicherung dieses
+         * Plugins traegt nie ein Sprechtoken - traegt die Datei eines (auch als Liste,
+         * Zahl oder null), stammt sie nicht aus "Einstellungen sichern" und wird
+         * abgewiesen. Die Werte werden wie im Formular geprueft (Heimnetz); die
+         * geltenden Sprechtoken bleiben. */
+        if ($k === 'tts') {
+            $tm = ansage_sicherung_mangel($w);
+            if ($tm) {
+                $mangel[] = sprintf(tb_t('EINST.SICH_TTS_TOKEN'), tb_e(implode(', ', $tm)));
+                continue;
+            }
+            $tg = '';
+            $tp = ansage_wert_pruefen($w, $tg, tb_ansage_modi());
+            if ($tp === null) {
+                $mangel[] = sprintf(tb_t('EINST.SICH_TTS'), tb_e(ansage_kennung_text($tg, tb_ansage_k())));
+                continue;
+            }
+            $tj = tb_tts();
+            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
+            $anzahl++;
+            continue;
+        }
         if (!tb_wert_taugt($w)) {
             $mangel[] = sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'),
                                  htmlspecialchars($k, ENT_QUOTES, 'UTF-8'));
@@ -4335,10 +4711,26 @@ function tb_sicherung_lesen($roh)
      * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
+    /* Nr. 36 b (seit 0.9.28): eine Sicherung aus einer Fassung OHNE Sprachausgabe
+     * traegt den Block tts und die Haken der Anlaesse noch nicht. Sie wird
+     * angenommen; fuer diese Schluessel gilt weiter, was eingestellt ist - nicht
+     * die Vorgabe, sonst schaltete das Zurueckspielen einer alten Sicherung eine
+     * eingerichtete Ausgabe still ab -, und ein Hinweis sagt es. */
+    $ohne = array();
+    $geltend = null;
     foreach (array_keys(tb_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            if (in_array($fk, tb_ansage_neue_schluessel(), true)) {
+                if ($geltend === null) { $geltend = tb_config(); }
+                $neu[$fk] = ($fk === 'tts') ? tb_tts($geltend) : $geltend[$fk];
+                $ohne[] = $fk;
+                continue;
+            }
             $fehlend[] = $fk;
         }
+    }
+    if ($ohne) {
+        $hinweise[] = sprintf(tb_t('EINST.SICH_OHNE_ANSAGE'), tb_e(implode(', ', $ohne)));
     }
     if ($fehlend) {
         $mangel[] = sprintf(tb_t('EINST.SICH_FEHLEND'), count($fehlend),
