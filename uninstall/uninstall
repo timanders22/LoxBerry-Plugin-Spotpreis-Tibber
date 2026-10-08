@@ -14,7 +14,24 @@
 # unzutreffende Sicherheitszusage im Quelltext ist schlimmer als gar keine,
 # weil sie weitergegeben wird.
 
+# Nur fuer DIESES Plugin laufen (Praefix-1, seit 0.9.29). LoxBerry ruft beim
+# Deinstallieren jedes data/system/uninstall/<name>* auf (plugininstall.pl,
+# glob "$pname*") und reicht dabei NAME und Ordner des deinstallierten Plugins
+# durch. Wer "spotpreis" (Spotpreis aWATTar) deinstalliert, startete bis 0.9.28
+# auch dieses Skript - mit $3 = spotpreis: es haette den Dienst und die
+# Sicherungen im Ordner von aWATTar abgeraeumt. Am 08.10.2026 ist genau das
+# am Geraet passiert: die Deinstallation des Originals zigbee2mqtt entfernte
+# den Dienst von zigbee2mqttng. Ohne Namen (Aufruf von Hand) laeuft es wie
+# bisher.
+if [ -n "$2" ] && [ "$2" != "spotpreistibber" ]; then
+    echo "<INFO> Spotpreis Tibber: Aufruf gilt dem Plugin '$2', nicht diesem - nichts zu tun."
+    exit 0
+fi
 PFOLDER="${3:-spotpreistibber}"
+if [ "$PFOLDER" != "spotpreistibber" ]; then
+    echo "<INFO> Spotpreis Tibber: Ordner '$PFOLDER' ist nicht der eigene - nichts zu tun."
+    exit 0
+fi
 BASE="${5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
 # und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis

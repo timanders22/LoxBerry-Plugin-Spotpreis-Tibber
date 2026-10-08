@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.28
+Version 0.9.29
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -9,6 +9,17 @@ und über einen tokengeschützten HTTP-Endpunkt.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.29
+
+Schutz beim Deinstallieren eines anderen Plugins (Präfix-1). Gemessen im Sandkasten mit der alten und der neuen
+Deinstallation; nicht am Gerät.
+
+* **Behoben: Die Deinstallation von Spotpreis aWATTar startete auch die Deinstallation dieses Plugins.** LoxBerry
+  ruft beim Deinstallieren jedes Skript auf, dessen Name mit dem Plugin-Namen beginnt – `spotpreis` trifft also
+  auch `spotpreistibber`. Bis 0.9.28 lief das Skript dann im Ordner von aWATTar (im Sandkasten löschte es dort die
+  Dienstkennung). Jetzt prüft es Namen und Ordner und tut für ein anderes Plugin nichts.
+* Die eigene Deinstallation läuft unverändert (im Sandkasten Ausgabe und verbliebene Dateien gleich).
 
 ## Neu in 0.9.28
 
