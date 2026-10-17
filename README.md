@@ -1,14 +1,48 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.31
+Version 0.9.32
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
-Momentanleistung im Sekundentakt. Alles geht an Loxone: über MQTT als Regelweg
-und über einen tokengeschützten HTTP-Endpunkt.
+Momentanleistung im Sekundentakt. Alles geht an Loxone: über einen
+tokengeschützten HTTP-Endpunkt (der Weg der Baustein-Listen) oder über MQTT
+(ab Werk aus); beide Wege liefern dieselben Werte.
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.32
+
+Einbindung in Loxone in Vollausstattung: fünf Seiten aus dem LoxBerry-Plugins Musterprojekt mit fünf Bildern
+und je einer Schritt-für-Schritt-Anleitung, dazu die 24 Stundenpreise für den Spotpreis-Optimierer.
+
+* **Reiter „Einbindung in Loxone“, Schritt 6:** statt einer Tabelle mit 33 Zeilen fünf Seiten – „Spotpreis
+  Tibber“ (34 Zeilen: läuft es, Preis jetzt, Verbraucher in günstigen Stunden freigeben), „Steuerung“ (35: die
+  vier Schaltregeln des Fahrplaners), „Werte“ (34: heute, morgen, Fenster, Fahrplaner), „Verbrauch“ (26: Tibber
+  Pulse, Konto, Tarifvergleich) und „Stundenprofil“ (27: Loxone-Baustein Spotpreis-Optimierer). Jede mit
+  Kasten „So übernehmen Sie diese Seite“, Hinweisen, Bild und Link auf die Projektdatei.
+* **Berichtigt in der Liste:** ein stehender LoxBerry wurde nicht erkannt (ALTER und OK frieren in Loxone
+  ein) – jetzt überwacht eine Analogwertvalidierung den Laufzähler ZAEHLER, und Freigabe und Schaltausgänge
+  fallen ab. Der Impulsgeber hinter „Fenster beginnt“ (meldete laut Doku außerhalb des Fensters im
+  Zweisekundentakt) ist durch eine Einschaltverzögerung ersetzt; die Zeile „Statistik“ ist kein Baustein
+  mehr, sondern die Eigenschaft an TIBBER_CUR und TIBBER_PULSE. Typnamen wie in Loxone Config (Kleiner,
+  Kleiner oder gleich, Größer oder gleich, Gleich, Virtueller Eingang (Schieberegler/Schalter)).
+* **Neu in der Statuszeile und in der Importvorlage: TIBBER_PH00 … TIBBER_PH23** – der Endpreis jeder Stunde
+  von heute in ct/kWh (bei Viertelstundenpreisen das Mittel der Stunde, eine fehlende Stunde als Strich),
+  hinten angehängt; kein bestehender Suchtext ändert sich. Über MQTT gibt es dieselben Werte weiter als
+  `stunde/N/ct`, dort ändert sich nichts. Die Vorlage hat jetzt 100 statt 76 Befehle.
+* **Grenzen der Importvorlage:** MinVal -100 statt 0 an CUR, NEXT, AVG_HEUTE, MAX_HEUTE, AVG_MORGEN,
+  MAX_MORGEN, FENSTER_CT, FENSTER2_CT, FENSTER_MORGEN_CT und AVG_30T (ein negativer Endpreis kam in Loxone
+  als 0 an); MaxVal 96 statt 48 an RANK, RANKD und R1VERD … R4VERD (Viertelstundenpreise).
+* **In Loxone:** die Grenzen und die 24 Stundenpreise wirken nur bei einem neuen Import. Wer nicht neu
+  importieren will, setzt MinVal/MaxVal an den genannten Eingängen von Hand und legt die Befehle TIBBER_PH00 …
+  TIBBER_PH23 von Hand an (Befehlserkennung wie in Schritt 3, MinVal -100, MaxVal 200).
+* Texte: Schritt 1, die Zusammenfassung im Reiter Einstellungen und die Einleitung dieser README nennen
+  HTTP und MQTT gleichwertig (HTTP ist der Weg der Baustein-Listen, MQTT ab Werk aus); die Liste nennt für
+  die Schaltregeln den Reiter Fahrplaner; Schritt 5
+  den Laufzähler, FENSTER_IN „0 = läuft oder beginnt in weniger als 30 Minuten“.
+* Englische Oberfläche: die Bausteinnamen stehen deutsch wie im Musterprojekt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen (kein Tibber-Konto im Haus).
 
 ## Neu in 0.9.31
 
@@ -341,7 +375,9 @@ den Fall, dass Tibber etwas nicht mitrechnet — er steht ab Werk auf 0.
 
 - **Preise** für heute und morgen: Endpreis, Energieanteil, Steueranteil je
   Stunde. Aktuelle Stunde, nächste Stunde, **Rang** in den nächsten 24 h,
-  günstigste und teuerste Stunde, Tagesdurchschnitt für beide Tage
+  günstigste und teuerste Stunde, Tagesdurchschnitt für beide Tage; die
+  Stundenpreise von heute auch einzeln (`PH00` … `PH23`, seit 0.9.32) für den
+  Loxone-Baustein Spotpreis-Optimierer
 - **Günstigstes zusammenhängendes X-Stunden-Fenster**, Länge einstellbar —
   gesucht wird ab *jetzt*, nicht ab Mitternacht
 - **Zwei Preisniveaus**: `LEVEL` nach den eigenen Schwellen, `TLEVEL` so wie
@@ -368,7 +404,8 @@ den Fall, dass Tibber etwas nicht mitrechnet — er steht ab Werk auf 0.
 - **MQTT** über das LoxBerry-Gateway, **HTTP-Endpunkt** mit fünf Abfragen
 - Preisdiagramm für heute und morgen in der Oberfläche
 - Fünf Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt für Schritt
-  mit **kompletter Baustein-Liste**), Test, Logdateien
+  mit **fünf Seiten aus dem LoxBerry-Plugins Musterprojekt**, je mit Anleitung,
+  Tabelle und Bild), Test, Logdateien
 - **Viertelstundenpreise.** Seit dem 01.10.2025 gibt es in Deutschland
   Viertelstundenprodukte. Die Schrittweite wird nicht mehr angenommen,
   sondern **aus der gelieferten Liste gemessen** — Fenstersuche, Rang und
@@ -445,6 +482,12 @@ Zeit; unbekannte Aktionen werden abgewiesen, nicht zurechtgebogen.
 Ein **Strich** statt einer Zahl heißt: dieser Wert liegt nicht vor. Es wird
 bewusst keine 0 gesendet — bei einem Strompreis ganz besonders, weil 0 ct nach
 einem sehr guten Preis aussieht.
+
+Die Bausteine der fünf Baustein-Listen aus dem Reiter „Einbindung in Loxone“ stehen
+fertig verbunden auf den Seiten „Spotpreis Tibber“, „Spotpreis Tibber Steuerung“,
+„Spotpreis Tibber Werte“, „Spotpreis Tibber Verbrauch“ und „Spotpreis Tibber
+Stundenprofil“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## Umgang mit dem Token
 

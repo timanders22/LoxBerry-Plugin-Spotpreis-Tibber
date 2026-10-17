@@ -1933,6 +1933,14 @@ function tb_dienst($befehl)
  * NEUE FELDER GEHOEREN ANS ENDE. In der Mitte verschoeben sie die Reihenfolge
  * der Statuszeile, und jede beim Anwender eingetragene Befehlserkennung zeigte
  * danach auf den falschen Wert.
+ *
+ * Grenzen seit 0.9.32 (Welle Bild 16, Entscheidung 10): MinVal ist in Loxone eine
+ * Validierungsgrenze - ein Wert darunter kommt als 0 an (Regeln/07). CUR ist
+ * total * 100 + Aufschlag und kann bei stark negativem Energiepreis negativ werden;
+ * deshalb tragen CUR, NEXT, AVG_/MAX_HEUTE und _MORGEN, die drei Fensterpreise und
+ * AVG_30T jetzt -100 wie MIN_* und CUR_ENERGIE schon vorher. RANK, RANKD und R<n>VERD
+ * zaehlen Preiseintraege bzw. Zeitscheiben - bei Viertelstundenpreisen bis 96, mit
+ * MaxVal 48 haette Loxone daraus 0 gemacht. Wirkt nur bei einem NEUEN Import.
  */
 function tb_status_felder()
 {
@@ -1943,29 +1951,29 @@ function tb_status_felder()
                      'min' => $min, 'max' => $max, 'analog' => $analog);
     };
     $r = array(
-        'CUR'            => $f('ct/kWh', 'CUR',            0,      200),
+        'CUR'            => $f('ct/kWh', 'CUR',            -100,   200),
         'CUR_ENERGIE'    => $f('ct/kWh', 'CUR_ENERGIE',    -100,   200),
         'CUR_STEUER'     => $f('ct/kWh', 'CUR_STEUER',     0,      100),
-        'NEXT'           => $f('ct/kWh', 'NEXT',           0,      200),
+        'NEXT'           => $f('ct/kWh', 'NEXT',           -100,   200),
         'LEVEL'          => $f('',       'LEVEL',          0,      2),
         'TLEVEL'         => $f('',       'TLEVEL',         -1,     4),
-        'RANK'           => $f('',       'RANK',           -1,     48),
-        'RANKD'          => $f('',       'RANKD',          0,      48),
+        'RANK'           => $f('',       'RANK',           -1,     96),
+        'RANKD'          => $f('',       'RANKD',          0,      96),
         'NEG'            => $f('',       'NEG',            0,      1,     0),
-        'AVG_HEUTE'      => $f('ct/kWh', 'AVG_HEUTE',      0,      200),
+        'AVG_HEUTE'      => $f('ct/kWh', 'AVG_HEUTE',      -100,   200),
         'MIN_HEUTE'      => $f('ct/kWh', 'MIN_HEUTE',      -100,   200),
         'MINH_HEUTE'     => $f('h',      'MINH_HEUTE',     0,      23),
-        'MAX_HEUTE'      => $f('ct/kWh', 'MAX_HEUTE',      0,      200),
+        'MAX_HEUTE'      => $f('ct/kWh', 'MAX_HEUTE',      -100,   200),
         'MAXH_HEUTE'     => $f('h',      'MAXH_HEUTE',     0,      23),
         'MORGEN_OK'      => $f('',       'MORGEN_OK',      0,      1,     0),
-        'AVG_MORGEN'     => $f('ct/kWh', 'AVG_MORGEN',     0,      200),
+        'AVG_MORGEN'     => $f('ct/kWh', 'AVG_MORGEN',     -100,   200),
         'MIN_MORGEN'     => $f('ct/kWh', 'MIN_MORGEN',     -100,   200),
         'MINH_MORGEN'    => $f('h',      'MINH_MORGEN',    0,      23),
-        'MAX_MORGEN'     => $f('ct/kWh', 'MAX_MORGEN',     0,      200),
+        'MAX_MORGEN'     => $f('ct/kWh', 'MAX_MORGEN',     -100,   200),
         'MAXH_MORGEN'    => $f('h',      'MAXH_MORGEN',    0,      23),
         'FENSTER_H'      => $f('h',      'FENSTER_H',      0,      23),
         'FENSTER_IN'     => $f('h',      'FENSTER_IN',     0,      47),
-        'FENSTER_CT'     => $f('ct/kWh', 'FENSTER_CT',     0,      200),
+        'FENSTER_CT'     => $f('ct/kWh', 'FENSTER_CT',     -100,   200),
         'PULSE'          => $f('W',      'PULSE',          -30000, 30000),
         'PULSE_ERZ'      => $f('W',      'PULSE_ERZ',      0,      30000),
         'PULSE_TAG'      => $f('kWh',    'PULSE_TAG',      0,      500),
@@ -1993,10 +2001,10 @@ function tb_status_felder()
         'ZAEHLER'        => $f('',       'ZAEHLER',        -1,     999),
         'FENSTER2_H'     => $f('h',      'FENSTER2_H',     0,      23),
         'FENSTER2_IN'    => $f('h',      'FENSTER2_IN',    0,      47),
-        'FENSTER2_CT'    => $f('ct/kWh', 'FENSTER2_CT',    0,      200),
+        'FENSTER2_CT'    => $f('ct/kWh', 'FENSTER2_CT',    -100,   200),
         'FENSTER_MORGEN_H'  => $f('h',      'FENSTER_MORGEN_H',  0, 23),
-        'FENSTER_MORGEN_CT' => $f('ct/kWh', 'FENSTER_MORGEN_CT', 0, 200),
-        'AVG_30T'        => $f('ct/kWh', 'AVG_30T',        0,      200),
+        'FENSTER_MORGEN_CT' => $f('ct/kWh', 'FENSTER_MORGEN_CT', -100, 200),
+        'AVG_30T'        => $f('ct/kWh', 'AVG_30T',        -100,   200),
         'RANK_30T'       => $f('%',      'RANK_30T',       0,      100),
         'GUENSTIGANTEIL' => $f('%',      'GUENSTIGANTEIL', 0,      100),
         'ERSPARNIS_GESTERN' => $f('EUR', 'ERSPARNIS_GESTERN', -100, 100),
@@ -2038,7 +2046,7 @@ function tb_status_felder()
          * digital gewesen. Dieselbe Klasse wie ALTER bis 0.9.9. Am
          * Pruefstand gemessen: zwei 4-kW-Regeln unter einem 5-kW-Budget
          * ergaben fuer die zweite den Wert 3. */
-        $g['R' . $i . 'VERD']   = $f('',       'R' . $i . '_VERD',    0, 48);
+        $g['R' . $i . 'VERD']   = $f('',       'R' . $i . '_VERD',    0, 96);
         /* 0 frei, 1 PV-Prognose, 2 Speicher zu leer, 3 Speicher zu voll -
          * eine Zahl, weil Loxone mit Zahlen rechnet und nicht mit Woertern. */
         $g['R' . $i . 'SPERRE'] = $f('',       'R' . $i . '_SPERRE',  0,  3);
@@ -2051,6 +2059,17 @@ function tb_status_felder()
     $g['SOC']      = $f('%',   'SOC',      0, 100);
     $g['BUDGET']   = $f('kW',  'BUDGET',   0, 200);
     $g['PLANLAST'] = $f('kW',  'PLANLAST', 0, 200);
+    /* --- ab 0.9.32 (Welle Bild 16, Entscheidung 16): die Stundenpreise von heute einzeln ---
+     *
+     * PH00 ... PH23 sind die Eingaenge des Loxone-Bausteins Spotpreis-Optimierer im Modus
+     * Absolut, eine Zahl je Stunde. Bis 0.9.31 gab es sie nur ueber MQTT (stunde/N/ct) und
+     * mehrzeilig ueber aktion=stunden - beides taugt nicht fuer einen virtuellen HTTP-Eingang.
+     * Angehaengt, nicht eingeschoben: kein bestehender Suchtext aendert sich. Die Namen sind
+     * dieselben wie bei Spotpreis aWATTar (SPOT_PH00 ...); der Wert ist der Endpreis in ct/kWh
+     * wie CUR, bei Viertelstundenpreisen das Mittel der Stunde (tb_stundenprofil()). */
+    for ($h = 0; $h < 24; $h++) {
+        $g[sprintf('PH%02d', $h)] = $f('ct/kWh', sprintf('PH%02d', $h), -100, 200);
+    }
     return array_merge($r, $g);
 }
 
@@ -2121,6 +2140,38 @@ function tb_check_literal($check)
     $b = strpos($check, $marke, $a);
     if ($b === false) { return ''; }
     return substr($check, $a, $b - $a);
+}
+
+/**
+ * Die Endpreise der Stunden aus einer Preisliste, je Stunde des Tages (0 ... 23).
+ *
+ * Seit 0.9.32 (Welle Bild 16, Entscheidung 16) die Felder PH00 ... PH23 der Statuszeile.
+ * Gemittelt je Stunde, nicht ueberschrieben - genau wie die MQTT-Themen stunde/N/ct in
+ * bin/tb_cron.php: bei Stundenpreisen ist das Mittel ueber einen Eintrag dieser Eintrag,
+ * bei Viertelstundenpreisen stuende sonst der Preis der LETZTEN Viertelstunde unter dem
+ * Namen der ganzen Stunde. Eine Stunde ohne Eintrag bleibt null (der Endpunkt macht
+ * daraus einen Strich, Loxone behaelt den letzten Wert) - am Tag der Zeitumstellung im
+ * Fruehjahr fehlt die Stunde 2, im Herbst werden beide Stunden 2 gemittelt.
+ *
+ * Rueckgabe: array(0 => ct oder null, ..., 23 => ct oder null)
+ */
+function tb_stundenprofil(array $liste)
+{
+    $summe = array();
+    $anzahl = array();
+    foreach ($liste as $e) {
+        if (!is_array($e) || !isset($e['ts'], $e['ct'])
+            || !is_numeric($e['ts']) || !is_numeric($e['ct'])) { continue; }
+        $h = (int) date('G', (int) $e['ts']);
+        if (!isset($summe[$h])) { $summe[$h] = 0.0; $anzahl[$h] = 0; }
+        $summe[$h] += (float) $e['ct'];
+        $anzahl[$h]++;
+    }
+    $aus = array();
+    for ($h = 0; $h < 24; $h++) {
+        $aus[$h] = isset($summe[$h]) ? round($summe[$h] / max(1, $anzahl[$h]), 3) : null;
+    }
+    return $aus;
 }
 
 /** Alle Werte in einem flachen Feld, so wie sie der Endpunkt ausgibt. */
@@ -2252,6 +2303,11 @@ function tb_werte()
     $w['SOC']      = $fp['soc'];
     $w['BUDGET']   = (float) $cfg['budget_kw'];
     $w['PLANLAST'] = $fp['planlast'];
+    /* Stundenpreise von HEUTE zur Lesezeit (W1): nach Mitternacht die neue Liste, ohne
+     * Preise fuer heute bleibt jede Stunde null (Strich). */
+    $ph = tb_stundenprofil(isset($st['liste_heute']) && is_array($st['liste_heute'])
+                           ? $st['liste_heute'] : array());
+    foreach ($ph as $h => $ct) { $w[sprintf('PH%02d', $h)] = $ct; }
     return $w;
 }
 
@@ -3524,10 +3580,17 @@ function tb_mqtt_senden(array $paare, $praefix)
  * Bis 0.9.9 stand diese Liste zweimal: hier und in bin/tb_cron.php. Zwei
  * Listen, die dasselbe aufzaehlen, laufen auseinander, und dann zeigt der
  * Reiter MQTT ein Thema an, das nie gesendet wird - oder umgekehrt.
+ *
+ * Seit 0.9.32 (Welle Bild 16) stehen hier auch PH00 ... PH23: dieselben Stundenpreise
+ * gehen seit 0.9.7 als stunde/N/ct hinaus (bin/tb_cron.php, gleich gerechnet wie
+ * tb_stundenprofil()). Unter eigenem Namen kaemen sie ein zweites Mal - 24 Themen mehr,
+ * am MQTT-Weg aendert sich mit 0.9.32 deshalb nichts.
  */
 function tb_mqtt_ausgeschlossen()
 {
-    return array('OK', 'ALTER', 'PULSE_ALTER', 'ZAEHLER');
+    $aus = array('OK', 'ALTER', 'PULSE_ALTER', 'ZAEHLER');
+    for ($h = 0; $h < 24; $h++) { $aus[] = sprintf('PH%02d', $h); }
+    return $aus;
 }
 
 /**
