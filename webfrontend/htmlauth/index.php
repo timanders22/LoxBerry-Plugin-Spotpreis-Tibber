@@ -947,6 +947,14 @@ if ($tb_rahmen) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+/* Welle Bild 16 (0.9.32): Seiten, Schritte, Hinweise und Bild je Baustein-Liste (Bauart Raumklima 0.11.20). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 .sm-fehler { border: 1px solid #ef9a9a; background: #ffebee; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
@@ -1786,99 +1794,274 @@ foreach ($tb_fpfp['preise'] as $tb_fpts => $tb_fpct) {
 
 <?php
 /**
- * Die komplette Baustein-Liste. Pflicht im Hausstandard.
+ * Die Baustein-Listen. Pflicht im Hausstandard.
  *
- * Anspruch: Wer die Tabelle von oben nach unten abarbeitet, hat die Funktion
- * nachgebaut, ohne nachzudenken. Loxone Config fuehrt alle Bausteine in der
- * Baustein-Suche (F5).
+ * Welle Bild 16 (0.9.32; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum
+ * leicht uebernehmen koennen; Entwurf Welle 16 ti, Entscheidungen wie empfohlen, 17.10.2026): FUENF
+ * Seiten wie im LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt, Abschnitte
+ * "Spotpreis Tibber" 34, "... Steuerung" 35, "... Werte" 34, "... Verbrauch" 26, "... Stundenprofil"
+ * 27 Zeilen), je mit Schritten, Tabelle, "Zu #", Hinweisen und Bild. Bis 0.9.31 stand hier EINE
+ * Liste mit 33 Zeilen. Die Zeilen sind deutsch wortgleich mit der Liste; Bausteinnamen in beiden
+ * Sprachen deutsch. Rueckgabe: Liste von array('seite', 'bild', 'zeilen', 'schritte', 'zu',
+ * 'hinweise'); Zeile: array(Nr, Typ, Name, Parameter, Eingaenge, Befehl aus dem Behaelter?). Die
+ * Zellen sind Klartext (unten maskiert), Schritte, "Zu #" und Hinweise freigegebenes HTML aus [LOX].
  */
-/**
- * Eine Zelle mit dem Suchtext eines Feldes.
- *
- * Der Suchtext stand bis 0.9.6 als Fliesstext in den Sprachdateien - achtzehn
- * Abschriften eines Musters, das der Quelltext nebenan selbst baut. Sie waren
- * damit auch die einzige Stelle, an der das fehlende Trennzeichen NICHT
- * mitkorrigiert worden waere: der Anwender schreibt die Tabelle ab, nicht den
- * Quelltext. Eine berichtigte Abschrift ist immer noch eine Abschrift.
- *
- * Jetzt steht in der Sprachdatei nur noch der Rahmen mit einem %s, und das
- * Muster kommt aus tb_check() - derselben Funktion, aus der auch die
- * Importdatei und die Feldtabelle es holen.
- *
- * Die Rueckgabe als array('text' => …) ist Absicht: die Ausgabe erkennt
- * daran, dass der Wert fertig ist, und schickt ihn NICHT noch einmal durch
- * tb_t().
- */
-function tb_muster_zelle($schluessel, $feld)
-{
-    return array('text' => sprintf(tb_t($schluessel),
-        '<span class="sm-mono">' . tb_e(tb_check($feld)) . '</span>'));
-}
-
 function tb_bausteine()
 {
+    $strich = tb_t('BAUSTEIN.STRICH');
+    $ve = tb_t('BAUSTEIN.T_VE');
+    /* Eine Zeile eines Befehls aus dem Behaelter "Spotpreis Tibber". Der Titel kommt aus demselben Feldnamen
+     * wie die Importvorlage (TIBBER_ + Feld); das sechste Glied markiert die Zeile fuer die Schreibmaschinenschrift. */
+    $feld = function ($nr, $f, $param) use ($ve, $strich) {
+        return array($nr, $ve, 'TIBBER_' . $f, $param, $strich, true);
+    };
+    $zeile = function ($nr, $typ, $name, $param, $eing) {
+        return array($nr, $typ, $name, $param, $eing, false);
+    };
+    $ein = function ($n) { return sprintf(tb_t('BAUSTEIN.E_EINGANG'), '#' . $n); };
+    $aus = function ($a, $n) { return sprintf(tb_t('BAUSTEIN.E_AUSGANG'), $a, '#' . $n); };
+    $neg = function ($s) { return sprintf(tb_t('BAUSTEIN.E_NEGIERT'), $s); };
+
+    /* ---- Seite 1 "Spotpreis Tibber" (34 Zeilen) ---- */
+    $s1 = array(
+        $feld(1, 'OK', tb_t('BAUSTEIN.S1_P01')),
+        $feld(2, 'ALTER', tb_t('BAUSTEIN.S1_P02')),
+        $feld(3, 'ZAEHLER', tb_t('BAUSTEIN.S1_P03')),
+        $feld(4, 'CUR', tb_t('BAUSTEIN.S1_P04')),
+        $feld(5, 'NEXT', tb_t('BAUSTEIN.S1_P05')),
+        $feld(6, 'LEVEL', tb_t('BAUSTEIN.S1_P06')),
+        $feld(7, 'TLEVEL', tb_t('BAUSTEIN.S1_P07')),
+        $feld(8, 'RANK', tb_t('BAUSTEIN.S1_P08')),
+        $feld(9, 'NEG', tb_t('BAUSTEIN.S1_P09')),
+        $feld(10, 'CUR_ENERGIE', tb_t('BAUSTEIN.S1_P10')),
+        $feld(11, 'CUR_STEUER', tb_t('BAUSTEIN.S1_P11')),
+        $zeile(12, tb_t('BAUSTEIN.T_KONST'), tb_t('BAUSTEIN.N_KONST1'), tb_t('BAUSTEIN.P_KONST1'), $strich),
+        $zeile(13, tb_t('BAUSTEIN.T_SWS'), tb_t('BAUSTEIN.S1_N13'), tb_t('BAUSTEIN.S1_P13'), $ein(2)),
+        $zeile(14, tb_t('BAUSTEIN.T_NICHT'), tb_t('BAUSTEIN.S1_N14'), $strich, 'I = #1'),
+        $zeile(15, tb_t('BAUSTEIN.T_VALID'), tb_t('BAUSTEIN.S1_N15'), tb_t('BAUSTEIN.S1_P15'), 'V = #3, En = #12'),
+        $zeile(16, tb_t('BAUSTEIN.T_ODER'), tb_t('BAUSTEIN.S1_N16'), tb_t('BAUSTEIN.S1_P16'), 'I1 = #14, I2 = ' . $aus('E', 15)),
+        $zeile(17, tb_t('BAUSTEIN.T_ODER'), tb_t('BAUSTEIN.S1_N17'), tb_t('BAUSTEIN.S1_P17'), 'I1 = #16, I2 = #13'),
+        $zeile(18, tb_t('BAUSTEIN.T_EVZ'), tb_t('BAUSTEIN.S1_N18'), tb_t('BAUSTEIN.S1_P18'), $ein(17)),
+        $zeile(19, tb_t('BAUSTEIN.T_BENACHR'), tb_t('BAUSTEIN.S1_N19'), tb_t('BAUSTEIN.S1_P19'), $ein(18)),
+        $zeile(20, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S1_N20'), tb_t('BAUSTEIN.S1_P20'),
+               'V1 = #4, V2 = #5, V3 = #6, V4 = #7, V5 = #8, V6 = #9, V7 = #10, V8 = #11'),
+        $zeile(21, tb_t('BAUSTEIN.T_SCHIEBER'), tb_t('BAUSTEIN.S1_N21'), tb_t('BAUSTEIN.S1_P21'), $strich),
+        $zeile(22, tb_t('BAUSTEIN.T_KLEINER'), tb_t('BAUSTEIN.S1_N22'), $strich, 'I1 = #4, I2 = #21'),
+        $zeile(23, tb_t('BAUSTEIN.T_SCHIEBER'), tb_t('BAUSTEIN.S1_N23'), tb_t('BAUSTEIN.S1_P23'), $strich),
+        $zeile(24, tb_t('BAUSTEIN.T_KLEINERGL'), tb_t('BAUSTEIN.S1_N24'), $strich, 'I1 = #8, I2 = #23'),
+        $zeile(25, tb_t('BAUSTEIN.T_GROESSERGL'), tb_t('BAUSTEIN.S1_N25'), tb_t('BAUSTEIN.S1_P25'), 'I1 = #8'),
+        $zeile(26, tb_t('BAUSTEIN.T_UND'), tb_t('BAUSTEIN.S1_N26'), $strich, 'I1 = #24, I2 = #25'),
+        $zeile(27, tb_t('BAUSTEIN.T_ODER'), tb_t('BAUSTEIN.S1_N27'), tb_t('BAUSTEIN.S1_P27'), 'I1 = #22, I2 = #26'),
+        $zeile(28, tb_t('BAUSTEIN.T_SCHALTER'), tb_t('BAUSTEIN.S1_N28'), tb_t('BAUSTEIN.S1_P28'), $strich),
+        $zeile(29, tb_t('BAUSTEIN.T_UND'), tb_t('BAUSTEIN.S1_N29'), $strich, 'I1 = #27, I2 = #28'),
+        $zeile(30, tb_t('BAUSTEIN.T_UND'), tb_t('BAUSTEIN.S1_N30'), tb_t('BAUSTEIN.S1_P30'), 'I1 = #29, I2 = ' . $neg('#16')),
+        $zeile(31, tb_t('BAUSTEIN.T_EVZ'), tb_t('BAUSTEIN.S1_N31'), tb_t('BAUSTEIN.S1_P31'), $ein(30)),
+        $zeile(32, tb_t('BAUSTEIN.T_MERKER'), tb_t('BAUSTEIN.S1_N32'), tb_t('BAUSTEIN.S1_P32'), $ein(31)),
+        $zeile(33, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S1_N33'), tb_t('BAUSTEIN.S1_P33'),
+               'V1 = #1, V2 = #2, V3 = ' . $aus('E', 15) . ', V4 = #3, V5 = #28, V6 = #31'),
+        $zeile(34, tb_t('BAUSTEIN.T_BENACHR'), tb_t('BAUSTEIN.S1_N34'), tb_t('BAUSTEIN.S1_P34'), $ein(9)),
+    );
+
+    /* ---- Seite 2 "Spotpreis Tibber Steuerung" (35 Zeilen): je Regel sechs Befehle in einer Schleife ueber
+     * TB_REGELN, Folge wie Spotpreis aWATTar und Octopus; dazu Lebenszeichen, UND und Status je Regel. ---- */
+    $s2 = array();
+    $n = 0;
+    for ($i = 1; $i <= TB_REGELN; $i++) {
+        $s2[] = $feld(++$n, 'R' . $i, $i === 1 ? tb_t('BAUSTEIN.S2_P_R1') : sprintf(tb_t('BAUSTEIN.S2_P_RN'), $i));
+        $s2[] = $feld(++$n, 'R' . $i . 'IN', sprintf(tb_t('BAUSTEIN.S2_P_IN'), $i));
+        $s2[] = $feld(++$n, 'R' . $i . 'REST', sprintf(tb_t('BAUSTEIN.S2_P_REST'), $i));
+        $s2[] = $feld(++$n, 'R' . $i . 'CT', sprintf(tb_t('BAUSTEIN.S2_P_CT'), $i));
+        $s2[] = $feld(++$n, 'R' . $i . 'VERD', sprintf(tb_t('BAUSTEIN.S2_P_VERD'), $i));
+        $s2[] = $feld(++$n, 'R' . $i . 'SPERRE', sprintf(tb_t('BAUSTEIN.S2_P_SPERRE'), $i));
+    }
+    $z = $n + 1;                                     /* Laufzaehler, Nr. 25 */
+    $s2[] = $feld($z, 'ZAEHLER', tb_t('BAUSTEIN.S2_P25'));
+    $s2[] = $zeile($z + 1, tb_t('BAUSTEIN.T_KONST'), tb_t('BAUSTEIN.N_KONST1'), tb_t('BAUSTEIN.P_KONST1'), $strich);
+    $v = $z + 2;                                     /* Analogwertvalidierung, Nr. 27 */
+    $s2[] = $zeile($v, tb_t('BAUSTEIN.T_VALID'), tb_t('BAUSTEIN.S2_N27'), tb_t('BAUSTEIN.S2_P27'),
+                   'V = #' . $z . ', En = #' . ($z + 1));
+    $und_param = array(1 => tb_t('BAUSTEIN.S2_P28'), 2 => tb_t('BAUSTEIN.S2_P29'),
+                       3 => tb_t('BAUSTEIN.S2_P30'), 4 => tb_t('BAUSTEIN.S2_P31'));
+    for ($i = 1; $i <= TB_REGELN; $i++) {
+        $s2[] = $zeile($v + $i, tb_t('BAUSTEIN.T_UND'), sprintf(tb_t('BAUSTEIN.S2_N_REGEL'), $i), $und_param[$i],
+                       'I1 = #' . (6 * $i - 5) . ', I2 = ' . $neg($aus('E', $v)));
+    }
+    for ($i = 1; $i <= TB_REGELN; $i++) {
+        $e = array();
+        for ($k = 1; $k <= 6; $k++) { $e[] = 'V' . $k . ' = #' . (6 * $i - 6 + $k); }
+        $e[] = 'V7 = ' . $aus('E', $v);
+        $s2[] = $zeile($v + TB_REGELN + $i, tb_t('BAUSTEIN.T_STATUS'), sprintf(tb_t('BAUSTEIN.S2_N_STATUS'), $i),
+                       tb_t('BAUSTEIN.S2_P_STATUS'), implode(', ', $e));
+    }
+
+    /* ---- Seite 3 "Spotpreis Tibber Werte" (34 Zeilen) ---- */
+    $s3 = array(
+        $feld(1, 'AVG_HEUTE', tb_t('BAUSTEIN.S3_P01')),
+        $feld(2, 'MIN_HEUTE', tb_t('BAUSTEIN.S3_P02')),
+        $feld(3, 'MINH_HEUTE', tb_t('BAUSTEIN.S3_P03')),
+        $feld(4, 'MAX_HEUTE', tb_t('BAUSTEIN.S3_P04')),
+        $feld(5, 'MAXH_HEUTE', tb_t('BAUSTEIN.S3_P05')),
+        $feld(6, 'AVG_30T', tb_t('BAUSTEIN.S3_P06')),
+        $feld(7, 'RANK_30T', tb_t('BAUSTEIN.S3_P07')),
+        $feld(8, 'RANKD', tb_t('BAUSTEIN.S3_P08')),
+        $feld(9, 'MORGEN_OK', tb_t('BAUSTEIN.S3_P09')),
+        $feld(10, 'AVG_MORGEN', tb_t('BAUSTEIN.S3_P10')),
+        $feld(11, 'MIN_MORGEN', tb_t('BAUSTEIN.S3_P11')),
+        $feld(12, 'MINH_MORGEN', tb_t('BAUSTEIN.S3_P12')),
+        $feld(13, 'MAX_MORGEN', tb_t('BAUSTEIN.S3_P13')),
+        $feld(14, 'MAXH_MORGEN', tb_t('BAUSTEIN.S3_P14')),
+        $feld(15, 'FENSTER_H', tb_t('BAUSTEIN.S3_P15')),
+        $feld(16, 'FENSTER_IN', tb_t('BAUSTEIN.S3_P16')),
+        $feld(17, 'FENSTER_CT', tb_t('BAUSTEIN.S3_P17')),
+        $feld(18, 'FENSTER2_H', tb_t('BAUSTEIN.S3_P18')),
+        $feld(19, 'FENSTER2_IN', tb_t('BAUSTEIN.S3_P19')),
+        $feld(20, 'FENSTER2_CT', tb_t('BAUSTEIN.S3_P20')),
+        $feld(21, 'FENSTER_MORGEN_H', tb_t('BAUSTEIN.S3_P21')),
+        $feld(22, 'FENSTER_MORGEN_CT', tb_t('BAUSTEIN.S3_P22')),
+        $feld(23, 'PVSUM', tb_t('BAUSTEIN.S3_P23')),
+        $feld(24, 'SOC', tb_t('BAUSTEIN.S3_P24')),
+        $feld(25, 'BUDGET', tb_t('BAUSTEIN.S3_P25')),
+        $feld(26, 'PLANLAST', tb_t('BAUSTEIN.S3_P26')),
+    );
+    $s3[] = $zeile(27, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S3_N27'), tb_t('BAUSTEIN.S3_P27'),
+                   'V1 = #1, V2 = #2, V3 = #3, V4 = #4, V5 = #5, V6 = #6, V7 = #7, V8 = #8');
+    $s3[] = $zeile(28, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S3_N28'), tb_t('BAUSTEIN.S3_P28'),
+                   'V1 = #9, V2 = #10, V3 = #11, V4 = #12, V5 = #13, V6 = #14');
+    $s3[] = $zeile(29, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S3_N29'), tb_t('BAUSTEIN.S3_P29'),
+                   'V1 = #15, V2 = #16, V3 = #17, V4 = #18, V5 = #19, V6 = #20, V7 = #21, V8 = #22');
+    $s3[] = $zeile(30, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S3_N30'), tb_t('BAUSTEIN.S3_P30'),
+                   'V1 = #23, V2 = #24, V3 = #25, V4 = #26');
+    $s3[] = $zeile(31, tb_t('BAUSTEIN.T_GLEICH'), tb_t('BAUSTEIN.S3_N31'), tb_t('BAUSTEIN.S3_P31'), 'I1 = #16');
+    $s3[] = $zeile(32, tb_t('BAUSTEIN.T_EVZ'), tb_t('BAUSTEIN.S3_N32'), tb_t('BAUSTEIN.S3_P32'), $ein(31));
+    $s3[] = $zeile(33, tb_t('BAUSTEIN.T_BENACHR'), tb_t('BAUSTEIN.S3_N33'), tb_t('BAUSTEIN.S3_P33'), $ein(32));
+    $s3[] = $zeile(34, tb_t('BAUSTEIN.T_BENACHR'), tb_t('BAUSTEIN.S3_N34'), tb_t('BAUSTEIN.S3_P34'), $ein(9));
+
+    /* ---- Seite 4 "Spotpreis Tibber Verbrauch" (26 Zeilen) ---- */
+    $s4 = array(
+        $feld(1, 'PULSE', tb_t('BAUSTEIN.S4_P01')),
+        $feld(2, 'PULSE_ERZ', tb_t('BAUSTEIN.S4_P02')),
+        $feld(3, 'PULSE_TAG', tb_t('BAUSTEIN.S4_P03')),
+        $feld(4, 'PULSE_KOSTEN', tb_t('BAUSTEIN.S4_P04')),
+        $feld(5, 'PULSE_ALTER', tb_t('BAUSTEIN.S4_P05')),
+        $feld(6, 'CUR', tb_t('BAUSTEIN.S4_P06')),
+        $zeile(7, tb_t('BAUSTEIN.T_FORMEL'), tb_t('BAUSTEIN.S4_N07'), tb_t('BAUSTEIN.S4_P07'), 'I1 = #1, I2 = #6'),
+        $zeile(8, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S4_N08'), tb_t('BAUSTEIN.S4_P08'),
+               'V1 = #1, V2 = #2, V3 = #3, V4 = #4, V5 = #5, V6 = #7'),
+        $zeile(9, tb_t('BAUSTEIN.T_SWS'), tb_t('BAUSTEIN.S4_N09'), tb_t('BAUSTEIN.S4_P09'), $ein(5)),
+        $zeile(10, tb_t('BAUSTEIN.T_EVZ'), tb_t('BAUSTEIN.S4_N10'), tb_t('BAUSTEIN.S4_P10'), $ein(9)),
+        $zeile(11, tb_t('BAUSTEIN.T_BENACHR'), tb_t('BAUSTEIN.S4_N11'), tb_t('BAUSTEIN.S4_P11'), $ein(10)),
+        $feld(12, 'VERBR_GESTERN', tb_t('BAUSTEIN.S4_P12')),
+        $feld(13, 'KOSTEN_GESTERN', tb_t('BAUSTEIN.S4_P13')),
+        $feld(14, 'VERBR_MONAT', tb_t('BAUSTEIN.S4_P14')),
+        $feld(15, 'KOSTEN_MONAT', tb_t('BAUSTEIN.S4_P15')),
+        $feld(16, 'GUENSTIGANTEIL', tb_t('BAUSTEIN.S4_P16')),
+        $feld(17, 'ERSPARNIS_GESTERN', tb_t('BAUSTEIN.S4_P17')),
+        $zeile(18, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S4_N18'), tb_t('BAUSTEIN.S4_P18'),
+               'V1 = #12, V2 = #13, V3 = #14, V4 = #15, V5 = #16, V6 = #17'),
+        $feld(19, 'DYN_MONAT', tb_t('BAUSTEIN.S4_P19')),
+        $feld(20, 'FIX', tb_t('BAUSTEIN.S4_P20')),
+        $feld(21, 'DIFF_MONAT', tb_t('BAUSTEIN.S4_P21')),
+        $feld(22, 'EURO_MONAT', tb_t('BAUSTEIN.S4_P22')),
+        $zeile(23, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S4_N23'), tb_t('BAUSTEIN.S4_P23'),
+               'V1 = #19, V2 = #20, V3 = #21, V4 = #22'),
+        $zeile(24, tb_t('BAUSTEIN.T_SWS'), tb_t('BAUSTEIN.S4_N24'), tb_t('BAUSTEIN.S4_P24'), $ein(21)),
+        $zeile(25, tb_t('BAUSTEIN.T_EVZ'), tb_t('BAUSTEIN.S4_N25'), tb_t('BAUSTEIN.S4_P25'), $ein(24)),
+        $zeile(26, tb_t('BAUSTEIN.T_BENACHR'), tb_t('BAUSTEIN.S4_N26'), tb_t('BAUSTEIN.S4_P26'), $ein(25)),
+    );
+
+    /* ---- Seite 5 "Spotpreis Tibber Stundenprofil" (27 Zeilen): PH00-PH23 in einer Schleife (seit 0.9.32,
+     * Welle Bild 16, E16), Impuls um, Spotpreis-Optimierer, Status. ---- */
+    $s5 = array();
+    $opt = array();
+    for ($h = 0; $h < 24; $h++) {
+        $hh = sprintf('%02d', $h);
+        $p = sprintf(tb_t('BAUSTEIN.S5_P_PH'), $hh);
+        if ($h === 0) { $p = sprintf(tb_t('BAUSTEIN.S5_P_PH_NEU'), $p); }
+        $s5[] = $feld($h + 1, 'PH' . $hh, $p);
+        $opt[] = $hh . ':00 = #' . ($h + 1);
+    }
+    $s5[] = $zeile(25, tb_t('BAUSTEIN.T_IMPULSUM'), tb_t('BAUSTEIN.S5_N25'), tb_t('BAUSTEIN.S5_P25'), $strich);
+    $s5[] = $zeile(26, tb_t('BAUSTEIN.T_OPT'), tb_t('BAUSTEIN.S5_N26'), tb_t('BAUSTEIN.S5_P26'),
+                   implode(', ', $opt) . ', Tr = ' . $aus('Q', 25));
+    $e = array();
+    foreach (array(1 => 'Cv', 2 => 'Min', 3 => 'Max', 4 => 'Avg', 5 => 'O') as $k => $a) { $e[] = 'V' . $k . ' = ' . $aus($a, 26); }
+    $s5[] = $zeile(27, tb_t('BAUSTEIN.T_STATUS'), tb_t('BAUSTEIN.S5_N27'), tb_t('BAUSTEIN.S5_P27'), implode(', ', $e));
+
+    /* Schritte, "Zu #" und Hinweise sind freigegebenes HTML aus [LOX]; die Zellen oben Klartext (index.php
+     * maskiert). Seitennamen wie im Musterprojekt, in beiden Sprachen gleich. */
     return array(
-        array(1,  'BAUSTEIN.T_VE',       'BAUSTEIN.N01', tb_muster_zelle('BAUSTEIN.P01', 'CUR'), '&mdash;'),
-        array(2,  'BAUSTEIN.T_VE',       'BAUSTEIN.N02', tb_muster_zelle('BAUSTEIN.P02', 'LEVEL'), '&mdash;'),
-        array(3,  'BAUSTEIN.T_VE',       'BAUSTEIN.N03', tb_muster_zelle('BAUSTEIN.P03', 'RANK'), '&mdash;'),
-        array(4,  'BAUSTEIN.T_VE',       'BAUSTEIN.N04', tb_muster_zelle('BAUSTEIN.P04', 'FENSTER_IN'), '&mdash;'),
-        array(5,  'BAUSTEIN.T_VE',       'BAUSTEIN.N05', tb_muster_zelle('BAUSTEIN.P05', 'FENSTER_CT'), '&mdash;'),
-        array(6,  'BAUSTEIN.T_VE',       'BAUSTEIN.N06', tb_muster_zelle('BAUSTEIN.P06', 'MIN_HEUTE'), '&mdash;'),
-        array(7,  'BAUSTEIN.T_VE',       'BAUSTEIN.N07', tb_muster_zelle('BAUSTEIN.P07', 'ALTER'), '&mdash;'),
-        array(8,  'BAUSTEIN.T_VE',       'BAUSTEIN.N08', tb_muster_zelle('BAUSTEIN.P08', 'OK'), '&mdash;'),
-        array(9,  'BAUSTEIN.T_SWS',      'BAUSTEIN.N09', 'BAUSTEIN.P09', 'Ausgang von #7'),
-        array(10, 'BAUSTEIN.T_NICHT',    'BAUSTEIN.N10', '',             'Ausgang von #8'),
-        array(11, 'BAUSTEIN.T_ODER',     'BAUSTEIN.N11', '',             'I1 = #9, I2 = #10'),
-        array(12, 'BAUSTEIN.T_EVZ',      'BAUSTEIN.N12', 'BAUSTEIN.P12', 'Ausgang von #11'),
-        array(13, 'BAUSTEIN.T_BENACHR',  'BAUSTEIN.N13', 'BAUSTEIN.P13', 'Ausgang von #12'),
-        array(14, 'BAUSTEIN.T_VEZ',      'BAUSTEIN.N14', 'BAUSTEIN.P14', '&mdash;'),
-        array(15, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I1 = #1, I2 = #14'),
-        array(16, 'BAUSTEIN.T_VEZ',      'BAUSTEIN.N16', 'BAUSTEIN.P16', '&mdash;'),
-        array(17, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N17', 'BAUSTEIN.P17', 'I1 = #3, I2 = #16'),
-        /* Planer-30: RANK ist -1, solange weniger als 12 kuenftige Preisstunden
-         * bekannt sind - und -1 erfuellt "kleiner gleich" in #17 ebenfalls.
-         * #18 laesst nur einen bekannten Rang durch, #19 verknuepft beides. */
-        array(18, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N17B', 'BAUSTEIN.P17B', 'I1 = #3, I2 = ' . tb_t('BAUSTEIN.KONST1')),
-        array(19, 'BAUSTEIN.T_UND',      'BAUSTEIN.N17C', '',            'I1 = #17, I2 = #18'),
-        array(20, 'BAUSTEIN.T_ODER',     'BAUSTEIN.N18', '',             'I1 = #15, I2 = #19'),
-        array(21, 'BAUSTEIN.T_TASTER',   'BAUSTEIN.N19', 'BAUSTEIN.P19', '&mdash;'),
-        /* Regel A4: ein UND hat hoechstens zwei Eingaenge - die Ausfallerkennung
-         * (negiert) kommt in einen zweiten UND-Baustein. */
-        array(22, 'BAUSTEIN.T_UND',      'BAUSTEIN.N20A', '',            'I1 = #20, I2 = #21'),
-        array(23, 'BAUSTEIN.T_UND',      'BAUSTEIN.N20', '',             'I1 = #22, I2 = #10 (' . tb_t('BAUSTEIN.NEGIERT') . ')'),
-        array(24, 'BAUSTEIN.T_EVZ',      'BAUSTEIN.N21', 'BAUSTEIN.P21', 'Ausgang von #23'),
-        array(25, 'BAUSTEIN.T_MERKER',   'BAUSTEIN.N22', 'BAUSTEIN.P22', 'Ausgang von #24'),
-        array(26, 'BAUSTEIN.T_VERGL',    'BAUSTEIN.N23', 'BAUSTEIN.P23', 'I1 = #4, I2 = ' . tb_t('BAUSTEIN.KONST0')),
-        array(27, 'BAUSTEIN.T_IMPULS',   'BAUSTEIN.N24', 'BAUSTEIN.P24', 'Ausgang von #26'),
-        array(28, 'BAUSTEIN.T_BENACHR',  'BAUSTEIN.N25', 'BAUSTEIN.P25', 'Ausgang von #27'),
-        array(29, 'BAUSTEIN.T_SWS',      'BAUSTEIN.N26', 'BAUSTEIN.P26', 'Ausgang von #2'),
-        array(30, 'BAUSTEIN.T_STATUS',   'BAUSTEIN.N27', 'BAUSTEIN.P27', 'V1 = #1, V2 = #2'),
-        array(31, 'BAUSTEIN.T_VE',       'BAUSTEIN.N28', tb_muster_zelle('BAUSTEIN.P28', 'PULSE'), '&mdash;'),
-        array(32, 'BAUSTEIN.T_FORMEL',   'BAUSTEIN.N29', 'BAUSTEIN.P29', 'I1 = #31, I2 = #1'),
-        array(33, 'BAUSTEIN.T_STAT',     'BAUSTEIN.N30', 'BAUSTEIN.P30', 'Ausgang von #32'),
+        array('seite' => 'Spotpreis Tibber', 'bild' => 'einbindung_loxone.png', 'zeilen' => $s1,
+              'schritte' => array(tb_t('LOX.S1_SCHRITT1'), sprintf(tb_t('LOX.S1_SCHRITT2'), count(tb_status_felder())),
+                                  tb_t('LOX.S1_SCHRITT3'), tb_t('LOX.S1_SCHRITT4'), tb_t('LOX.S1_SCHRITT5'),
+                                  tb_t('LOX.S1_SCHRITT6')),
+              'zu' => array(array('#13/#18', tb_t('LOX.S1_ZU_IMPULS')), array('#15/#16', tb_t('LOX.S1_ZU_STEHT')),
+                            array('#17', tb_t('LOX.S1_ZU_ODER')), array('#24/#25', tb_t('LOX.S1_ZU_RANG')),
+                            array('#30/#31', tb_t('LOX.S1_ZU_FREIGABE'))),
+              'hinweise' => array(tb_t('LOX.S1_H_MERKER'), tb_t('LOX.S1_H_WEGE'), tb_t('LOX.S1_H_MELDUNG'),
+                                  tb_t('LOX.S1_H_TOKEN'), tb_t('LOX.S1_H_ANSAGE'), tb_t('LOX.S1_H_LEVEL'),
+                                  tb_t('LOX.S1_H_GRENZE'))),
+        array('seite' => 'Spotpreis Tibber Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'zeilen' => $s2,
+              'schritte' => array(tb_t('LOX.S2_SCHRITT1'), tb_t('LOX.S2_SCHRITT2'), tb_t('LOX.S2_SCHRITT3'),
+                                  tb_t('LOX.S2_SCHRITT4'), tb_t('LOX.S2_SCHRITT5'), tb_t('LOX.S2_SCHRITT6')),
+              'zu' => array(array('#27', tb_t('LOX.S2_ZU_STEHT')), array('#28-#31', tb_t('LOX.S2_ZU_DIGITAL'))),
+              'hinweise' => array(tb_t('LOX.S2_H_AUSFALL'), tb_t('LOX.S2_H_SPERRE'), tb_t('LOX.S2_H_WECHSEL'),
+                                  tb_t('LOX.S2_H_LAUFEN'))),
+        array('seite' => 'Spotpreis Tibber Werte', 'bild' => 'einbindung_loxone_werte.png', 'zeilen' => $s3,
+              'schritte' => array(tb_t('LOX.S3_SCHRITT1'), tb_t('LOX.S3_SCHRITT2'), tb_t('LOX.S3_SCHRITT3'),
+                                  tb_t('LOX.S3_SCHRITT4'), tb_t('LOX.S3_SCHRITT5')),
+              'zu' => array(array('#31/#32', tb_t('LOX.S3_ZU_FENSTER')), array('#34', tb_t('LOX.S3_ZU_MORGEN'))),
+              'hinweise' => array(tb_t('LOX.S3_H_FENSTER'), tb_t('LOX.S3_H_MORGEN'), tb_t('LOX.S3_H_QUELLE'),
+                                  tb_t('LOX.S3_H_STRICH'))),
+        array('seite' => 'Spotpreis Tibber Verbrauch', 'bild' => 'einbindung_loxone_verbrauch.png', 'zeilen' => $s4,
+              'schritte' => array(tb_t('LOX.S4_SCHRITT1'), tb_t('LOX.S4_SCHRITT2'), tb_t('LOX.S4_SCHRITT3'),
+                                  tb_t('LOX.S4_SCHRITT4'), tb_t('LOX.S4_SCHRITT5'), tb_t('LOX.S4_SCHRITT6')),
+              'zu' => array(array('#9/#10, #24/#25', tb_t('LOX.S4_ZU_IMPULS')), array('#7', tb_t('LOX.S4_ZU_KOSTEN'))),
+              'hinweise' => array(tb_t('LOX.S4_H_KONTO'), tb_t('LOX.S4_H_VORZEICHEN'), tb_t('LOX.S4_H_OHNE'),
+                                  tb_t('LOX.S4_H_STATISTIK'))),
+        array('seite' => 'Spotpreis Tibber Stundenprofil', 'bild' => 'einbindung_loxone_stundenprofil.png', 'zeilen' => $s5,
+              'schritte' => array(tb_t('LOX.S5_SCHRITT1'), tb_t('LOX.S5_SCHRITT2'), tb_t('LOX.S5_SCHRITT3'),
+                                  tb_t('LOX.S5_SCHRITT4'), tb_t('LOX.S5_SCHRITT5')),
+              'zu' => array(array('#26', tb_t('LOX.S5_ZU_OPT'))),
+              'hinweise' => array(tb_t('LOX.S5_H_SPOTMARKT'), tb_t('LOX.S5_H_CT'), tb_t('LOX.S5_H_VIERTEL'),
+                                  tb_t('LOX.S5_H_STRICH'))),
     );
 }
 ?>
 
 <div class="sm-step"><b><?= tb_e(tb_t('LOX.S6_TITEL')) ?></b><br>
 <?= tb_t('LOX.S6_TEXT') ?>
+<?php foreach (tb_bausteine() as $tb_s) { ?>
+<h4 class="sm-h4"><?= tb_e($tb_s['seite']) ?></h4>
+<div class="sm-hinweis"><b><?= tb_e(tb_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($tb_s['schritte'] as $tb_x) { ?>
+<li><?= $tb_x ?></li>
+<?php } ?>
+</ol></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?= tb_e(tb_t('LOX.T_BAUSTEIN')) ?></th><th><?= tb_e(tb_t('LOX.T_NAMENSVORSCHLAG')) ?></th>
     <th><?= tb_e(tb_t('LOX.T_PARAMETER')) ?></th><th><?= tb_e(tb_t('LOX.T_EINGAENGE')) ?></th></tr>
-<?php foreach (tb_bausteine() as $tb_b) { ?>
-<tr><td><?= (int) $tb_b[0] ?></td><td><?= tb_t($tb_b[1]) ?></td><td><?= tb_t($tb_b[2]) ?></td>
-    <td><?php
-        /* Ein fertiger Text (aus tb_muster_zelle) wird NICHT noch einmal durch
-         * tb_t() geschickt - sonst suchte die Uebersetzung einen Schluessel,
-         * der ein ganzer Satz ist, und gaebe ihn unveraendert zurueck. */
-        if (is_array($tb_b[3])) { echo $tb_b[3]['text']; }
-        elseif ($tb_b[3] !== '') { echo tb_t($tb_b[3]); }
-        else { echo '&mdash;'; }
-    ?></td><td><?= $tb_b[4] ?></td></tr>
+<?php foreach ($tb_s['zeilen'] as $tb_z) { ?>
+<tr><td><?= (int) $tb_z[0] ?></td><td><?= tb_e($tb_z[1]) ?></td>
+    <td><?= $tb_z[5] ? '<span class="sm-mono">' . tb_e($tb_z[2]) . '</span>' : tb_e($tb_z[2]) ?></td>
+    <td><?= tb_e($tb_z[3]) ?></td><td><?= tb_e($tb_z[4]) ?></td></tr>
 <?php } ?>
 </table>
-<p class="sm-hilfe"><?= tb_t('LOX.S6_ANSAGE') ?></p>
-<?= tb_t('LOX.S6_ERLAEUTERUNG') ?>
+<?php foreach ($tb_s['zu'] as $tb_h) { ?>
+<p class="sm-hilfe"><b><?= tb_e(sprintf(tb_t('LOX.ZU'), $tb_h[0])) ?></b> <?= $tb_h[1] ?></p>
+<?php } ?>
+<div class="sm-warnung"><b><?= tb_e(tb_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($tb_s['hinweise'] as $tb_x) { ?>
+<li><?= $tb_x ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= tb_e($tb_s['bild']) ?>" alt="<?= tb_e(sprintf(tb_t('LOX.BILD_ALT'), $tb_s['seite'])) ?>" loading="lazy">
+<figcaption><?= tb_e(sprintf(tb_t('LOX.BILD_UNTERSCHRIFT'), $tb_s['seite'])) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= tb_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= tb_e(tb_t('LOX.S7_TITEL')) ?></b><br>

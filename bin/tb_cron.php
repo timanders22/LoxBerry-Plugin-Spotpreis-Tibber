@@ -1018,6 +1018,46 @@ function tb_selbsttest()
               . ' (erwartet 22 von 25: genug Preisstunden, Rang wie bisher)';
     if (!$ok15) { $fehler++; }
 
+    /* --- Stundenpreise PH00-PH23 (seit 0.9.32, Welle Bild 16, Entscheidung 16) ---
+     *
+     * Am Pruefstueck oben: 20 ct, nachts 2-5 Uhr 10 ct, abends 18-20 Uhr 40 ct. Die Erwartung
+     * sind feste Zahlen, nicht dieselbe Rechnung noch einmal. In Vierteln geliefert muss
+     * dasselbe herauskommen. */
+    $ph1 = tb_stundenprofil($liste);
+    $ph4 = tb_stundenprofil($liste4);
+    $ok16 = (count($ph1) === 24) && (abs($ph1[0] - 20.0) < 0.001) && (abs($ph1[2] - 10.0) < 0.001)
+            && (abs($ph1[19] - 40.0) < 0.001) && (abs($ph1[23] - 20.0) < 0.001)
+            && ($ph4 === $ph1);
+    $zeilen[] = ($ok16 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
+              . 'Stundenpreise PH00/PH02/PH19/PH23: ' . var_export($ph1[0], true) . '/'
+              . var_export($ph1[2], true) . '/' . var_export($ph1[19], true) . '/'
+              . var_export($ph1[23], true) . ' ct, aus Vierteln '
+              . ($ph4 === $ph1 ? 'gleich' : 'VERSCHIEDEN') . ' (erwartet 20/10/40/20, gleich)';
+    if (!$ok16) { $fehler++; }
+
+    /* Gemischt: Stunde 7 in vier Vierteln zu 8, 12, 16 und 20 ct ergibt das Mittel 14;
+     * Stunde 8 fehlt ganz und bleibt null (der Endpunkt sendet dann einen Strich). */
+    $mix = array();
+    foreach ($liste as $e) {
+        $hh = (int) date('G', $e['ts']);
+        if ($hh === 8) { continue; }
+        if ($hh === 7) {
+            foreach (array(8.0, 12.0, 16.0, 20.0) as $q => $qct) {
+                $mix[] = array_merge($e, array('ts' => $e['ts'] + $q * 900, 'ct' => $qct));
+            }
+            continue;
+        }
+        $mix[] = $e;
+    }
+    $phm = tb_stundenprofil($mix);
+    $ok17 = ($phm[7] !== null) && (abs($phm[7] - 14.0) < 0.001) && ($phm[8] === null)
+            && (abs($phm[9] - 20.0) < 0.001);
+    $zeilen[] = ($ok17 ? 'Rechenkern: [OK]   ' : 'Rechenkern: [FEHL] ')
+              . 'Stundenmittel und Luecke: PH07 aus 8/12/16/20 ct ' . var_export($phm[7], true)
+              . ', PH08 ohne Eintrag ' . var_export($phm[8], true) . ', PH09 '
+              . var_export($phm[9], true) . ' (erwartet 14, NULL, 20)';
+    if (!$ok17) { $fehler++; }
+
     // Die Loxone-Vorlage muss wohlgeformt sein.
     list($vname, $vinhalt) = tb_vorlage();
     $vorher = libxml_use_internal_errors(true);
