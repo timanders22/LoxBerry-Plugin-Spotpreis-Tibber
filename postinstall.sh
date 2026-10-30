@@ -129,6 +129,40 @@ if ! command -v php >/dev/null 2>&1; then
 fi
 echo "<INFO> PHP: $(php -v 2>/dev/null | head -1)"
 
+# ---------- endpunkt_ein beim Update (Gruppe 43, 0.9.33, Hausform G39 E-E1 A) ----------
+# Neue Anlagen nehmen das MQTT-Gateway V2; dort ist der lesende HTTP-Endpunkt ab Werk aus (tb_vorgaben()). Eine
+# Anlage, die von einer Fassung vor 0.9.33 kommt, nutzt ihn vermutlich (HTTP-Vorlage) - fehlt der Schluessel in der
+# zurueckgespielten Konfiguration, wird er auf 1 gesetzt, in tibber.json und in der Zweitschrift. Ein vorhandener
+# Wert bleibt (auch 0). Eine Konfiguration ohne Inhalt ({}) bleibt unberuehrt. Unteilbar (Nebendatei, Rechte vor dem
+# Umbenennen).
+if [ "$TB_MARKE" = "1" ]; then
+    for TB_F in "$PCONFIG/tibber.json" "$BASE/config/plugins/$PFOLDER.backup.json"; do
+        [ -s "$TB_F" ] && [ ! -L "$TB_F" ] || continue
+        php -r '$f = $argv[1];
+$d = json_decode((string) @file_get_contents($f), true);
+if (!is_array($d)) { exit(1); }
+if (!$d || array_key_exists("endpunkt_ein", $d)) { exit(3); }
+$d["endpunkt_ein"] = 1;
+$j = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$t = $f . ".g43." . getmypid();
+$m = fileperms($f) & 0777;
+$alt = umask(077);
+$ok = $j !== false && @file_put_contents($t, $j) === strlen($j);
+umask($alt);
+if (!$ok) { @unlink($t); exit(1); }
+@chmod($t, $m);
+if (!@rename($t, $f)) { @unlink($t); exit(1); }
+exit(0);' -- "$TB_F" >/dev/null 2>&1
+        case $? in
+            0) echo "<OK> $(basename "$TB_F"): HTTP-Endpunkt bleibt eingeschaltet (endpunkt_ein = 1, Bestand)." ;;
+            3) ;;
+            *) echo "<INFO> $(basename "$TB_F"): endpunkt_ein liess sich nicht ergaenzen - der Endpunkt ist aus,"
+               echo "<INFO> bis er im Reiter MQTT eingeschaltet wird." ;;
+        esac
+    done
+    chmod 600 "$PCONFIG/tibber.json" 2>/dev/null
+fi
+
 # sockets steht hier seit 0.9.10 nicht mehr: keine Zeile des Plugins benutzt
 # eine Funktion aus ext/sockets, der Weg zum MQTT-Gateway laeuft ueber
 # stream_socket_client() aus dem PHP-Kern.
@@ -285,7 +319,12 @@ if [ "$TB_MARKE" = "1" ] && [ -d "$TB_SICHER" ]; then
         done
         TB_NAMEN="$TB_NAMEN verlauf($(cat "$PDATA/verlauf/"*.csv 2>/dev/null | grep -c .) Punkte)"
     fi
-    for TB_Q in "$TB_SICHER/laufend.json" "$TB_SICHER/mqtt_praefixe.json" "$TB_SICHER/"bericht_*.done; do
+    # Gruppe 43 (0.9.33): dieselbe Liste wie in preupgrade.sh - was neu schon da ist, gilt (nur laufend.json und
+    # mqtt_praefixe.json werden vereinigt).
+    for TB_Q in "$TB_SICHER/laufend.json" "$TB_SICHER/mqtt_praefixe.json" "$TB_SICHER/"bericht_*.done \
+                "$TB_SICHER/bericht.json" "$TB_SICHER/zaehler" "$TB_SICHER/ansage_anlaesse.json" \
+                "$TB_SICHER/haus_anbieter.json" "$TB_SICHER/".meld_* "$TB_SICHER/".notify_* \
+                "$TB_SICHER/.mqtt_altlast_geraeumt" "$TB_SICHER/.mqtt_ok_geraeumt" "$TB_SICHER/.mqtt_altlast_blind"; do
         [ -f "$TB_Q" ] || continue
         TB_Z="$PDATA/$(basename "$TB_Q")"
         if [ -s "$TB_Z" ]; then

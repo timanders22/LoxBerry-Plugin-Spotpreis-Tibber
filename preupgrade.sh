@@ -288,7 +288,13 @@ if [ -d "$TB_DATEN" ]; then
         done
         TB_NAMEN="$TB_NAMEN verlauf($(cat "$TB_SICHER/verlauf/"*.csv 2>/dev/null | grep -c .) Punkte)"
     fi
-    for TB_Q in "$TB_DATEN/laufend.json" "$TB_DATEN/mqtt_praefixe.json" "$TB_DATEN/"bericht_*.done; do
+    # Gruppe 43 (0.9.33): ALLE Laufzeitdateien, die kein Abruf wiederbringt - Monatsbericht, Lebenszeichen,
+    # Zustand der Ansage, Zustand der Anbieterregel, Meldungs- und Abraeum-Merker. stand.json, verbrauch.json und
+    # die Takt-Merker .letzter_* nicht: die raeumt postupgrade.sh bewusst, damit gleich nach dem Update neu geholt wird.
+    for TB_Q in "$TB_DATEN/laufend.json" "$TB_DATEN/mqtt_praefixe.json" "$TB_DATEN/"bericht_*.done \
+                "$TB_DATEN/bericht.json" "$TB_DATEN/zaehler" "$TB_DATEN/ansage_anlaesse.json" \
+                "$TB_DATEN/haus_anbieter.json" "$TB_DATEN/".meld_* "$TB_DATEN/".notify_* \
+                "$TB_DATEN/.mqtt_altlast_geraeumt" "$TB_DATEN/.mqtt_ok_geraeumt" "$TB_DATEN/.mqtt_altlast_blind"; do
         [ -f "$TB_Q" ] || continue
         cp -p "$TB_Q" "$TB_SICHER/" 2>/dev/null
         if cmp -s "$TB_Q" "$TB_SICHER/$(basename "$TB_Q")"; then

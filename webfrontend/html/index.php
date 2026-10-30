@@ -150,6 +150,17 @@ if ($tb_selbsttest) {
     exit;
 }
 
+/* ---------------- Endpunkt eingeschaltet? (Gruppe 43, 0.9.33) ----------------
+ * Hausform: neue Anlagen holen die Werte ueber das MQTT-Gateway V2; der HTTP-Endpunkt ist bei einer Neuinstallation
+ * aus und bleibt bei einem Update an (postinstall.sh setzt endpunkt_ein = 1, wenn der Schluessel fehlt). Geprueft
+ * NACH dem Token - ein falsches Token antwortet weiter TOKEN - und nach dem Selbsttest, der offen bleibt. */
+if (empty($tb_cfg['endpunkt_ein'])) {
+    http_response_code(403);
+    echo "FEHLER;OK=0;GRUND=ENDPUNKT_AUS\n";
+    echo "Der HTTP-Endpunkt ist ausgeschaltet (Reiter MQTT, Haken HTTP-Endpunkt). Werte kommen ueber das MQTT-Gateway V2.\n";
+    exit;
+}
+
 /* ---------------- Aktion (Weissliste) ---------------- */
 $tb_erlaubt = array('status', 'stunden', 'verbrauch', 'pulse', 'json');
 if ($tb_aktion === '') { $tb_aktion = 'status'; }

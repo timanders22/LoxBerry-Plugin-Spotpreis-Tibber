@@ -387,10 +387,12 @@ if ($tb_post && isset($_POST['speichern'])) {
      * loescht, beides zugleich ist ein Widerspruch. */
     $tb_tmangel = array();
     $tb_tbean = array();
+    $tb_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $tb_neucfg['tts'] = ansage_formular_lesen($_POST, tb_tts($tb_cfg), $tb_tmangel, $tb_tbean,
-                                              tb_ansage_opt(), tb_ansage_k());
+                                              tb_ansage_opt() + array(
+                                              'ziele' => tb_mit_zielen()), tb_ansage_k(), $tb_thinw);
     foreach ($tb_tmangel as $tb_tm) { $tb_fehler[] = tb_e($tb_tm['text']); }
-    foreach ($tb_tbean as $tb_tb) { $tb_falsch[] = $tb_tb; }
+    foreach ($tb_tbean as $tb_tb) { $tb_falsch[] = tb_ziele_x2_name($tb_tb); }     // 0.9.33: Tabelle name[N] -> name.N
     foreach (tb_ansage_anlaesse() as $tb_as) { $tb_neucfg[$tb_as] = isset($_POST[$tb_as]) ? 1 : 0; }
     /* Seit 0.9.28: die Ansagezeit (hh:mm oder leer); eine Liste statt eines Textes ist eine
      * Beanstandung, kein leeres Feld. Danach die Kreuzregel aus tb_config_kreuzpruefen(). */
@@ -425,6 +427,7 @@ if ($tb_post && isset($_POST['speichern'])) {
                                                                 array('ansage_von', 'ansage_bis')),
             array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht'),
                         array_values(tb_ansage_anlaesse()), $tb_ahk), $tb_falsch);
+        $tb_eingaben['werte'] += tb_ziele_x2_werte();     // Welle Mehrfach-Ziele (0.9.33): die Tabelle flach als name.N
         tb_log('Einstellungen nicht gespeichert: ' . count($tb_falsch) . ' Feld(er) beanstandet.');
     } else {
         $tb_tok_ok = true;
@@ -441,6 +444,9 @@ if ($tb_post && isset($_POST['speichern'])) {
         }
         if ($tb_tok_ok && tb_config_speichern($tb_neucfg)) {
             $tb_meldungen[] = tb_t('EINST.GESPEICHERT');
+            $tb_thl = array();     // Welle Mehrfach-Ziele (0.9.33): Hinweise des Moduls, maskiert in die Meldungen
+            foreach ($tb_thinw as $tb_th) { $tb_thl[] = $tb_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
+            foreach ($tb_thl as $tb_th1) { $tb_meldungen[] = tb_e($tb_th1); }
             tb_log('Einstellungen gespeichert.');
         } elseif ($tb_tok_ok) {
             $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), tb_e($tb_p['config']));
@@ -481,6 +487,8 @@ if ($tb_post && isset($_POST['save_fahrplan'])) {
     /* Die Haken zuerst: eine nicht angehakte Checkbox sendet gar nichts,
      * isset() ist hier also die Frage und nicht der Wert. */
     $tb_fpneucfg['hysterese'] = isset($_POST['hysterese']) ? 1 : 0;
+    /* Gruppe 43 (0.9.33, E6): Speicherstand vom Speicher-Plugin (haus/speicher), ab Werk aus. */
+    $tb_fpneucfg['haus_speicher_ein'] = isset($_POST['haus_speicher_ein']) ? 1 : 0;
 
     /* Die uebrigen globalen Felder ueber eine Liste, damit Feldname,
      * Pruefung und Zuweisung nicht auseinanderlaufen koennen. */
@@ -557,7 +565,7 @@ if ($tb_post && isset($_POST['save_fahrplan'])) {
          * halbrichtiger Eintrag, sondern ein anderer Fahrplan. */
         foreach ($tb_fpmangel as $tb_fpm) { $tb_fehler[] = $tb_fpm; }
         $tb_fehler[] = tb_t('EINST.NICHTS_GESPEICHERT');
-        $tb_eingaben = tb_eingaben_sammeln('fahrplan', $tb_fpfelder, array('hysterese'), $tb_falsch);
+        $tb_eingaben = tb_eingaben_sammeln('fahrplan', $tb_fpfelder, array('hysterese', 'haus_speicher_ein'), $tb_falsch);
         $tb_eingaben['regeln'] = $tb_fpeingabe;
     } elseif (!tb_config_lesbar()) {
         $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), tb_e($tb_p['config']));
@@ -599,6 +607,10 @@ if ($tb_post && isset($_POST['save_mqtt'])) {
     $tb_m_alt_pr = trim(tb_mqtt_wert_saeubern((string) $tb_mcfg['mqtt_topic']), '/ ');
     if ($tb_m_alt_pr === '') { $tb_m_alt_pr = 'tibber'; }
     $tb_m_ein = isset($_POST['mqtt_ein']) ? 1 : 0;
+    /* Gruppe 43 (0.9.33): Anbieter haus/strompreis (E3) und der lesende HTTP-Endpunkt (G3) - im selben Formular. */
+    $tb_m_haus = isset($_POST['haus_strompreis_ein']) ? 1 : 0;
+    $tb_m_ep = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    $tb_m_vorher = $tb_mcfg;
     $tb_mtopic = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])
                ? trim((string) $_POST['mqtt_topic']) : '';
     if ($tb_mtopic === '' || !tb_wert_taugt($tb_mtopic)
@@ -608,12 +620,23 @@ if ($tb_post && isset($_POST['save_mqtt'])) {
     }
     if ($tb_fehler) {
         $tb_fehler[] = tb_t('EINST.NICHTS_GESPEICHERT');
-        $tb_eingaben = tb_eingaben_sammeln('mqtt', array('mqtt_topic'), array('mqtt_ein'), $tb_falsch);
+        $tb_eingaben = tb_eingaben_sammeln('mqtt', array('mqtt_topic'),
+                                           array('mqtt_ein', 'haus_strompreis_ein', 'endpunkt_ein'), $tb_falsch);
     } else {
         $tb_mcfg['mqtt_ein'] = $tb_m_ein;
         $tb_mcfg['mqtt_topic'] = $tb_mtopic;
+        $tb_mcfg['haus_strompreis_ein'] = $tb_m_haus;
+        $tb_mcfg['endpunkt_ein'] = $tb_m_ep;
         if (tb_config_speichern($tb_mcfg)) {
             $tb_meldungen[] = tb_t('EINST.GESPEICHERT');
+            /* Gruppe 43: Folgen fuer den Anbieter haus/strompreis - abgeraeumt wird nur, wenn diese Installation
+             * Anbieter war (nicht, wenn sie nur wartete oder abgeloest wurde; tb_haus_folgen()). */
+            if ((int) !empty($tb_m_vorher['haus_strompreis_ein']) !== $tb_m_haus || $tb_m_ein !== $tb_m_alt_ein) {
+                list($tb_hm, $tb_ha) = tb_haus_folgen($tb_m_vorher, $tb_mcfg);
+                if ($tb_hm !== '') {
+                    if ($tb_ha === 'ok') { $tb_meldungen[] = tb_e($tb_hm); } else { $tb_hinweise[] = tb_e($tb_hm); }
+                }
+            }
             /* Eingeschaltet oder Praefix gewechselt: der Merker der zuletzt
              * gesendeten Werte gilt nicht mehr - der naechste Lauf sendet den
              * vollen Satz (Bauliste M2; so sagt es postupgrade.sh seit 0.9.13). */
@@ -642,6 +665,16 @@ if ($tb_post && isset($_POST['save_mqtt'])) {
             $tb_fehler[] = sprintf(tb_t('EINST.FEHLER_SPEICHERN'), tb_e($tb_p['config']));
         }
     }
+    $tb_tab = 'tab-mqtt';
+}
+
+/* ---------------- Anbieter waehlen (Gruppe 43, E4 Schritt 3) ----------------
+ * Eigenes Formular, eigener Handler: schreibt einmal haus/strompreis/anbieter = tibber; der bisherige Anbieter hoert
+ * selbst auf, wenn er die Regel kennt - sonst sagt die Meldung, wo der Haken auszuschalten ist. */
+if ($tb_post && isset($_POST['haus_anbieter_waehlen'])) {
+    list($tb_wm, $tb_wa) = tb_haus_waehlen(tb_config());
+    if ($tb_wa === 'ok') { $tb_meldungen[] = tb_e($tb_wm); } else { $tb_hinweise[] = tb_e($tb_wm); }
+    tb_log('Knopf "Diese Installation soll Anbieter sein": ' . $tb_wa . '.');
     $tb_tab = 'tab-mqtt';
 }
 
@@ -706,18 +739,27 @@ if ($tb_post && isset($_POST['test'])) {
 /* ---------------- Testansage (Nr. 36 b, seit 0.9.28) ----------------
  * POST mit Einmalmeldung und 303 (PRG): Neuladen spricht nicht noch einmal. Ins
  * Protokoll nur die Kurzform ohne Text und Token. */
-if ($tb_post && isset($_POST['ansage_test'])) {
-    $tb_ak = tb_ansage_k();
-    $tb_ar = ansage_testansage(tb_tts(), $tb_ak);
-    tb_log('Testansage: ' . ansage_kurz($tb_ar));
-    if ($tb_ar['stand'] === 1) {
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($tb_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    $tb_tk = tb_ansage_k();
+    $tb_tnur = (isset($_POST['ansage_test_ziel']) && tb_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $tb_tnur === 0) {
+        $tb_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($tb_tnur >= 1) {
+        $tb_tr = ansage_testansage(tb_tts(), $tb_tk, $tb_tnur);
+    } else {
+        $tb_tr = ansage_testansage(tb_tts(), $tb_tk);
+    }
+    tb_log('Testansage' . ($tb_tnur >= 1 ? ' an Ziel ' . $tb_tnur : '') . ': ' . ansage_kurz($tb_tr));
+    if ($tb_tr['stand'] === 1) {
         $tb_meldungen[] = tb_t('TEST.M_ANSAGE_TEST_OK');
-    } elseif ($tb_ar['stand'] === -1) {
+    } elseif ($tb_tr['stand'] === -1) {
         $tb_hinweise[] = sprintf(tb_t('TEST.M_ANSAGE_TEST_NICHTS'),
-                                 tb_e(ansage_kennung_text($tb_ar['kennung'], $tb_ak)));
+                                 tb_e(ansage_kennung_text($tb_tr['kennung'], $tb_tk)));
     } else {
         $tb_fehler[] = sprintf(tb_t('TEST.M_ANSAGE_TEST_FEHL'),
-                               tb_e(ansage_kennung_text($tb_ar['kennung'], $tb_ak)));
+                               tb_e(ansage_kennung_text($tb_tr['kennung'], $tb_tk)));
     }
     $tb_tab = 'tab-test';
 }
@@ -774,8 +816,15 @@ if ($tb_post && isset($_POST['tb_zurueck'])) {
              * Schleife aus je einem Fund pro Anlauf. */
             $tb_fehler[] = tb_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $tb_mangel);
-        } elseif (tb_config_speichern($tb_neu)) {
+        } elseif (($tb_rs_alt = tb_config()) !== null
+                  && tb_config_speichern($tb_neu + (!empty($tb_rs_alt['_haus_frueher']) ? array('_haus_frueher' => 1) : array()))) {
             $tb_meldungen[] = sprintf(tb_t('EINST.SICH_UEBERNOMMEN'), $tb_n);
+            /* Gruppe 43: der Merker "war Anbieter" gehoert nicht in eine Sicherung und bleibt; schaltet die
+             * Sicherung den Anbieter aus, raeumt tb_haus_folgen() ab (nur wenn diese Installation Anbieter war). */
+            list($tb_hm, $tb_ha) = tb_haus_folgen($tb_rs_alt, $tb_neu);
+            if ($tb_hm !== '') {
+                if ($tb_ha === 'ok') { $tb_meldungen[] = tb_e($tb_hm); } else { $tb_hinweise[] = tb_e($tb_hm); }
+            }
             if ($tb_tok !== null && $tb_tok !== array() && $tb_tok !== '' && tb_token_speichern($tb_tok)) {
                 $tb_meldungen[] = tb_t('EINST.SICH_TOKEN_UEBERNOMMEN');
             }
@@ -1215,9 +1264,12 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 <div class="sm-hinweis"><?= tb_t('EINST.ANSAGE_TEXT') ?></div>
 <?= ansage_formular_html(tb_tts($tb_cfg), array(
     'w' => function ($n, $g) { return tb_fw('einst', $n, $g); },
-    'm' => function ($n) { return tb_fm($n); },
+    'm' => function ($n) { return tb_fm(tb_ziele_x2_name($n)); },     // 0.9.33: Tabelle name[N] -> name.N
     'c' => function ($n, $g) { return tb_fh('einst', $n, $g); },
-    'modi' => tb_ansage_modi()), tb_ansage_k()) ?>
+    'modi' => tb_ansage_modi(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => tb_mit_zielen(),
+    'ziele_post' => tb_fa('einst') ? tb_ziele_x2_post($tb_eingaben['werte']) : null), tb_ansage_k()); ?>
 <?php foreach (tb_ansage_anlaesse() as $tb_an => $tb_as) { ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
@@ -1378,6 +1430,14 @@ if (($tb_fpumw['pv_meldung'] === 'NICHT_ERREICHBAR')
 <?php if ($tb_fpumw['pv_meldung'] === 'WERTE_UNGUELTIG') { ?>
 <div class="sm-warnung"><?= tb_t('FP.PV_WERTE_UNGUELTIG') ?></div>
 <?php } ?>
+<?php if ($tb_fpumw['pv_meldung'] === 'ZU_ALT') { ?>
+<div class="sm-warnung"><?= sprintf(tb_t('FP.PV_ZU_ALT'), (int) round(TB_PV_HOECHSTALTER / 3600)) ?></div>
+<?php } ?>
+<?php if (isset($tb_fpumw['soc_quelle']) && $tb_fpumw['soc_quelle'] === 'haus') { ?>
+<div class="sm-hinweis"><?= tb_t('HAUS.STAND_HAUS') ?></div>
+<?php } elseif (in_array($tb_fpumw['soc_meldung'], array('HAUS_SCHWEIGT', 'HAUS_SCHWEIGT_OHNE'), true)) { ?>
+<div class="sm-warnung"><?= tb_t('HAUS.' . $tb_fpumw['soc_meldung']) ?></div>
+<?php } ?>
 <?php if ($tb_fpumw['soc_meldung'] === 'ZU_ALT') { ?>
 <div class="sm-warnung"><?= sprintf(tb_t('FP.SOC_ZU_ALT'), (int) round(TB_SOC_HOECHSTALTER / 60)) ?></div>
 <?php } ?>
@@ -1422,6 +1482,13 @@ if (($tb_fpumw['pv_meldung'] === 'NICHT_ERREICHBAR')
 <?php } ?>
   </select>
   <div class="sm-hilfe"><?= tb_t('FP.H_PV_EINHEIT') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="haus_speicher_ein" value="1" <?= tb_fh('fahrplan', 'haus_speicher_ein', $tb_cfg['haus_speicher_ein']) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('HAUS.L_SPEICHER')) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('HAUS.H_SPEICHER') ?></div>
 </div>
 <div class="sm-reihe">
   <div class="sm-feld">
@@ -1663,11 +1730,40 @@ foreach ($tb_fpfp['preise'] as $tb_fpts => $tb_fpct) {
   <label for="mqtt_topic"><?= tb_e(tb_t('EINST.L_MQTT_TOPIC')) ?></label>
   <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= tb_e(tb_fw('mqtt', 'mqtt_topic', $tb_cfg['mqtt_topic'])) ?>" placeholder="tibber"<?= tb_fm('mqtt_topic') ?>>
 </div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="haus_strompreis_ein" value="1" <?= tb_fh('mqtt', 'haus_strompreis_ein', $tb_cfg['haus_strompreis_ein']) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('HAUS.L_STROMPREIS')) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('HAUS.H_STROMPREIS') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= tb_fh('mqtt', 'endpunkt_ein', $tb_cfg['endpunkt_ein']) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('HAUS.L_ENDPUNKT')) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('HAUS.H_ENDPUNKT') ?></div>
+</div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= tb_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= tb_e(tb_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<?php if (!empty($tb_cfg['haus_strompreis_ein'])) {
+    /* Gruppe 43 (E4): die Lage der Anbieterregel und der Knopf - eigenes Formular, eigener Handler. */
+    list($tb_hz_st, $tb_hz_txt) = tb_haus_testzeile($tb_cfg); ?>
+<h2><?= tb_e(tb_t('HAUS.H_ANBIETER')) ?></h2>
+<div class="<?= $tb_hz_st === 1 ? 'sm-hinweis' : ($tb_hz_st === 0 ? 'sm-fehler' : 'sm-warnung') ?>"><?= tb_e($tb_hz_txt) ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
+<input data-role="none" type="hidden" name="haus_anbieter_waehlen" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<p class="sm-hilfe"><?= tb_t('HAUS.H_WAEHLEN') ?></p>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= tb_e(tb_t('HAUS.K_WAEHLEN')) ?></button>
+</div>
+</form>
+<?php } ?>
 <h2><?= tb_e(tb_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= tb_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 <?php if (!$tb_mqtt['gefunden']) { ?>
@@ -1691,6 +1787,25 @@ foreach ($tb_fpfp['preise'] as $tb_fpts => $tb_fpct) {
 <p><span class="sm-mono"><?= tb_e($tb_cfg['mqtt_topic']) ?>/#</span></p>
 </div>
 
+<?php if ((int) $tb_mqtt['fassung'] !== 1) {
+    /* Gruppe 43 (G1): Gateway V2 - eine Quelle (tb_v2_haken()) fuer Tabelle, Reiter Test und Healthcheck. Bei
+     * Fassung 1 gilt der Abo-Text darueber (Rueckfall Gateway V1). */
+    list($tb_v2st, $tb_v2txt) = tb_v2_haken_lage($tb_cfg); ?>
+<h2><?= tb_e(tb_t('MQTT.H_V2')) ?></h2>
+<p class="sm-hilfe"><?= tb_t('MQTT.V2_ERKLAERUNG') ?></p>
+<div class="<?= $tb_v2st === 1 ? 'sm-hinweis' : ($tb_v2st === 0 ? 'sm-fehler' : 'sm-warnung') ?>"><?= tb_e($tb_v2txt) ?></div>
+<table class="sm-tbl">
+<tr><th><?= tb_e(tb_t('MQTT.T_THEMA')) ?></th><th><?= tb_e(tb_t('MQTT.T_GATEWAYNAME')) ?></th>
+    <th><?= tb_e(tb_t('MQTT.T_NONCACHED')) ?></th><th><?= tb_e(tb_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach (tb_v2_haken($tb_cfg) as $tb_v2e) { ?>
+<tr><td><span class="sm-mono"><?= tb_e($tb_v2e['thema']) ?></span></td>
+    <td><span class="sm-mono"><?= tb_e($tb_v2e['name']) ?></span></td>
+    <td class="<?= $tb_v2e['noncached'] ? 'sm-an' : '' ?>"><?= tb_e(tb_t($tb_v2e['noncached'] ? 'MQTT.NONCACHED_JA' : 'MQTT.NONCACHED_NEIN')) ?></td>
+    <td><?= tb_t($tb_v2e['bez']) ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+
 <h2><?= tb_e(tb_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= tb_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
@@ -1713,6 +1828,10 @@ foreach ($tb_fpfp['preise'] as $tb_fpts => $tb_fpct) {
 <div class="sm-seite<?= $tb_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= tb_e(tb_t('LOX.H_TITEL')) ?></h2>
 <p><?= tb_t('LOX.EINLEITUNG') ?></p>
+<div class="sm-hinweis"><?= tb_t('LOX.HAUSFORM_V2') ?></div>
+<?php if (empty($tb_cfg['endpunkt_ein'])) { ?>
+<div class="sm-warnung"><?= tb_t('LOX.ENDPUNKT_AUS') ?></div>
+<?php } ?>
 
 <!-- EINE gesammelte Legende oben im Reiter, und sie nennt genau die Farben,
      die hier als Knopf vorkommen: grau fuer die Vorlage, orange fuer das neue
@@ -2189,6 +2308,9 @@ foreach ($tb_liste as $tb_tag => $tb_w) {
 <input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="ansage_test" value="1"><?= tb_e(tb_t('TEST.K_ANSAGE_TEST')) ?></button>
+    <?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+       ohne weitere Ziele nichts. */
+    if (tb_mit_zielen()) { echo ansage_testknoepfe_html(tb_tts($tb_cfg), tb_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
 </div>
 
