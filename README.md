@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.32
+Version 0.9.33
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -10,6 +10,49 @@ tokengeschützten HTTP-Endpunkt (der Weg der Baustein-Listen) oder über MQTT
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.33
+
+Gruppe 43 (Hausform). Alles Neue ist ab Werk aus; wer die HTTP-Vorlage nutzt, ändert nichts – der Endpunkt bleibt
+beim Update offen, eine Neuinstallation hat ihn aus.
+
+- **MQTT-Gateway V2:** Reiter MQTT mit der Tabelle der anzuhakenden Datenpunkte (Thema, Name in Loxone, Noncached
+  genau bei `status/ok`, `status/zaehler` und den 24 Stundenpreisen `stunde/N/ct`) aus einer Quelle; Reiter Test
+  prüft die Haken (einheitliche Prüfzeile). Bestehende Themen bleiben – `tibber/rank`, `tibber/rankd`,
+  `tibber/status/*` liest auch das BYD-Plugin.
+- **Anbieter `haus/strompreis`** (Haken „Strompreis an andere Plugins geben“, wirkt nur mit MQTT): Endpreise wie
+  im Plugin gezeigt ab der laufenden Stunde, Raster 900 oder 3600 wie Tibber liefert, höchstens 36 Stunden,
+  `anbieter` = `tibber`, Lebenszeichen `haus/strompreis/zaehler`. Kurze Sitzung direkt am Broker, Abräumen mit
+  Rücklesen – nur, wenn diese Installation Anbieter war.
+- **Anbieterregel:** Nur ein Spotpreis-Plugin im Haus ist Anbieter. Diese Installation beginnt von selbst nur, wenn
+  niemand Anbieter ist; sonst wartet sie. Der Knopf „Diese Installation soll Anbieter sein“ übernimmt; der bisherige
+  Anbieter hört selbst auf, wenn er die Regel kennt (aWATTar bis 1.2.39 kennt sie noch
+  nicht – dort den Haken ausschalten). Schweigt ein Anbieter, wird nicht von selbst umgeschaltet. Die Regel steht im
+  gemeinsamen Stück `haus_anbieter.php` (in allen Anbieter-Linien gleich).
+- **Speicherstand vom Speicher-Plugin** (`haus/speicher`, Reiter Fahrplaner) für die Speichergrenzen der
+  Schaltregeln; schweigt die Quelle, gilt die Speicher-Adresse wie bisher.
+- **HTTP-Endpunkt abschaltbar** (`endpunkt_ein`): aus → `FEHLER;OK=0;GRUND=ENDPUNKT_AUS`; der Selbsttest bleibt offen.
+- **Healthcheck** nach Hausform: ohne Token „nicht eingerichtet“ (Hinweis statt Fehler), stehender Minutenlauf
+  (Lebenszeichen älter als 10 min) Fehler, fehlende V2-Haken Warnung.
+- **Sprachmodul 1.2.1** (Stamm): Ausgabearten jetzt auch Sonos4Lox und SonoX.
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 10 s, mit Sonos 30 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  0.9.32. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 0.9.32 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+* **Reiter Test:** *Testansage* spricht wie bisher an alle Ziele; die Knöpfe *Testansage an Ziel n* daneben sprechen
+  den Testsatz nur an diesem Ziel.
+- **PV-Prognose mit Altersgrenze:** liefert die Quelle nicht mehr, zählt die letzte Prognose nur noch für die Stunden, die sie abdeckt, und höchstens 24 Stunden lang – danach rechnet der Fahrplan wie ohne Prognose (keine PV-Sperre aus einem Altwert), mit Hinweis im Reiter Fahrplaner, im Reiter Test und im Protokoll.
+- **−1-Regel:** ein Messwert ohne Aussage kommt über MQTT als −1 an statt gar nicht (bisher stand in Loxone der
+  letzte Wert). Preise und andere Werte, die −1 wirklich annehmen können, gehen weiter gar nicht hinaus; Themen,
+  die eine Einstellung abschaltet, ebenso. Schaltsignale (R1–R4, NEG, MORGEN_OK) kommen ohne Aussage als 0, nie
+  als −1 – am digitalen Eingang hieße −1 „Ein“. HTTP unverändert.
+- **Update:** der Monatsbericht, das Lebenszeichen, der Zustand der Ansage und der Anbieterregel sowie die
+  Meldungsmerker überstehen ein Update.
 
 ## Neu in 0.9.32
 

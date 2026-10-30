@@ -25,6 +25,13 @@
  *   tb_cron.php --selbsttest   Pruefungen ohne Konto, Klartextausgabe
  *   tb_cron.php --mqtt-leeren  aus der Deinstallation: zurueckbehaltene
  *                              Themen der Linie leeren und nachlesen
+ *   tb_cron.php --haus-leeren  aus der Deinstallation: die fuenf retained
+ *                              Themen haus/strompreis abraeumen - nur, wenn
+ *                              diese Installation Anbieter ist oder war und
+ *                              nicht abgeloest wurde (seit 0.9.33)
+ *   tb_cron.php --haus-lesen   der abgekoppelte Leser von haus/speicher und
+ *                              haus/strompreis/anbieter (seit 0.9.33): eigene
+ *                              Sperre, bis 65 s; gestartet vom Minutenlauf
  *
  * Warum die Taktsteuerung hier steckt und nicht im Cron: Tibber bremst
  * haeufige Abrufe. Der Takt soll sich in der Oberflaeche einstellen lassen,
@@ -87,7 +94,10 @@ if (!$tb_gefunden) {
 function tb_sperre_ziehen()
 {
     $datei = sys_get_temp_dir() . '/tb_cron_' . tb_paths()['plugin'] . '.lock';
-    $griff = @fopen($datei, 'c');
+    /* 'ce' (close-on-exec, seit 0.9.33): der Minutenlauf startet den Leser der Haus-Themen als Kind - ohne 'e'
+     * erbte das Kind die Sperre und hielte 65 s lang jeden folgenden Minutenlauf an
+     * (Gedaechtnis sperre-vererbt-sich-an-kinder). */
+    $griff = @fopen($datei, 'ce');
     if ($griff === false) {
         /* Die Sperrdatei laesst sich nicht einmal anlegen. Ohne Sperre weiter
          * zu laufen waere falsch - dann holen zwei Laeufe gleichzeitig ab und
@@ -598,17 +608,14 @@ function tb_veroeffentlichen()
     if ($topic === '') { $topic = 'tibber'; }
 
     $w = tb_werte();
-    $paare = array();
-    foreach ($w as $k => $v) {
-        // ALTER, PULSE_ALTER und ZAEHLER gehen nicht als Wert hinaus: ueber
-        // MQTT gibt es kein Alter (beim Senden ist es immer null oder es
-        // tickt jede Sekunde weiter), und der Zaehler ist ein Lebenszeichen.
-        // Alle stehen unten unter status/ - als Zeitstempel.
-        // Die Liste steht in tb_mqtt_ausgeschlossen(), damit sie sich nicht
-        // von der Themenliste im Reiter MQTT wegbewegen kann.
-        if (in_array($k, tb_mqtt_ausgeschlossen(), true)) { continue; }
-        $paare[strtolower($k)] = $v;
-    }
+    // ALTER, PULSE_ALTER und ZAEHLER gehen nicht als Wert hinaus: ueber
+    // MQTT gibt es kein Alter (beim Senden ist es immer null oder es
+    // tickt jede Sekunde weiter), und der Zaehler ist ein Lebenszeichen.
+    // Alle stehen unten unter status/ - als Zeitstempel.
+    // Die Liste steht in tb_mqtt_ausgeschlossen(), damit sie sich nicht
+    // von der Themenliste im Reiter MQTT wegbewegen kann. Die Paare und die
+    // -1-Regel (Nachtrag 0.9.33) baut tb_mqtt_paare() in der Bibliothek.
+    $paare = tb_mqtt_paare($w, $cfg);
     /* Die Stundenpreise von heute einzeln, damit Loxone einen Tagesverlauf
      * zeichnen kann, ohne den JSON-Endpunkt zu bemuehen.
      *
@@ -1158,7 +1165,7 @@ $tb_argv = isset($argv) ? $argv : array();
  * soll eine Antwort sehen und keinen stillen Normallauf, der Preise holt
  * und MQTT-Nachrichten verschickt. Gemessen am Zendure-Plugin: dort
  * landete derselbe Tippfehler in der Dienstschleife. */
-$tb_bekannt = array('--selbsttest', '--preise', '--verbrauch', '--mqtt-leeren');
+$tb_bekannt = array('--selbsttest', '--preise', '--verbrauch', '--mqtt-leeren', '--haus-leeren', '--haus-lesen');
 foreach ($tb_argv as $tb_i => $tb_a) {
     if ($tb_i === 0) { continue; }
     /* Bis 0.9.9 wurde nur geprueft, was mit -- beginnt. 'php tb_cron.php
@@ -1179,6 +1186,14 @@ if (in_array('--selbsttest', $tb_argv, true)) { exit(tb_selbsttest()); }
  * der Linie leeren und beim Broker nachlesen - ohne Sperre, ohne Abruf, ohne
  * Protokoll (tb_mqtt_leeren() in tb_lib.php). */
 if (in_array('--mqtt-leeren', $tb_argv, true)) { exit(tb_mqtt_leeren()); }
+
+/* Gruppe 43 (0.9.33): aus der Deinstallation die Haus-Themen haus/strompreis abraeumen (gibt immer 0 zurueck) und
+ * der abgekoppelte Leser (eigene Sperre, nie die des Minutenlaufs). */
+if (in_array('--haus-leeren', $tb_argv, true)) { exit(tb_haus_leeren_ausgabe()); }
+if (in_array('--haus-lesen', $tb_argv, true)) {
+    echo tb_haus_leser_lauf(65) . "\n";
+    exit(0);
+}
 
 $tb_sperre = tb_sperre_ziehen();
 if ($tb_sperre === null) {
@@ -1203,6 +1218,13 @@ $tb_cfg = tb_config();
 $tb_preise = in_array('--preise', $tb_argv, true);
 $tb_verbrauch = in_array('--verbrauch', $tb_argv, true);
 $tb_auto = !$tb_preise && !$tb_verbrauch;
+
+/* Gruppe 43 (0.9.33): den abgekoppelten Leser der Haus-Themen starten - so frueh wie moeglich, damit sein Fenster
+ * (bis 65 s) eine ganze Sendeperiode der Anbieter abdeckt (Phasenfalle). Der Minutenlauf wartet nie darauf; ohne
+ * einen der Haken haus_speicher_ein / haus_strompreis_ein verfaellt nur die Ablage. */
+if ($tb_auto) {
+    tb_haus_abnehmer_starten($tb_cfg, __FILE__);
+}
 
 /* Taktsteuerung. Ein Marker je Aufgabe, damit ein verpasster Lauf nicht die
  * ganze Stunde kostet - der naechste Minutenlauf holt es nach. */
@@ -1372,6 +1394,13 @@ if ($tb_f > 0) {
 } elseif ($tb_lage === 'geaendert' || $tb_lage === 'voll') {
     tb_log_gebremst('mqtt_ok', 'MQTT: ' . $tb_v . ' Themen veroeffentlicht, davon '
         . (int) $tb_behalten . ' zurueckbehalten.', 3600);
+}
+
+/* Gruppe 43 (0.9.33, E3/E4): Anbieter haus/strompreis - nach dem Lebenszeichen, mit demselben Zaehler. Nur mit
+ * dem Haken haus_strompreis_ein und MQTT; die Anbieterregel (hanb_lage()) entscheidet, ob diese Installation
+ * sendet. Sonst raeumt der Lauf hoechstens alle 10 Minuten ab, wenn sie Anbieter war (tb_haus_lauf()). */
+if ($tb_auto) {
+    tb_haus_lauf(tb_config());
 }
 
 /* Nr. 36 b (Stufe 2, seit 0.9.28): die Sprachausgabe - NACH allen bestehenden

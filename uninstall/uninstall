@@ -185,6 +185,18 @@ if command -v php >/dev/null 2>&1 && [ -f "$TB_CRON" ]; then
 else
     echo "<INFO> PHP oder tb_cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi
+# Gruppe 43 (0.9.33): die Haus-Themen haus/strompreis abraeumen - nur, wenn diese Installation Anbieter ist oder
+# war und nicht abgeloest wurde (tb_cron.php --haus-leeren entscheidet das selbst und gibt immer 0 zurueck). Ueber
+# eine kurze Sitzung direkt am Broker, mit Ruecklesen. Als loxberry, stdin geschlossen.
+if command -v php >/dev/null 2>&1 && [ -f "$TB_CRON" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout 60 php "$TB_CRON" --haus-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 php "$TB_CRON" --haus-leeren \
+            < /dev/null 2>&1 || true
+    fi
+fi
 
 for DATEI in \
     "$BASE/config/plugins/$PFOLDER.backup.token.json" \

@@ -1,202 +1,69 @@
 #!/usr/bin/env php
 <?php
 /**
- * Spotpreis Tibber - Healthcheck fuer LoxBerry
+ * Spotpreis Tibber - Anschluss an den LoxBerry-Healthcheck (Form seit 0.9.33, Gruppe 43, nach Renault NG 2.1.20)
  *
- * Seit LoxBerry 2.2 ruft sbin/healthcheck.pl eine ausfuehrbare Datei dieses
- * Namens im bin-Ordner des Plugins auf - einmal mit 'title', einmal mit
- * 'check'. Die Antwort ist JSON.
+ * sbin/healthcheck.pl ruft eine ausfuehrbare Datei bin/healthcheck des Plugins auf - einmal mit "title", einmal mit
+ * "check" (Regeln/03 :73-78, Regeln/04 :809). Beide Antworten sind JSON:
+ *   title -> {"desc":"Spotpreis Tibber"}
+ *   check -> {"desc", "status", "result", "logfile"}; Status 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis.
  *
- * Der Gewinn liegt nicht nur in der Systemseite: healthcheck.pl veroeffentlicht
- * das Ergebnis zusaetzlich RETAINED nach MQTT unter
- * <rechnername>/healthcheck/<titel> und in die Zusammenfassung. Das Plugin
- * bekommt damit einen zweiten, unabhaengigen Weg nach Loxone, ohne eine Zeile
- * MQTT-Code zu schreiben.
- *
- * Die LoxBerry-Skala:
- *     leer/0 unbekannt, 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis
- *
- * Der Befund kommt aus DERSELBEN Quelle wie die Oberflaeche und die
- * Benachrichtigung - tb_werte() und tb_alter(). Drei Stellen, die dasselbe
- * anders sagen, sind zwei zu viel.
+ * NUR LESEND: kein Netz, kein Broker, kein Abruf bei Tibber, keine Datei. Geurteilt wird ueber das ALTER
+ * (Lebenszeichen des Minutenlaufs, letzter gelungener Abruf), nie ueber einen einzelnen Abruf - die Fakten sammelt
+ * tb_gesund_fakten(), das Urteil faellt die reine Funktion tb_gesund_urteil() (beide in tb_lib.php):
+ *   - kein Tibber-Token -> 6 "nicht eingerichtet" (eine Neuinstallation ist kein Fehler; bis 0.9.32: 3);
+ *   - Lebenszeichen (data/plugins/<ordner>/zaehler) aelter als 10 min -> 3 (neu: der Minutenlauf steht);
+ *   - letzter gelungener Abruf aelter als die Altersschranke -> 3 mit Fehlertext, sonst 4; noch nie -> 4;
+ *   - Konfiguration nicht 0600 -> 4; Pulse soll laufen, laeuft nicht -> 4;
+ *   - Gateway V2: Haken fehlen -> 4 mit Namen (Gateway V1: keine Aussage);
+ *   - Anbieter haus/strompreis gescheitert (Broker, schweigender gewaehlter Anbieter) -> 4.
+ * Aufruf wie LoxBerry: direkt, als loxberry, Eingabe aus /dev/null. Der Installer setzt bin/ 755. Diese Datei ist
+ * PHP mit Shebang - nie mit /bin/bash aufrufen.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
 
-/**
- * Antworten - und zwar in JEDEM Fall.
- *
- * Die Datei sagt es weiter unten selbst: "Ein Healthcheck, der nichts
- * ausgibt, ist von einem, der nicht laeuft, nicht zu unterscheiden." Bis
- * 0.9.9 standen hier drei blanke echo json_encode(...). Scheitert das - ein
- * Byte aus einer Tibber-Fehlermeldung, das kein gueltiges UTF-8 ist, genuegt,
- * denn der rohe Antworttext landet ueber stand.json in $tb_text -, gibt
- * json_encode false zurueck und echo schreibt NICHTS. sbin/healthcheck.pl
- * bekommt einen leeren Rumpf, die Systemseite zeigt "unbekannt", und weil
- * das Ergebnis zusaetzlich retained nach MQTT geht, behaelt auch der
- * Miniserver seinen letzten Wert.
- */
 function tb_hc_ausgeben(array $felder)
 {
-    $json = json_encode($felder);
+    $json = json_encode($felder, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     if ($json === false) {
-        /* Ein Ersatz, der garantiert kodierbar ist: nur ASCII, keine fremden
-         * Texte. Status 3 heisst "Fehler". */
-        $json = json_encode(array(
-            'desc'   => 'Spotpreis Tibber',
-            'status' => 3,
-            'result' => 'Der Befund liess sich nicht als JSON verpacken ('
-                      . preg_replace('/[^\x20-\x7E]/', '', json_last_error_msg()) . ').',
-        ));
+        $json = '{"desc":"Spotpreis Tibber","status":3,"result":"Der Befund liess sich nicht als JSON verpacken."}';
     }
-    if ($json === false) { $json = '{"desc":"Spotpreis Tibber","status":3,"result":"Fehler"}'; }
-    echo $json;
+    echo $json . "\n";
 }
 
-/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort, nicht
- * die Reihenfolge der Versuche. Installiert liegt diese Datei unter
- * <Wurzel>/bin/plugins/<ordner> und die Bibliothek unter
- * <Wurzel>/webfrontend/html/plugins/<ordner>, im ausgepackten Archiv unter
- * <archiv>/bin und <archiv>/webfrontend/html. Bis 0.9.18 standen drei
- * Kandidaten in Reihe; fehlte die eigene Bibliothek, galt aus einem Archiv
- * unter /<name> der Pfad /webfrontend/html/plugins/bin/tb_lib.php ab der
- * Laufwerkswurzel, und was dort lag, lief als Bibliothek (in WSL gemessen,
- * Pruefung-Spotpreis-Tibber-0.9.19, Faelle C8 bis C10; Bauart
- * ZendureSolarFlow 0.9.26). bin/tb_cron.php, bin/tb_pulse.php und
- * bin/healthcheck tragen denselben Block. */
-if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
-    $tb_kandidat = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php';
-} else {
-    $tb_kandidat = dirname(__DIR__) . '/webfrontend/html/tb_lib.php';
-}
-$tb_gefunden = is_file($tb_kandidat);
-if ($tb_gefunden) { require_once $tb_kandidat; }
-if (!$tb_gefunden) {
-    // Auch der Fehlerfall antwortet in der vorgesehenen Form. Ein Healthcheck,
-    // der nichts ausgibt, ist von einem, der nicht laeuft, nicht zu
-    // unterscheiden.
-    tb_hc_ausgeben(array(
-        'desc' => 'Spotpreis Tibber',
-        'status' => 3,
-        'result' => 'Die Bibliothek tb_lib.php wurde nicht gefunden - das Plugin '
-                  . 'ist unvollstaendig installiert.',
-    ));
-    exit(0);
-}
-
-$tb_was = isset($argv[1]) ? (string) $argv[1] : 'check';
-
+$tb_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
 if ($tb_was === 'title') {
     tb_hc_ausgeben(array('desc' => 'Spotpreis Tibber'));
     exit(0);
 }
 
-/* Ohne Wurzel wird nichts gelesen und nichts behauptet. Bis 0.9.17 nahm die
- * Bibliothek in einem fremden Baum ohne general.json diesen Baum als Wurzel,
- * und die Antwort beschrieb dessen Zustand samt dessen Logdatei (in WSL
- * gemessen, Pruefung-Spotpreis-Tibber-0.9.18, Fall T7). Status 0 heisst in
- * der LoxBerry-Skala "unbekannt". */
-/* Seit 0.9.19 auch dann, wenn eine Wurzel da ist, diese Datei aber nicht
- * darin installiert liegt (Archivmodus in tb_paths()): bis 0.9.18 beschrieb
- * ein healthcheck aus einem Archiv unter der Wurzel den Zustand der Anlage
- * samt deren Logdatei (in WSL gemessen, Pruefung-Spotpreis-Tibber-0.9.19,
- * Fall B10). */
+/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort (wie bin/tb_cron.php). */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $tb_kandidat = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/tb_lib.php';
+} else {
+    $tb_kandidat = dirname(__DIR__) . '/webfrontend/html/tb_lib.php';
+}
+if (!is_file($tb_kandidat)) {
+    tb_hc_ausgeben(array('desc' => 'Spotpreis Tibber', 'status' => 3,
+        'result' => 'Die Bibliothek tb_lib.php wurde nicht gefunden - das Plugin ist unvollstaendig installiert.'));
+    exit(0);
+}
+require_once $tb_kandidat;
+
 $tb_hc_p = tb_paths();
 if ($tb_hc_p['home'] === '') {
-    tb_hc_ausgeben(array(
-        'desc'   => 'Spotpreis Tibber',
-        'status' => 0,
-        'result' => $tb_hc_p['archiv'] !== ''
-            ? 'Diese Datei liegt nicht in der Installation unter ' . $tb_hc_p['archiv']
-              . ' (ausgepacktes Archiv oder Pruefordner). Es wurde nichts gelesen.'
-            : 'Der LoxBerry-Wurzelordner liess sich von hier aus nicht bestimmen '
-              . '(weder $LBHOMEDIR noch eine Suche oberhalb von ' . __DIR__
-              . ' fuehrten zu einem Verzeichnis mit config/plugins, data/plugins und '
-              . 'config/system/general.json). Es wurde nichts gelesen.',
-    ));
+    tb_hc_ausgeben(array('desc' => 'Spotpreis Tibber', 'status' => 3,
+        'result' => 'Kein LoxBerry-Wurzelverzeichnis gefunden (ausgepacktes Archiv oder Pruefordner) - nichts geprueft.'));
     exit(0);
 }
 
-/* Der Befund. Die Reihenfolge ist die der Ursachen, nicht die der Wirkungen:
- * wer bei "keine Preise" anfaengt, waehrend gar kein Token hinterlegt ist,
- * schickt den Leser in die falsche Ecke. */
-$tb_cfg = tb_config(false);
-$tb_st = tb_stand();
-$tb_alter = tb_alter();
-$tb_status = 5;
-$tb_text = '';
-/* Dieselbe Schranke wie Endpunkt, Meldungen und Statuskachel (Bauliste W4).
- * Bis 0.9.24 stand hier fest 7200: wer den Takt ueber 120 Minuten stellte,
- * hatte einen dauerhaft gelben Healthcheck (Codepruefer Nr. 4). */
-$tb_schranke = tb_altersschranke($tb_cfg);
-
-if (tb_token_lesen() === '') {
-    $tb_status = 3;
-    $tb_text = 'Es ist kein Tibber-Zugangstoken hinterlegt. Ohne Token werden keine '
-             . 'Preise geholt. Reiter Einstellungen.';
-} elseif ($tb_alter < 0) {
-    $tb_status = 4;
-    $tb_text = 'Es hat noch kein Preisabruf stattgefunden.';
-} elseif (empty($tb_st['ok']) && $tb_alter > $tb_schranke) {
-    $tb_status = 3;
-    $tb_text = 'Der letzte Preisabruf ist misslungen: '
-             . (isset($tb_st['fehler']) && $tb_st['fehler'] !== ''
-                ? $tb_st['fehler'] : 'ohne Text')
-             . ' (letzter gelungener Abruf vor ' . (int) round($tb_alter / 60) . ' Minuten)';
-} elseif (empty($tb_st['ok'])) {
-    /* Ein Fehlschlag innerhalb der Schranke: die Preise gelten noch, ein
-     * neuer Versuch kommt nach TB_WIEDERHOLUNG_S (Bauliste W3). Gelb, nicht
-     * rot. */
-    $tb_status = 4;
-    $tb_text = 'Der letzte Preisabruf ist misslungen: '
-             . (isset($tb_st['fehler']) && $tb_st['fehler'] !== ''
-                ? $tb_st['fehler'] : 'ohne Text')
-             . ' Ein neuer Versuch folgt in wenigen Minuten; die Preise sind '
-             . (int) round($tb_alter / 60) . ' Minuten alt und gelten noch.';
-} elseif ($tb_alter > $tb_schranke) {
-    $tb_status = 4;
-    $tb_text = 'Der letzte gelungene Preisabruf ist ' . (int) round($tb_alter / 60)
-             . ' Minuten her. Laeuft der minuetliche Cron-Lauf?';
-} else {
-    $tb_w = tb_werte();
-    $tb_text = 'Preise sind aktuell (' . (int) round($tb_alter / 60) . ' Minuten alt)';
-    if ($tb_w['CUR'] !== null) {
-        $tb_text .= ', laufende Stunde ' . $tb_w['CUR'] . ' ct/kWh';
-    }
-    if (!empty($tb_st['morgen_ok'])) {
-        $tb_text .= ', Preise fuer morgen liegen vor';
-    }
-    $tb_text .= '.';
-    /* Der Pulse-Dienst gilt nur dann als Mangel, wenn er laufen SOLL. Ein
-     * ausgeschalteter Dienst ist kein Fehler - und ein Healthcheck, der auf
-     * jeder Anlage ohne Pulse gelb steht, wird nicht mehr gelesen. */
-    if (!empty($tb_cfg['pulse_ein']) && tb_dienst_soll() && tb_dienst_pid() === 0) {
-        $tb_status = 4;
-        $tb_text .= ' Der Pulse-Dienst soll laufen, laeuft aber nicht.';
-    }
-}
-
-/* Und der Pulse-Dienst wird AUCH DANN genannt, wenn die Preise klemmen.
- *
- * Bis 0.9.9 stand die Zeile ausschliesslich im else-Zweig: sind die Preise
- * alt oder fehlerhaft, wurde ein toter Pulse-Dienst gar nicht erst geprueft
- * und im Text nicht erwaehnt. Zwei Stoerungen gleichzeitig sind gerade der
- * Fall, in dem man beide nennen muss. */
-if ($tb_status !== 4 && !empty($tb_cfg['pulse_ein']) && tb_dienst_soll()
-    && tb_dienst_pid() === 0 && strpos($tb_text, 'Pulse-Dienst') === false) {
-    $tb_text .= ' Dazu: der Pulse-Dienst soll laufen, laeuft aber nicht.';
-}
-
-/* Der Text kann ueber stand.json rohen Antworttext von Tibber enthalten.
- * Ungueltiges UTF-8 darin haette json_encode zu Fall gebracht - deshalb wird
- * es hier ausgefiltert, bevor es dorthin geht. */
-if (function_exists('mb_convert_encoding')) {
-    $tb_text = mb_convert_encoding($tb_text, 'UTF-8', 'UTF-8');
-}
+list($tb_status, $tb_text) = tb_gesund_urteil(tb_gesund_fakten(tb_config(false)));
 tb_hc_ausgeben(array(
-    'desc' => 'Spotpreis Tibber',
-    'status' => $tb_status,
-    'result' => $tb_text,
-    'logfile' => tb_paths()['log'],
+    'desc'    => 'Spotpreis Tibber',
+    'status'  => (int) $tb_status,
+    'result'  => (string) $tb_text,
+    'logfile' => $tb_hc_p['log'],
 ));
 exit(0);

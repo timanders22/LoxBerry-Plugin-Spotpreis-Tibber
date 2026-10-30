@@ -387,9 +387,13 @@ function tb_paths()
  * ================================================================== */
 require_once __DIR__ . '/planer.php';
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php,
- * Nr. 36 b, seit 0.9.28). Liegt neben dieser Datei; sie schuetzt sich selbst gegen
+ * Nr. 36 b, seit 0.9.28; seit 0.9.33 Stamm 1.2.1, mit weiteren Ausgabezielen ueber tb_mit_zielen(), Welle
+ * Mehrfach-Ziele). Liegt neben dieser Datei; sie schuetzt sich selbst gegen
  * doppeltes Laden und antwortet auf einen direkten Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* Gruppe 43 (0.9.33): die Anbieterregel fuer haus/strompreis und haus/speicher - gemeinsames Stueck, byte-gleich in
+ * allen Anbieter-Linien (haus_anbieter.php, hanb_*(); nur reine Funktionen). Liegt neben dieser Datei. */
+require_once __DIR__ . '/haus_anbieter.php';
 
 /**
  * Anzahl der Schaltregeln.
@@ -411,6 +415,20 @@ define('TB_WIEDERHOLUNG_S', 300);
  * sperren oder freigeben darf? Aelter heisst "keine Aussage" (Bauliste W5;
  * Codepruefer Nr. 8: ein drei Tage alter Wert galt unbegrenzt als aktuell). */
 define('TB_SOC_HOECHSTALTER', 3600);
+
+/* Wie alt darf eine PV-Prognose sein, damit sie den Fahrplan beeinflusst
+ * (PV-Gutschrift je Scheibe und PV-Sperre ueber 24 h)? Aelter heisst "keine
+ * Prognose" - so, als waere keine Quelle eingestellt (Nachtrag 0.9.33, offen
+ * seit 0.9.24, Codepruefer Nr. 8: eine Prognose aus einer toten Quelle galt
+ * unbegrenzt, und ihre 24-h-Summe blieb auf dem Stand des letzten Abrufs
+ * stehen - die PV-Sperre hielt eine Regel tagelang an).
+ * Ein Tag, weil: die PV-Sperre urteilt ueber die naechsten 24 Stunden
+ * (plan_pv_summe(..., 24)); tb_umwelt() laesst bei einer Stoerung mit Absicht
+ * "was gestern um zwoelf vorlag" weiter gelten, und das ist hoechstens einen
+ * Tag alt; geholt wird alle 15 Minuten - 24 h sind 96 misslungene Abrufe, keine
+ * kurze Stoerung mehr. Eine Quelle, die nur einmal am Tag liefert, bleibt
+ * dadurch durchgehend nutzbar. */
+define('TB_PV_HOECHSTALTER', 86400);
 
 /* MQTT: je Thema geht nur Geaendertes hinaus, der volle Satz hoechstens im
  * Abstand dieser Frist (Bauliste M1, Entscheidung 26; MQTT-Pruefer T3: mit
@@ -469,6 +487,13 @@ function tb_vorgaben()
         'pulse_ein'        => 0,
         'mqtt_ein'         => 0,
         'mqtt_topic'       => 'tibber',
+        /* Gruppe 43 (0.9.33), alle ab Werk aus. haus_strompreis_ein: Anbieter haus/strompreis (E3, wirkt nur mit
+         * mqtt_ein, mit Anbieterregel E4). haus_speicher_ein: Speicherstand fuer den Planer aus haus/speicher (E6).
+         * endpunkt_ein: der lesende HTTP-Endpunkt (Hausform G39 E-E1 A: Neuinstallation aus, Update 1 durch
+         * postinstall.sh, wenn der Schluessel fehlt). */
+        'haus_strompreis_ein' => 0,
+        'haus_speicher_ein'   => 0,
+        'endpunkt_ein'        => 0,
         'festpreis'        => 34.0,    // ct/kWh zum Vergleich
         'grundpreis'       => 12.0,    // Euro im Monat, nur fuer die Anzeige
         'monatsbericht'    => 1,
@@ -2398,8 +2423,13 @@ function tb_umwelt($holen = false, $slotlen = 3600)
     $alt = tb_json_lesen($cache);
     $frisch = is_array($alt) && isset($alt['ts'])
               && time() - (int) $alt['ts'] < 900;
+    /* Gruppe 43 (0.9.33, E6): die Speicherquelle haus/speicher gilt NACH dem Zwischenspeicher - eine Dateilesung
+     * (haus_quellen.json des abgekoppelten Lesers), kein Netz, also auch im Endpunkt. Solange sie frisch ist, wird
+     * die Speicher-Adresse nicht abgerufen; schweigt sie, gilt die Adresse wie bisher (Meldung HAUS_SCHWEIGT). */
+    $q = tb_speicher_quelle($cfg);
     if (!$holen || $frisch) {
-        return tb_umwelt_soc_alter(is_array($alt) && $alt ? $alt + $leer : $leer, $cfg);
+        return tb_speicher_einsetzen(tb_umwelt_pv_alter(
+            tb_umwelt_soc_alter(is_array($alt) && $alt ? $alt + $leer : $leer, $cfg), $cfg), $q);
     }
 
     $erg = $leer;
@@ -2419,10 +2449,12 @@ function tb_umwelt($holen = false, $slotlen = 3600)
             if ($pv) {
                 $erg['pv'] = $pv;
                 $erg['pv_summe'] = plan_pv_summe($pv, $jetzt, 24);
+                // Das Alter der Prognose, getrennt vom Zeitpunkt des Versuchs ('ts') - wie soc_ts (W5).
+                $erg['pv_ts'] = time();
             }
         }
     }
-    if (trim((string) $cfg['soc_url']) !== '') {
+    if ($q[0] !== 'haus' && trim((string) $cfg['soc_url']) !== '') {
         $roh = tb_holen($cfg['soc_url'], $zeit);
         if ($roh === null) {
             $erg['soc_meldung'] = 'NICHT_ERREICHBAR';
@@ -2440,7 +2472,13 @@ function tb_umwelt($holen = false, $slotlen = 3600)
      * wird der ALTE Wert uebernommen und die Meldung NICHT. */
     if ($erg['pv'] === null && is_array($alt) && isset($alt['pv']) && $alt['pv']) {
         $erg['pv'] = $alt['pv'];
-        $erg['pv_summe'] = isset($alt['pv_summe']) ? $alt['pv_summe'] : null;
+        /* Nachtrag 0.9.33: die alte Prognose behaelt ihr Alter ('pv_ts', letzter
+         * gelungener Abruf; 'ts' oben ist nur der Versuch und verdeckte es), und
+         * ihre Summe zaehlt nur noch die Scheiben, die sie JETZT noch abdeckt. Bis
+         * hier blieb die Summe des letzten Abrufs stehen - auch fuer Stunden, die
+         * laengst vorbei sind. Aelter als TB_PV_HOECHSTALTER: tb_umwelt_pv_alter(). */
+        if (isset($alt['pv_ts']) && is_numeric($alt['pv_ts'])) { $erg['pv_ts'] = (int) $alt['pv_ts']; }
+        $erg['pv_summe'] = plan_pv_summe($alt['pv'], $jetzt, 24);
     }
     /* Der Speicherstand nur, solange er JUNG ist (Bauliste W5). Bis 0.9.24
      * wurde ein Altwert hier ohne Grenze uebernommen und 'ts' neu gesetzt -
@@ -2453,7 +2491,37 @@ function tb_umwelt($holen = false, $slotlen = 3600)
         $erg['soc_ts'] = (int) $alt['soc_ts'];
     }
     tb_json_schreiben($cache, $erg);
-    return tb_umwelt_soc_alter($erg, $cfg);
+    $aus = tb_umwelt_pv_alter(tb_umwelt_soc_alter($erg, $cfg), $cfg);
+    if ($aus['pv_meldung'] === 'ZU_ALT') {
+        tb_log_gebremst('pv_zu_alt', 'PV-Prognose: der letzte gelungene Abruf ist aelter als '
+            . (int) round(TB_PV_HOECHSTALTER / 3600) . ' h oder ohne Zeitangabe - sie gilt nicht mehr, '
+            . 'der Fahrplan rechnet wie ohne Prognose (keine PV-Gutschrift, keine PV-Sperre).');
+    }
+    return tb_speicher_einsetzen($aus, $q);
+}
+
+/**
+ * Eine PV-Prognose ohne eigenes Alter ('pv_ts') oder aelter als
+ * TB_PV_HOECHSTALTER ist KEINE Prognose: pv und pv_summe werden null -
+ * dieselbe Lage wie ohne Quelle (keine Gutschrift, keine PV-Sperre, Strich am
+ * Endpunkt) -, und die Meldung sagt warum ('ZU_ALT'), wenn eine Quelle
+ * eingestellt ist. Gilt beim Lesen wie beim Holen - steht der Cron, altert der
+ * Zwischenspeicher trotzdem. Der Zwischenspeicher selbst behaelt die alte
+ * Prognose mit ihrem Alter; liefert die Quelle wieder, gilt die neue.
+ * (Nachtrag 0.9.33, Gegenstueck zu tb_umwelt_soc_alter().)
+ */
+function tb_umwelt_pv_alter(array $u, array $cfg)
+{
+    if (!isset($u['pv']) || !$u['pv']) { return $u; }
+    $ts = isset($u['pv_ts']) && is_numeric($u['pv_ts']) ? (int) $u['pv_ts'] : 0;
+    if ($ts <= 0 || time() - $ts > TB_PV_HOECHSTALTER) {
+        $u['pv'] = null;
+        $u['pv_summe'] = null;
+        if ((string) $cfg['pv_quelle'] !== '' && trim((string) $cfg['pv_url']) !== '') {
+            $u['pv_meldung'] = 'ZU_ALT';
+        }
+    }
+    return $u;
 }
 
 /**
@@ -3594,6 +3662,57 @@ function tb_mqtt_ausgeschlossen()
 }
 
 /**
+ * Die Paare eines Laufs aus tb_werte() - ohne die Felder aus tb_mqtt_ausgeschlossen() und mit der -1-Regel
+ * (Nachtrag 0.9.33, 29.10.2026, Auftrag des Hausherrn; Hausform wie BYD 0.9.29 und Weissware 0.9.44). Bis dahin
+ * stand die Schleife in bin/tb_cron.php (tb_veroeffentlichen()); hier kann die Probe denselben Weg nehmen.
+ *
+ * Ein Messwert ohne Aussage (null) geht als -1 hinaus statt gar nicht - bis 0.9.32 stand in Loxone dann der
+ * letzte Wert und sah gemessen aus. Das gilt fuer jedes ANALOG gefuehrte Feld, dessen Bereich in tb_status_felder()
+ * nicht unter -1 reicht (min >= -1): LEVEL, RANKD, CUR_STEUER, die Fensterstunden (FENSTER_H/_IN, FENSTER2_H/_IN,
+ * FENSTER_MORGEN_H, MINH/MAXH_HEUTE/_MORGEN), PULSE_ERZ/_TAG/_KOSTEN, VERBR_GESTERN/_MONAT, KOSTEN_GESTERN/_MONAT,
+ * DYN_MONAT, RANK_30T, GUENSTIGANTEIL, PVSUM, SOC, PLANLAST. TLEVEL, RANK und R<n>IN tragen -1 ohnehin schon als
+ * "unbekannt"; FIX, BUDGET und R<n>REST/VERD/SPERRE sind in tb_werte() nie null.
+ * Schaltsignale und 0/1-Merker - jedes Feld, das die Feldtabelle DIGITAL fuehrt ('analog' => 0): R1..R4, NEG,
+ * MORGEN_OK (OK ist oben ausgeschlossen) - bekommen ohne Aussage 0 und NIE -1 (Nachtrag 29.10.2026): am digitalen
+ * Eingang in Loxone ist jeder Wert ungleich 0 "Ein", -1 schaltete also das Geraet ein, das daran haengt. 0 ist
+ * dieselbe Wahl wie fuer R<n> in tb_werte() seit dem 04.09.2026 (ein Strich liess dort eine alte 1 stehen, und
+ * die Wallbox lud weiter); bis 0.9.32 gingen NEG und MORGEN_OK ohne Aussage gar nicht hinaus, und Loxone
+ * behielt eine alte 1. Ohne Preise ist "kein negativer Preis bekannt" und "Preise fuer morgen nicht da" auch
+ * die zutreffende Aussage.
+ * Ausnahmen - sie bleiben ohne Aussage null und gehen wie bisher gar nicht hinaus: alles, dessen Bereich unter -1
+ * reicht, denn dort ist -1 ein echter Wert (Regeln/07 zu haus/strompreis/aktuell: "ein Preis kann -1 sein"):
+ * die Preise (CUR, CUR_ENERGIE, NEXT, AVG/MIN/MAX, Fensterpreise, AVG_30T, R<n>CT; stunde/N/ct entsteht nur mit
+ * Wert), PULSE (Bezug minus Einspeisung), DIFF_MONAT, EURO_MONAT, ERSPARNIS_GESTERN.
+ * Nur fuer Themen, die in der V2-Liste stehen (tb_v2_haken(), dieselbe Quelle wie der Reiter MQTT): was eine
+ * Einstellung abschaltet (Pulse, Verbrauchsabruf, PV-/Speicherquelle, Regeln), entsteht nicht neu als -1.
+ * Nur MQTT: tb_werte() und damit die HTTP-Statuszeile (Strich) bleiben unberuehrt. Der einzige Zustand (fix) ist
+ * nie null.
+ */
+function tb_mqtt_paare(array $w, $cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = tb_config(false); }
+    $felder = tb_status_felder();
+    $pf = tb_praefix($cfg);
+    $angeboten = array();
+    foreach (tb_v2_haken($cfg) as $e) {
+        $angeboten[substr((string) $e['thema'], strlen($pf) + 1)] = true;
+    }
+    $aus = tb_mqtt_ausgeschlossen();
+    $paare = array();
+    foreach ($w as $k => $v) {
+        // ALTER, PULSE_ALTER, ZAEHLER und PH00 ... PH23 nicht unter eigenem Namen (tb_mqtt_ausgeschlossen()).
+        if (in_array($k, $aus, true)) { continue; }
+        $t = strtolower($k);
+        if (($v === null || $v === '') && isset($angeboten[$t], $felder[$k]) && $felder[$k]['min'] >= -1) {
+            // Schaltsignal/Merker (digital, 'analog' => 0): 0, nie -1 - -1 waere am Eingang "Ein". Siehe oben.
+            $v = empty($felder[$k]['analog']) ? 0 : -1;
+        }
+        $paare[$t] = $v;
+    }
+    return $paare;
+}
+
+/**
  * Wird ein Thema zurueckbehalten? Die Entscheidung faellt je THEMA.
  *
  * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, Messwerte
@@ -3977,13 +4096,54 @@ function tb_vorlage()
  *  keinen Antwortweg, auf dem Loxone einen Text abholt. */
 function tb_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    /* Gruppe 43 (0.9.33, E10): aus ansage_modi() des Moduls abgeleitet statt abgeschrieben - sonos4lox und sonox
+     * kommen mit dem Stamm 1.2.1 von selbst dazu; audioserver bleibt draussen. */
+    return array_values(array_diff(ansage_modi(), array('audioserver')));
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen. */
 function tb_ansage_opt()
 {
     return array('modi' => tb_ansage_modi());
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function tb_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). tb_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), tb_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function tb_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function tb_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (0.9.33), X-2: die Tabelle aus dem POST (name[N], N = 2..6) flach als name.N - nur, was gesendet
+ *  wurde (ein fehlender Haken bleibt aus), und nur, wenn die geladene Abschrift die Tabelle kann. */
+function tb_ziele_x2_werte()
+{
+    $w = array();
+    if (!tb_mit_zielen()) { return $w; }
+    foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein', 'tts_ziel_loeschen') as $n) {
+        if (!isset($_POST[$n]) || !is_array($_POST[$n])) { continue; }
+        for ($i = 2; $i <= 6; $i++) {
+            if (isset($_POST[$n][$i]) && is_string($_POST[$n][$i]) && strlen($_POST[$n][$i]) <= 2100
+                && preg_match('//u', $_POST[$n][$i])) {
+                $w[$n . '.' . $i] = $_POST[$n][$i];
+            }
+        }
+    }
+    return $w;
 }
 
 /** Die Anlaesse: Name => Schluessel des Hakens in der Konfiguration. */
@@ -4323,6 +4483,9 @@ function tb_feldregeln()
         'pulse_ein'           => array('art' => 'haken'),
         'monatsbericht'       => array('art' => 'haken'),
         'mqtt_ein'            => array('art' => 'haken'),
+        'haus_strompreis_ein' => array('art' => 'haken'),
+        'haus_speicher_ein'   => array('art' => 'haken'),
+        'endpunkt_ein'        => array('art' => 'haken'),
         'mqtt_topic'          => array('art' => 'thema'),
         'aktionstoken'        => array('art' => 'merkwort'),
         'ansage_fenster'      => array('art' => 'haken'),
@@ -4653,6 +4816,7 @@ function tb_sicherung_lesen($roh)
     $anzahl = 0;
     // Hinweise, die nichts abweisen, aber gesagt werden muessen (K2).
     $hinweise = array();
+    $tb_tsspaet = array();     // Welle Mehrfach-Ziele (0.9.33): tts.ziele, wenn die Sicherung die Liste nicht kannte
     foreach ($daten as $k => $w) {
         $k = (string) $k;
         if ($k !== '' && $k[0] === '_') { continue; }    // lesbarer Kopf
@@ -4715,7 +4879,20 @@ function tb_sicherung_lesen($roh)
                 continue;
             }
             $tj = tb_tts();
-            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            /* Welle Mehrfach-Ziele (0.9.33): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
+             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
+            $tb_tsneu = array('tts' => $tp);
+            $tb_tsjetzt = array('tts' => $tj);
+            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+             * heisst "keine weiteren Ziele" und wird so uebernommen. */
+            $tb_spaete = array();
+            if (is_array($tb_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                list($tb_tsneu['tts'], $tb_spaete) = ansage_sicherung_spaet($tb_tsneu['tts'],
+                    (isset($tb_tsjetzt['tts']) && is_array($tb_tsjetzt['tts'])) ? $tb_tsjetzt['tts'] : null);
+            }
+            foreach ($tb_spaete as $tb_sn) { $tb_tsspaet[] = $tb_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+            list($tv) = ansage_vervollstaendigen($tb_tsneu['tts'] + $tj);
             $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
             $anzahl++;
             continue;
@@ -4779,9 +4956,18 @@ function tb_sicherung_lesen($roh)
      * die Vorgabe, sonst schaltete das Zurueckspielen einer alten Sicherung eine
      * eingerichtete Ausgabe still ab -, und ein Hinweis sagt es. */
     $ohne = array();
+    $ohne_g43 = array();
     $geltend = null;
     foreach (array_keys(tb_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            /* Gruppe 43: eine Sicherung aus 0.9.32 oder frueher kennt die neuen Haken nicht - es gilt weiter, was
+             * eingestellt ist (Hinweis EINST.SICH_OHNE_G43), nichts wird abgewiesen. */
+            if (in_array($fk, tb_neue_schluessel_0933(), true)) {
+                if ($geltend === null) { $geltend = tb_config(); }
+                $neu[$fk] = $geltend[$fk];
+                $ohne_g43[] = $fk;
+                continue;
+            }
             if (in_array($fk, tb_ansage_neue_schluessel(), true)) {
                 if ($geltend === null) { $geltend = tb_config(); }
                 $neu[$fk] = ($fk === 'tts') ? tb_tts($geltend) : $geltend[$fk];
@@ -4794,6 +4980,12 @@ function tb_sicherung_lesen($roh)
     if ($ohne) {
         $hinweise[] = sprintf(tb_t('EINST.SICH_OHNE_ANSAGE'), tb_e(implode(', ', $ohne)));
     }
+    if ($tb_tsspaet) {     // Welle Mehrfach-Ziele (0.9.33): Spaetliste
+        $hinweise[] = sprintf(tb_t('EINST.SICH_SPAET'), tb_e(implode(', ', $tb_tsspaet)));
+    }
+    if ($ohne_g43) {
+        $hinweise[] = sprintf(tb_t('EINST.SICH_OHNE_G43'), tb_e(implode(', ', $ohne_g43)));
+    }
     if ($fehlend) {
         $mangel[] = sprintf(tb_t('EINST.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
@@ -4801,4 +4993,936 @@ function tb_sicherung_lesen($roh)
     /* Fuenfter Wert: Hinweise (K2). Die Hausform der ersten vier bleibt -
      * Werkzeuge/sicherung_wirkung.py erkennt die Bauart an Stelle 1. */
     return array($mangel ? null : $neu, $mangel, $anzahl, $token, $hinweise);
+}
+
+/* ==================================================================
+ * Gruppe 43 (0.9.33, 29.10.2026): Hausform - Gateway V2, Anbieter haus/strompreis mit Anbieterregel, Abnehmer
+ * haus/speicher fuer den Planer, endpunkt_ein, Gesundheit
+ *
+ * Bauvorschrift wz_bild/GRUPPE43_BAUVORSCHRIFT.md; Entscheidungen ENTSCHEIDUNGEN_GRUPPEN42_44.md mit
+ * ENTWURF_GRUPPE43_TIBBER_ZENDURE.md (E2-E6, E10, E11, Befunde B1-B4). Abschriften: Haus-Sitzung, Anbieter und Leser
+ * von spot_haus_*() (Spotpreis aWATTar 1.2.39/1.2.40), V2-Pruefzeile von vw_v2_*() (VolkswagenID 0.9.33, selbst
+ * Abschrift mg_v2_*() aus MGiSmart 1.1.28), Gesundheit nach rn_gesund_*() (Renault NG 2.1.20). Die Anbieterregel
+ * selbst steht im gemeinsamen Stueck haus_anbieter.php (hanb_*(), byte-gleich in allen Anbieter-Linien).
+ * ================================================================== */
+
+/** Der Name dieser Linie in haus/strompreis/anbieter (Regeln/07 Nr. 15: awattar, tibber oder octopus). */
+define('TB_HAUS_NAME', 'tibber');
+
+/** Das wirksame MQTT-Praefix (wie tb_veroeffentlichen(): leer -> tibber). */
+function tb_praefix($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = tb_config(false); }
+    $p = trim(tb_mqtt_wert_saeubern(isset($cfg['mqtt_topic']) ? (string) $cfg['mqtt_topic'] : ''), '/ ');
+    return $p === '' ? 'tibber' : $p;
+}
+
+/* ---------- G1: Gateway V2 - Namenstabelle, Hakenliste, Pruefzeile ---------- */
+
+/** Der Name, den das MQTT-Gateway einem Thema gibt: "/", "%" und Leerzeichen werden "_" (Regeln/07 :69). */
+function tb_gateway_name($thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $thema);
+}
+
+/**
+ * Die Datenpunkte, die unter Gateway V2 anzuhaken sind - EINE Quelle fuer Reiter MQTT, Reiter Test, Healthcheck,
+ * Linienpruefer und Messskript. Rueckgabe Liste von array('thema', 'name', 'noncached', 'bez').
+ * Quelle ist tb_mqtt_themen() - dieselbe Liste, nach der tb_veroeffentlichen() sendet (Felder der Statuszeile ohne
+ * OK/ALTER/PULSE_ALTER/ZAEHLER/PH00-23, dazu stunde/0-23/ct). NICHT angehakt: status/ts und status/pulse_ts
+ * (Zeitstempel, aendern sich je Lauf - Regeln/07 :267). Gruppen, die nur mit einer Einstellung Werte tragen, stehen
+ * nur dann darin (ein Thema, das nie gesendet wird, laesst sich unter V2 nicht anhaken): Pulse (pulse_ein),
+ * Verbrauch (verbrauch_ein), R<n>CT (Regel n angelegt), PLANLAST (eine Regel angelegt), PVSUM (pv_quelle), SOC
+ * (soc_url oder haus_speicher_ein). Noncached genau status/ok, status/zaehler und die 24 Stundenpreise.
+ */
+function tb_v2_haken($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = tb_config(false); }
+    $pf = tb_praefix($cfg);
+    $nregeln = is_array($cfg['regeln']) ? count($cfg['regeln']) : 0;
+    $bedingt = array(
+        'PULSE' => !empty($cfg['pulse_ein']), 'PULSE_ERZ' => !empty($cfg['pulse_ein']),
+        'PULSE_TAG' => !empty($cfg['pulse_ein']), 'PULSE_KOSTEN' => !empty($cfg['pulse_ein']),
+        'PVSUM' => trim((string) $cfg['pv_quelle']) !== '',
+        'SOC' => trim((string) $cfg['soc_url']) !== '' || !empty($cfg['haus_speicher_ein']),
+        'PLANLAST' => $nregeln > 0,
+    );
+    foreach (array('VERBR_GESTERN', 'KOSTEN_GESTERN', 'VERBR_MONAT', 'KOSTEN_MONAT', 'DYN_MONAT', 'DIFF_MONAT',
+                   'EURO_MONAT', 'GUENSTIGANTEIL', 'ERSPARNIS_GESTERN') as $f) {
+        $bedingt[$f] = !empty($cfg['verbrauch_ein']);
+    }
+    for ($i = 1; $i <= TB_REGELN; $i++) { $bedingt['R' . $i . 'CT'] = $i <= $nregeln; }
+    $aus = array();
+    foreach (tb_mqtt_themen() as $t => $bez) {
+        if ($t === 'status/ts' || $t === 'status/pulse_ts') { continue; }
+        if ($t === 'stunde/N/ct') {
+            for ($h = 0; $h < 24; $h++) {
+                $th = $pf . '/stunde/' . $h . '/ct';
+                $aus[] = array('thema' => $th, 'name' => tb_gateway_name($th), 'noncached' => true, 'bez' => $bez);
+            }
+            continue;
+        }
+        $f = strtoupper($t);
+        if (isset($bedingt[$f]) && !$bedingt[$f]) { continue; }
+        $th = $pf . '/' . $t;
+        $aus[] = array('thema' => $th, 'name' => tb_gateway_name($th),
+                       'noncached' => ($t === 'status/ok' || $t === 'status/zaehler'), 'bez' => $bez);
+    }
+    return $aus;
+}
+
+/** Die angehakten Datenpunkte aus subscriptions.json: Id => noncached; null = unlesbar. Abschrift vw_v2_abos(). */
+function tb_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/** Soll gegen Ist: array(1|0, fehlt[], noncached_falsch[], da, soll). Abschrift vw_v2_haken_abgleich(). */
+function tb_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ((bool) $abo[$e['thema']] !== (bool) $e['noncached']) {
+            $nc[] = $e['name'] . ($e['noncached'] ? ' (Noncached fehlt)' : ' (Noncached zu viel)');
+        }
+    }
+    return array(($fehlt || $nc) ? 0 : 1, $fehlt, $nc, $da, count($soll));
+}
+
+/**
+ * Einheitliche Pruefzeile "Gateway V2: sind alle Datenpunkte angehakt?" (Nachtwelle 29.10.): array(1|0|2, Text);
+ * 2 = grau (nicht feststellbar, Gateway V1, leere Liste, noch nicht eingerichtet, MQTT aus). Liest nur. Die
+ * Argumente nach $cfg nur fuer Proben. Abschrift vw_v2_haken_lage() - "eingerichtet" heisst hier: Tibber-Token
+ * hinterlegt und "Werte ueber MQTT" an (vorher kommt kein Wert, den man anhaken koennte).
+ */
+function tb_v2_haken_lage($cfg = null, $soll = null, $abo = false, $fassung = null, $eingerichtet = null)
+{
+    if (!is_array($cfg)) { $cfg = tb_config(false); }
+    if ($fassung === null) {
+        $m = tb_mqtt_zustand();
+        $fassung = !empty($m['gefunden']) ? (int) $m['fassung'] : 0;
+    }
+    if ((int) $fassung <= 0) { return array(2, tb_t('TEST.V2_UNKLAR')); }
+    if ((int) $fassung < 2) { return array(2, tb_t('TEST.V2_V1')); }
+    if ($soll === null) { $soll = tb_v2_haken($cfg); }
+    if (!$soll) { return array(2, tb_t('TEST.V2_LEER')); }
+    if ($eingerichtet === null) { $eingerichtet = tb_token_lesen() !== '' && !empty($cfg['mqtt_ein']); }
+    if (!$eingerichtet) { return array(2, tb_t('TEST.V2_NICHT_EINGERICHTET')); }
+    if ($abo === false) {
+        $p = tb_paths();
+        $f = $p['home'] !== '' ? $p['home'] . '/config/system/subscriptions.json' : '';
+        $abo = ($f !== '' && is_file($f)) ? tb_v2_abos(json_decode((string) @file_get_contents($f), true)) : null;
+    }
+    if ($abo === null) { return array(2, tb_t('TEST.V2_UNKLAR')); }
+    list($ok, $fehlt, $nc, $da, $zahl) = tb_v2_haken_abgleich($soll, $abo);
+    $txt = sprintf(tb_t('TEST.V2_ZAHL'), $da, $zahl);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(tb_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' ...' : ''));
+    }
+    if ($nc) { $txt .= ' ' . sprintf(tb_t('TEST.V2_NC'), implode(', ', $nc)); }
+    return array($ok, $txt);
+}
+
+/* ---------- Haus-Themen: eine kurze Sitzung am Broker ---------- */
+
+/**
+ * Eine kurze Sitzung am Broker - Abschrift von spot_haus_sitzung() (aWATTar 1.2.39, selbst Abschrift von
+ * marstek_haus_sitzung()). EINE Funktion fuer den Anbieter (senden), den Knopf, das Abraeumen und den Leser.
+ *   $senden  Thema => array(Wert, retain) - PUBLISH QoS 0; eine leere Nutzlast nur mit retain (Abraeumen)
+ *   $lesen   genaue Themen (kein # und kein +); SUBSCRIBE QoS 0, SUBACK mit Rueckgabebyte-Pruefung
+ *   $warten  Themen, die LIVE (Retain-Bit 0) gesehen sein muessen, bevor das Fenster endet
+ *   $fenster Sekunden, hoechstens 66
+ * Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte', 'live', 'gesendet'). Zugang aus general.json
+ * (Mqtt.Brokerhost/-port/-user/-pass); das Kennwort steht nur im CONNECT-Paket, nie in einem Protokoll und nie auf
+ * einer Befehlszeile (Regeln/05). Client-ID 'tbhaus<pid>'.
+ */
+function tb_haus_sitzung(array $senden, array $lesen, array $warten, $fenster)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array(), 'gesendet' => 0);
+    $p = tb_paths();
+    $gj = $p['home'] !== '' ? $p['home'] . '/config/system/general.json' : '';
+    if ($gj === '' || !is_file($gj)) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($gj), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross]) && is_scalar($m[$gross])) { return (string) $m[$gross]; }
+        return (isset($m[$klein]) && is_scalar($m[$klein])) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $soll = array();
+    foreach ($lesen as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, '#+') === false) { $soll[$t] = true; }
+    }
+    $soll = array_slice(array_keys($soll), 0, 50);
+    $warte = array();
+    foreach ($warten as $t) {
+        if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
+    }
+    $fenster = max(0.0, min(66.0, (float) $fenster));
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $schreib = function ($daten) use ($s) {
+        $daten = (string) $daten;
+        return @fwrite($s, $daten) === strlen($daten);
+    };
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    $merke = function ($pk) use (&$aus, $soll) {
+        if (strlen($pk[1]) < 2) { return; }
+        $tl = unpack('n', substr($pk[1], 0, 2));
+        $t = substr($pk[1], 2, $tl[1]);
+        $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+        if (!in_array($t, $soll, true)) { return; }
+        $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('tbhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 60);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (!$schreib(chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz)) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $paket();
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) {
+        fclose($s);
+        $aus['lage'] = 'zeit';
+        return $aus;
+    }
+    if (ord($ack[1][1]) !== 0) {
+        fclose($s);
+        $aus['lage'] = 'abgelehnt';
+        return $aus;
+    }
+    $lage = 'ok';
+    $suback_zeit = microtime(true);
+    if ($soll) {
+        $sub = pack('n', 1);
+        foreach ($soll as $t) { $sub .= $zk($t) . chr(0); }
+        $schreib(chr(0x82) . $laenge(strlen($sub)) . $sub);
+        $lage = 'zeit';
+        $ende = microtime(true) + 3.0;
+        while (microtime(true) < $ende) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            $art = $pk[0] >> 4;
+            if ($art === 9) {
+                $rc = (string) substr($pk[1], 2);
+                if (strlen($rc) !== count($soll)) { break; }
+                $lage = 'ok';
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { $lage = 'abgelehnt'; }
+                }
+                break;
+            } elseif ($art === 3) {
+                $merke($pk);
+            }
+        }
+        $suback_zeit = microtime(true);
+    }
+    if ($lage === 'ok') {
+        foreach ($senden as $t => $wr) {
+            $t = (string) $t;
+            $w = (string) (is_array($wr) ? $wr[0] : $wr);
+            $ret = is_array($wr) && !empty($wr[1]);
+            if ($t === '' || strpbrk($t, "#+\0") !== false || ($w === '' && !$ret)) { continue; }
+            $rumpf = $zk($t) . $w;
+            if ($schreib(chr(0x30 | ($ret ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf)) {
+                $aus['gesendet']++;
+            }
+        }
+    }
+    if ($lage === 'ok' && $soll) {
+        $offen = function () use (&$aus, $warte) {
+            foreach (array_keys($warte) as $t) { if (empty($aus['live'][$t])) { return true; } }
+            return false;
+        };
+        $ende = $warte ? $suback_zeit + max(1.0, $fenster) : $suback_zeit + 1.0;
+        while (microtime(true) < $ende && ($offen() || !$warte)) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            if (($pk[0] >> 4) === 3) { $merke($pk); }
+        }
+    }
+    $schreib(chr(0xE0) . chr(0));
+    fclose($s);
+    $aus['lage'] = $lage;
+    return $aus;
+}
+
+/* ---------- E3: Anbieter haus/strompreis (Regeln/07 Nr. 15) mit Anbieterregel (E4) ---------- */
+
+/** Die eigenen Haus-Themen, Thema => retained. EINE Liste fuer Senden, Abraeumen und Reiter Test. */
+function tb_haus_themen()
+{
+    return array('haus/strompreis/vorschau' => true, 'haus/strompreis/ab' => true, 'haus/strompreis/raster' => true,
+                 'haus/strompreis/aktuell' => true, 'haus/strompreis/anbieter' => true,
+                 'haus/strompreis/zaehler' => false);
+}
+
+function tb_haus_retained()
+{
+    return array_keys(array_filter(tb_haus_themen()));
+}
+
+/** Eine Zahl fuer haus/strompreis: Punkt, hoechstens drei Nachkommastellen, nie Exponent (Abschrift spot_haus_zahl()). */
+function tb_haus_zahl($v)
+{
+    $s = sprintf('%.3F', round((float) $v, 3));
+    if (strpos($s, '.') !== false) { $s = rtrim(rtrim($s, '0'), '.'); }
+    return ($s === '-0' || $s === '') ? '0' : $s;
+}
+
+/**
+ * Die Werte der Haus-Themen zur Zeit $jetzt (E3). Quelle: die Preislisten von heute und morgen aus stand.json
+ * (Endpreis 'ct' = priceInfo.total * 100 + eigener Aufschlag, tb_preisliste() - wie im Plugin gezeigt), Raster =
+ * gemessene Schrittweite (tb_schrittweite(): 900 bei Viertelstunden, sonst 3600).
+ * ab = Beginn der LAUFENDEN STUNDE (bei 900 stehen deren schon begonnene Viertelstunden mit darin): Marstek Venus E
+ * verlangt ab <= Beginn der laufenden Stunde und verwirft eine angebrochene Stunde (marstek_haus_preisliste()); die
+ * laufende Scheibe ist immer enthalten. vorschau lueckenlos bis zur ersten fehlenden Scheibe, hoechstens 36 h;
+ * aktuell = Preis der laufenden Scheibe. Ohne gueltigen Stand (tb_daten_ok 0), ohne Preis der laufenden Scheibe oder
+ * mit einem Raster ausser 900/3600: vorschau/aktuell "-", ab/raster -1. anbieter traegt IMMER den eigenen Namen
+ * (Anbieterregel E4: der Anspruch muss lesbar bleiben, auch ohne Preise - aWATTar sendet dort bis 1.2.39 "-").
+ */
+function tb_haus_werte($st, $zaehler, $jetzt = null, $cfg = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    $jetzt = (int) $jetzt;
+    $st = tb_stand_jetzt(is_array($st) ? $st : tb_stand(), $cfg, $jetzt);
+    $liste = array();
+    foreach (array('liste_heute', 'liste_morgen') as $k) {
+        foreach ((isset($st[$k]) && is_array($st[$k])) ? $st[$k] : array() as $e) {
+            if (is_array($e) && isset($e['ts'], $e['ct']) && is_numeric($e['ct'])) {
+                $liste[(int) $e['ts']] = array('ts' => (int) $e['ts'], 'ct' => (float) $e['ct']);
+            }
+        }
+    }
+    ksort($liste);
+    $schritt = tb_schrittweite(array_values($liste));
+    $w = array();
+    $aktuell = null;
+    $ab = $jetzt - ((($jetzt % 3600) + 3600) % 3600);
+    if (!empty($st['ok']) && in_array($schritt, array(900, 3600), true)) {
+        $hoechst = (int) (36 * 3600 / $schritt);
+        for ($ts = $ab; isset($liste[$ts]) && count($w) < $hoechst; $ts += $schritt) {
+            $w[] = tb_haus_zahl($liste[$ts]['ct']);
+            if ($ts <= $jetzt && $jetzt < $ts + $schritt) { $aktuell = end($w); }
+        }
+    }
+    $leer = ($aktuell === null);
+    return array(
+        'haus/strompreis/vorschau' => $leer ? '-' : implode(';', $w),
+        'haus/strompreis/ab'       => $leer ? '-1' : (string) $ab,
+        'haus/strompreis/raster'   => $leer ? '-1' : (string) $schritt,
+        'haus/strompreis/aktuell'  => $leer ? '-' : (string) $aktuell,
+        'haus/strompreis/anbieter' => TB_HAUS_NAME,
+        'haus/strompreis/zaehler'  => (string) ((((int) $zaehler) % 1000 + 1000) % 1000),
+    );
+}
+
+/** Vollversand oder nur Geaendertes; zaehler immer und nie retained. Abschrift spot_haus_auswahl(). */
+function tb_haus_auswahl($werte, $merker, $voll)
+{
+    $th = tb_haus_themen();
+    $aus = array();
+    foreach ($werte as $t => $v) {
+        if (empty($th[$t])) { $aus[$t] = array((string) $v, false); continue; }
+        if ($voll || !is_array($merker) || !array_key_exists($t, $merker) || (string) $merker[$t] !== (string) $v) {
+            $aus[$t] = array((string) $v, true);
+        }
+    }
+    return $aus;
+}
+
+function tb_haus_merker_datei()   { return tb_paths()['datadir'] . '/.haus_letzte.json'; }
+function tb_haus_sitzung_datei()  { return tb_paths()['datadir'] . '/haus_sitzung.json'; }
+function tb_haus_zustand_datei()  { return tb_paths()['datadir'] . '/haus_anbieter.json'; }
+function tb_haus_quellen_datei()  { return tb_paths()['datadir'] . '/haus_quellen.json'; }
+
+/** Der Zustand der Anbieterregel (hanb_zustand()) - im Datenordner, uebersteht ein Update (preupgrade.sh). */
+function tb_haus_zustand()
+{
+    $d = tb_json_lesen(tb_haus_zustand_datei());
+    return hanb_zustand(is_array($d) ? $d : array());
+}
+
+/** Den Zustand ablegen; ein Wechsel von Rolle, Grund oder fremdem Namen geht einmal ins Protokoll. */
+function tb_haus_zustand_setzen(array $z)
+{
+    $alt = tb_haus_zustand();
+    $z = hanb_zustand($z);
+    if ($alt['rolle'] !== $z['rolle'] || $alt['grund'] !== $z['grund'] || $alt['fremd'] !== $z['fremd']) {
+        tb_log('Haus-Themen haus/strompreis: Rolle ' . $z['rolle'] . ($z['grund'] !== '' ? ' (' . $z['grund'] . ')' : '')
+               . ($z['fremd'] !== '' ? ', Anbieter ' . preg_replace('/[^a-z0-9_.-]/i', '?', $z['fremd']) : '') . '.');
+    }
+    return tb_json_schreiben(tb_haus_zustand_datei(), $z);
+}
+
+/** Den Merker "war Anbieter" (_haus_frueher) setzen oder entfernen (Abschrift spot_haus_frueher_setzen()). */
+function tb_haus_frueher_setzen($ja)
+{
+    $c = tb_config();
+    if ((int) !empty($c['_haus_frueher']) === ($ja ? 1 : 0)) { return false; }
+    if ($ja) { $c['_haus_frueher'] = 1; } else { unset($c['_haus_frueher']); }
+    return tb_config_speichern($c);
+}
+
+/**
+ * Anbieter haus/strompreis im Minutenlauf (bin/tb_cron.php nach tb_veroeffentlichen()). Nur mit
+ * haus_strompreis_ein = 1 UND mqtt_ein = 1 UND erkannter Wurzel. Die Anbieterregel (hanb_lage()) entscheidet nach
+ * dem Stand des Lesers (haus_quellen.json, Quelle 'strompreis'), ob diese Installation sendet: wartet sie, geht
+ * NICHTS hinaus (auch kein Zaehler); wurde sie abgeloest, faellt der Merker "war Anbieter" (die Themen gehoeren dem
+ * neuen, beim Ausschalten wird nichts abgeraeumt). Haken oder MQTT aus: hoechstens alle 10 Minuten abraeumen, wenn
+ * diese Installation Anbieter war (hanb_darf_abraeumen()). Senden wie aWATTar: Geaendertes, voll ohne Merker und
+ * alle 30 Minuten, haus/strompreis/zaehler in jeder Sitzung (derselbe Zaehler wie status/zaehler).
+ */
+function tb_haus_lauf($cfg, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    $p = tb_paths();
+    $mf = tb_haus_merker_datei();
+    $z_alt = tb_haus_zustand();
+    if (empty($cfg['haus_strompreis_ein']) || empty($cfg['mqtt_ein']) || $p['home'] === '') {
+        if (is_file($mf)) { @unlink($mf); }
+        $darf = hanb_darf_abraeumen(array('rolle' => 'aus', 'grund' => $z_alt['grund']), !empty($cfg['_haus_frueher']));
+        if ($z_alt['rolle'] !== 'aus') {
+            tb_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => $z_alt['grund'] === 'abgeloest' ? 'abgeloest' : '',
+                                         'fremd' => '', 'seit' => $jetzt));
+        }
+        if ($darf && $p['home'] !== '') {
+            $vf = $p['datadir'] . '/.haus_leeren_versuch';
+            clearstatcache(true, $vf);
+            $alt = is_file($vf) ? (int) filemtime($vf) : 0;
+            if ($alt <= 0 || $alt > time() || time() - $alt >= 600) {
+                @touch($vf);
+                $e = tb_haus_leeren();
+                tb_log('Haus-Themen haus/strompreis: Abraeumen im Minutenlauf - ' . $e['lage']
+                    . ($e['offen'] ? ' (' . implode(', ', $e['offen']) . ')' : '') . '.');
+                if (in_array($e['lage'], array('geleert', 'nichts'), true)) { tb_haus_frueher_setzen(false); }
+            }
+        }
+        return null;
+    }
+    $c = tb_haus_quellen();
+    $z = hanb_lage(TB_HAUS_NAME, isset($c['strompreis']) ? $c['strompreis'] : array(), $z_alt, $jetzt);
+    tb_haus_zustand_setzen($z);
+    if ($z['rolle'] !== 'anbieter') {
+        if (is_file($mf)) { @unlink($mf); }
+        if ($z['grund'] === 'abgeloest' && !empty($cfg['_haus_frueher'])) { tb_haus_frueher_setzen(false); }
+        tb_json_schreiben(tb_haus_sitzung_datei(), array('zeit' => $jetzt, 'lage' => 'wartet', 'gesendet' => 0,
+            'voll' => 0, 'n' => 0, 'ab' => -1, 'raster' => -1));
+        return null;
+    }
+    $werte = tb_haus_werte(null, tb_zaehler_lesen(), $jetzt, $cfg);
+    $vorher = null;
+    $voll_zeit = 0;
+    $d = tb_json_lesen($mf);
+    if (is_array($d) && isset($d['werte'], $d['voll']) && is_array($d['werte'])) {
+        $vorher = $d['werte'];
+        $voll_zeit = (int) $d['voll'];
+    }
+    $voll = ($vorher === null || $voll_zeit <= 0 || $voll_zeit > $jetzt || $jetzt - $voll_zeit > 1800);
+    $r = tb_haus_sitzung(tb_haus_auswahl($werte, $vorher, $voll), array(), array(), 0);
+    if ($r['lage'] === 'ok') {
+        $merk = $werte;
+        unset($merk['haus/strompreis/zaehler']);
+        tb_json_schreiben($mf, array('werte' => $merk, 'voll' => $voll ? $jetzt : $voll_zeit, 'zeit' => $jetzt));
+        if (empty($cfg['_haus_frueher'])) { tb_haus_frueher_setzen(true); }
+    }
+    $n = ($werte['haus/strompreis/vorschau'] === '-') ? 0 : count(explode(';', $werte['haus/strompreis/vorschau']));
+    tb_json_schreiben(tb_haus_sitzung_datei(), array('zeit' => $jetzt, 'lage' => $r['lage'],
+        'gesendet' => (int) $r['gesendet'], 'voll' => $voll ? 1 : 0, 'n' => $n,
+        'ab' => (int) $werte['haus/strompreis/ab'], 'raster' => (int) $werte['haus/strompreis/raster']));
+    tb_log_gebremst('haus_sitzung_' . ($r['lage'] === 'ok' ? 'ok' : 'fehler'), $r['lage'] === 'ok'
+        ? 'Haus-Themen haus/strompreis: Sitzung am Broker ok'
+        : 'Haus-Themen haus/strompreis: Broker nicht erreichbar (' . $r['lage'] . ') - naechster Versuch in einer Minute');
+    return $r;
+}
+
+/** Die fuenf retained Themen abraeumen - mit Ruecklesen in eigener Sitzung, bis zu drei Runden, nur die eigenen
+ *  Namen. Rueckgabe array('lage' => geleert|nichts|rest|kein_broker, 'offen', 'grund'). Abschrift spot_haus_leeren(). */
+function tb_haus_leeren($runden = 3)
+{
+    $th = tb_haus_retained();
+    $belegt = function ($w) {
+        $o = array();
+        foreach ($w as $t => $v) { if ((string) $v !== '') { $o[] = $t; } }
+        return $o;
+    };
+    $r = tb_haus_sitzung(array(), $th, array(), 0);
+    if ($r['lage'] !== 'ok') { return array('lage' => 'kein_broker', 'offen' => array(), 'grund' => $r['lage']); }
+    $offen = $belegt($r['werte']);
+    if (!$offen) { return array('lage' => 'nichts', 'offen' => array(), 'grund' => ''); }
+    $lage = 'rest';
+    $grund = '';
+    for ($i = 1; $i <= max(1, (int) $runden); $i++) {
+        $senden = array();
+        foreach ($offen as $t) { $senden[$t] = array('', true); }
+        $r = tb_haus_sitzung($senden, array(), array(), 0);
+        if ($r['lage'] !== 'ok') { $lage = 'kein_broker'; $grund = $r['lage']; continue; }
+        usleep(300000);
+        $r = tb_haus_sitzung(array(), $th, array(), 0);
+        if ($r['lage'] !== 'ok') { $lage = 'kein_broker'; $grund = $r['lage']; continue; }
+        $offen = $belegt($r['werte']);
+        if (!$offen) { return array('lage' => 'geleert', 'offen' => array(), 'grund' => ''); }
+        $lage = 'rest';
+    }
+    return array('lage' => $lage, 'offen' => $offen, 'grund' => $grund);
+}
+
+/**
+ * Folgen einer Aenderung von haus_strompreis_ein/mqtt_ein (Reiter MQTT, Zurueckspielen). Wird die Installation
+ * (wieder) eingeschaltet, verfaellt der Merker. Hoert sie auf und durfte sie abraeumen (hanb_darf_abraeumen(): sie
+ * war Anbieter, nicht abgeloest, nicht nur wartend), raeumt sie mit Ruecklesen ab - wartete sie nur oder wurde sie
+ * abgeloest, bleibt alles stehen (die Themen gehoeren einem anderen). Rueckgabe array(Meldung oder '', ok|warn).
+ */
+function tb_haus_folgen($alt, $neu)
+{
+    $ist = !empty($neu['haus_strompreis_ein']) && !empty($neu['mqtt_ein']);
+    @unlink(tb_haus_merker_datei());
+    if ($ist) { return array('', 'ok'); }
+    $z = tb_haus_zustand();
+    $frueher = !empty($alt['_haus_frueher']);
+    if (!hanb_darf_abraeumen($z, $frueher)) {
+        tb_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => '', 'fremd' => '', 'seit' => time()));
+        if ($frueher && $z['grund'] === 'abgeloest') { tb_haus_frueher_setzen(false); }
+        return array($z['rolle'] === 'wartet' ? tb_t('HAUS.M_WARTETE') : '', 'ok');
+    }
+    tb_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => '', 'fremd' => '', 'seit' => time()));
+    $e = tb_haus_leeren();
+    tb_log('Haus-Themen haus/strompreis: Abraeumen ' . $e['lage']
+        . ($e['offen'] ? ' (' . implode(', ', $e['offen']) . ')' : '') . '.');
+    if ($e['lage'] === 'geleert' || $e['lage'] === 'nichts') {
+        tb_haus_frueher_setzen(false);
+        return array($e['lage'] === 'geleert' ? sprintf(tb_t('HAUS.M_GELEERT'), count(tb_haus_retained()))
+                                              : tb_t('HAUS.M_NICHTS'), 'ok');
+    }
+    tb_haus_frueher_setzen(true);
+    if ($e['lage'] === 'rest') { return array(sprintf(tb_t('HAUS.M_REST'), implode(', ', $e['offen'])), 'warn'); }
+    return array(tb_t('HAUS.M_KEIN_BROKER'), 'warn');
+}
+
+/**
+ * Der Knopf "Diese Installation soll Anbieter sein" (E4 Schritt 3): schreibt EINMAL haus/strompreis/anbieter =
+ * tibber (retained) und setzt die Rolle anbieter/gewaehlt; der naechste Minutenlauf sendet den vollen Satz. Der
+ * bisherige Anbieter hoert mit seinem naechsten Lauf selbst auf - sofern er die Regel kennt (aWATTar bis 1.2.39
+ * kennt sie nicht: dort den Haken ausschalten, sonst loest er diese Installation beim naechsten
+ * Vollversand wieder ab). Rueckgabe array(Meldung, ok|warn).
+ */
+function tb_haus_waehlen($cfg, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    if (empty($cfg['haus_strompreis_ein']) || empty($cfg['mqtt_ein'])) {
+        return array(tb_t('HAUS.W_ERST_HAKEN'), 'warn');
+    }
+    $c = tb_haus_quellen();
+    list($z, $hinweis) = hanb_waehlen(TB_HAUS_NAME, isset($c['strompreis']) ? $c['strompreis'] : array(), $jetzt);
+    $r = tb_haus_sitzung(array('haus/strompreis/anbieter' => array(TB_HAUS_NAME, true)), array(), array(), 0);
+    if ($r['lage'] !== 'ok' || $r['gesendet'] < 1) {
+        return array(sprintf(tb_t('HAUS.W_BROKER'), $r['lage']), 'warn');
+    }
+    tb_haus_zustand_setzen($z);
+    @unlink(tb_haus_merker_datei());
+    $m = sprintf(tb_t('HAUS.W_OK'), $z['fremd'] !== '' ? $z['fremd'] : '-');
+    if ($hinweis === 'fremd_lebt') { return array($m . ' ' . sprintf(tb_t('HAUS.W_FREMD_LEBT'), $z['fremd']), 'warn'); }
+    if ($hinweis === 'bestand') { return array($m . ' ' . tb_t('HAUS.W_BESTAND'), 'warn'); }
+    return array($m, 'ok');
+}
+
+/** Deinstallation (tb_cron.php --haus-leeren): nur, wenn diese Installation abraeumen darf. Ausgabe fuer das
+ *  Installationsprotokoll; Rueckgabe immer 0. Abschrift spot_haus_leeren_ausgabe() mit hanb_darf_abraeumen(). */
+function tb_haus_leeren_ausgabe()
+{
+    $cfg = tb_config(false);
+    $z = tb_haus_zustand();
+    if (!hanb_darf_abraeumen($z, !empty($cfg['_haus_frueher']))) {
+        echo "<INFO> haus/strompreis: diese Installation ist nicht Anbieter (oder wurde abgeloest) - nichts zu leeren.\n";
+        return 0;
+    }
+    $e = tb_haus_leeren();
+    if ($e['lage'] === 'geleert') {
+        echo "<OK> haus/strompreis: geleert (vom Broker bestaetigt, " . count(tb_haus_retained()) . " Themen).\n";
+    } elseif ($e['lage'] === 'nichts') {
+        echo "<INFO> haus/strompreis: nichts zu leeren (der Broker haelt keines der Themen zurueck).\n";
+    } elseif ($e['lage'] === 'rest') {
+        echo "<WARNING> haus/strompreis: noch zurueckbehalten - bitte von Hand leeren: " . implode(', ', $e['offen'])
+           . " (mosquitto_pub -r -n -t <thema>)\n";
+    } else {
+        echo "<WARNING> haus/strompreis: der Broker war nicht erreichbar (" . $e['grund'] . ") - bitte von Hand leeren: "
+           . implode(', ', tb_haus_retained()) . " (mosquitto_pub -r -n -t <thema>)\n";
+    }
+    return 0;
+}
+
+/** Die Zeile "Anbieter haus/strompreis" der Selbstpruefung: array(1|0|-1, Text) in der Form von tb_pruefzeile(). */
+function tb_haus_testzeile($cfg, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    if (empty($cfg['haus_strompreis_ein'])) { return array(-1, tb_t('HAUS.T_AUS')); }
+    if (empty($cfg['mqtt_ein'])) { return array(-1, tb_t('HAUS.T_MQTT_AUS')); }
+    $z = tb_haus_zustand();
+    $fremd = $z['fremd'] !== '' ? $z['fremd'] : '-';
+    if ($z['rolle'] !== 'anbieter') {
+        $g = $z['grund'] !== '' ? $z['grund'] : 'pruefe';
+        $st = in_array($g, array('fremd_schweigt', 'veraltet'), true) ? 0 : -1;
+        return array($st, sprintf(tb_t('HAUS.A_' . strtoupper($g)), $fremd));
+    }
+    $sz = tb_json_lesen(tb_haus_sitzung_datei());
+    $vor = sprintf(tb_t('HAUS.A_' . strtoupper($z['grund'] !== '' ? $z['grund'] : 'frei')), $fremd) . ' ';
+    if (!is_array($sz) || !isset($sz['lage'], $sz['zeit']) || $sz['lage'] === 'wartet') {
+        return array(-1, $vor . tb_t('HAUS.T_NIE'));
+    }
+    $alter = max(0, $jetzt - (int) $sz['zeit']);
+    if ((string) $sz['lage'] !== 'ok') { return array(0, $vor . sprintf(tb_t('HAUS.T_BROKER'), (string) $sz['lage'], $alter)); }
+    $n = isset($sz['n']) ? (int) $sz['n'] : 0;
+    $ab = isset($sz['ab']) ? (int) $sz['ab'] : -1;
+    $ok = ($alter <= 150 && hanb_ampel($z) === 1) ? 1 : 0;
+    return array($ok, $vor . ($n > 0
+        ? sprintf(tb_t('HAUS.T_OK'), $alter, $n, date('H:i', $ab), isset($sz['raster']) ? (int) $sz['raster'] : 3600)
+        : sprintf(tb_t('HAUS.T_OHNE_PREISE'), $alter)));
+}
+
+/* ---------- E6: Abnehmer haus/speicher (Planer) und Leser der Anbieterregel ---------- */
+
+/** Der Stand des Lesers - bei jedem Aufruf frisch aus der Datei. */
+function tb_haus_quellen()
+{
+    $d = tb_json_lesen(tb_haus_quellen_datei());
+    return is_array($d) ? $d : array();
+}
+
+/** Welche Quellen liest der Leser? kurz => array(Zaehlerthema, kurz => Thema). 'speicher' fuer den Planer
+ *  (haus_speicher_ein), 'strompreis' fuer die Anbieterregel (haus_strompreis_ein und MQTT). */
+function tb_haus_lesequellen($cfg)
+{
+    $q = array();
+    if (!empty($cfg['haus_speicher_ein'])) {
+        $q['speicher'] = array('haus/speicher/zaehler', array('soc' => 'haus/speicher/soc'));
+    }
+    if (!empty($cfg['haus_strompreis_ein']) && !empty($cfg['mqtt_ein'])) {
+        $q['strompreis'] = array('haus/strompreis/zaehler', array('anbieter' => 'haus/strompreis/anbieter'));
+    }
+    return $q;
+}
+
+/**
+ * Eine Lesesitzung (nur aus dem abgekoppelten Leser tb_cron.php --haus-lesen): alle eingeschalteten Quellen in EINER
+ * Sitzung, Fenster bis $fenster s auf die live gesehenen Zaehler (Phasenfalle: die Zaehler kommen einmal je Minute,
+ * nicht retained). Ohne Quelle verfaellt die Ablage. Rueckgabe das Sitzungsergebnis oder null.
+ */
+function tb_haus_abnehmer(array $cfg, $fenster)
+{
+    $datei = tb_haus_quellen_datei();
+    $quellen = tb_haus_lesequellen($cfg);
+    if (!$quellen) {
+        if (is_file($datei)) { @unlink($datei); }
+        return null;
+    }
+    $c = tb_haus_quellen();
+    $lesen = array();
+    $warten = array();
+    foreach ($quellen as $k => $d) {
+        $lesen[] = $d[0];
+        foreach ($d[1] as $t) { $lesen[] = $t; }
+        if (hanb_warten(isset($c[$k]) && is_array($c[$k]) ? $c[$k] : array(), time())) { $warten[] = $d[0]; }
+    }
+    $erg = tb_haus_sitzung(array(), $lesen, $warten, (float) $fenster);
+    $jetzt = time();
+    $neu = array();
+    foreach ($quellen as $k => $d) {
+        $neu[$k] = hanb_merken(isset($c[$k]) && is_array($c[$k]) ? $c[$k] : array(), $erg, $d[0], $d[1], $jetzt,
+                               in_array($d[0], $warten, true));
+    }
+    $neu['sitzung'] = array('zeit' => $jetzt, 'lage' => $erg['lage']);
+    tb_log_gebremst('haus_lesen_' . ($erg['lage'] === 'ok' ? 'ok' : 'fehler'), $erg['lage'] === 'ok'
+        ? 'Haus-Themen lesen: Sitzung am Broker ok' : 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage'] . ')');
+    tb_json_schreiben($datei, $neu);
+    return $erg;
+}
+
+function tb_haus_leser_sperre()
+{
+    return sys_get_temp_dir() . '/tb_haus_lesen_' . tb_paths()['plugin'] . '.lock';
+}
+
+/**
+ * Den abgekoppelten Leser starten (Abschrift spot_haus_abnehmer_starten()): hoechstens EINEN, nie darauf warten. Das
+ * Kind erbt keine Deskriptoren - die Schale schliesst vor dem exec jede Nummer ueber 2, und die Sperre des
+ * Minutenlaufs ist mit 'ce' geoeffnet (Gedaechtnis sperre-vererbt-sich-an-kinder). Rueckgabe aus|laeuft|gestartet|
+ * kein_start.
+ */
+function tb_haus_abnehmer_starten(array $cfg, $skript)
+{
+    if (!tb_haus_lesequellen($cfg)) {
+        $datei = tb_haus_quellen_datei();
+        if (is_file($datei)) { @unlink($datei); }
+        return 'aus';
+    }
+    $fh = @fopen(tb_haus_leser_sperre(), 'ce');
+    if ($fh === false) { return 'kein_start'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return 'laeuft';
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY)) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --haus-lesen';
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Der abgekoppelte Leser selbst: eigene Sperre (close-on-exec), sonst still beenden. */
+function tb_haus_leser_lauf($fenster = 65)
+{
+    $fh = @fopen(tb_haus_leser_sperre(), 'ce');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = tb_haus_abnehmer(tb_config(false), $fenster);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg === null ? 'aus' : $erg['lage'];
+}
+
+/**
+ * Welche Speicherquelle gilt (E6)? array(art, grund, soc): 'haus' (soc aus haus/speicher, Quelle frisch, 0...100),
+ * 'url' (Rueckfall soc_url) oder 'keine'; grund aus|schweigt|unbrauchbar|ok. Abschrift spot_speicher_quelle() mit
+ * hanb_frisch().
+ */
+function tb_speicher_quelle($cfg, $c = null, $jetzt = null)
+{
+    $rueck = trim((string) $cfg['soc_url']) !== '' ? 'url' : 'keine';
+    if (empty($cfg['haus_speicher_ein'])) { return array($rueck, 'aus', null); }
+    if ($c === null) { $c = tb_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!hanb_frisch(isset($c['speicher']['seit']) ? $c['speicher']['seit'] : 0, $jetzt)) {
+        return array($rueck, 'schweigt', null);
+    }
+    $soc = isset($c['speicher']['werte']['soc']) ? trim((string) $c['speicher']['werte']['soc']) : '';
+    if ($soc === '' || !is_numeric($soc) || (float) $soc < 0 || (float) $soc > 100) {
+        return array($rueck, 'unbrauchbar', null);
+    }
+    return array('haus', 'ok', round((float) $soc, 1));
+}
+
+/** Die Speicherquelle in das Ergebnis von tb_umwelt() einsetzen (Abschrift spot_speicher_einsetzen()). 'haus' ersetzt
+ *  soc (mit soc_ts = jetzt - die Altersgrenze TB_SOC_HOECHSTALTER greift ueber die Frist der Quelle). */
+function tb_speicher_einsetzen(array $erg, array $q)
+{
+    $erg['soc_quelle'] = $q[0];
+    if ($q[0] === 'haus') {
+        $erg['soc'] = $q[2];
+        $erg['soc_ts'] = time();
+        $erg['soc_meldung'] = '';
+    } elseif ($q[1] === 'schweigt' || $q[1] === 'unbrauchbar') {
+        if ($q[0] === 'keine') {
+            $erg['soc'] = null;
+            $erg['soc_meldung'] = 'HAUS_SCHWEIGT_OHNE';
+        } elseif ((string) $erg['soc_meldung'] === '') {
+            $erg['soc_meldung'] = 'HAUS_SCHWEIGT';
+        }
+    }
+    return $erg;
+}
+
+/** Die Zeile "Speicherstand vom Speicher-Plugin" der Selbstpruefung: array(1|-1, Text). */
+function tb_speicher_testzeile($cfg)
+{
+    if (empty($cfg['haus_speicher_ein'])) { return array(-1, tb_t('HAUS.S_AUS')); }
+    $c = tb_haus_quellen();
+    $q = tb_speicher_quelle($cfg, $c);
+    $seit = isset($c['speicher']['seit']) ? (int) $c['speicher']['seit'] : 0;
+    if ($q[0] === 'haus') {
+        return array(1, sprintf(tb_t('HAUS.S_HAUS'), (string) $q[2], max(0, time() - $seit)));
+    }
+    $wie = $seit > 0 ? sprintf(tb_t('HAUS.S_SEIT'), (int) round(max(0, time() - $seit) / 60)) : tb_t('HAUS.S_NIE');
+    return array(-1, sprintf(tb_t($q[0] === 'url' ? 'HAUS.S_URL' : 'HAUS.S_KEINE'), $wie));
+}
+
+/* ---------- G3/Sicherung: neue Schluessel dieser Fassung ---------- */
+
+/** Schluessel, die 0.9.33 neu einfuehrt. Eine Sicherung ohne sie wird angenommen; fuer die fehlenden gilt weiter,
+ *  was eingestellt ist (Hinweis EINST.SICH_OHNE_G43). endpunkt_ein ab Werk 0, beim Update 1 (postinstall.sh). */
+function tb_neue_schluessel_0933()
+{
+    return array('haus_strompreis_ein', 'haus_speicher_ein', 'endpunkt_ein');
+}
+
+/* ---------- Gesundheit (Healthcheck nach Renault NG 2.1.20) ---------- */
+
+/** Die Fakten des Healthchecks - nur lesend, kein Netz, kein Broker. */
+function tb_gesund_fakten(array $cfg)
+{
+    $p = tb_paths();
+    $f = array();
+    $f['token'] = tb_token_lesen() !== '';
+    $f['rechte'] = is_file($p['config']) ? substr(sprintf('%o', fileperms($p['config'])), -4) : '';
+    $z = $p['datadir'] . '/zaehler';
+    clearstatcache(true, $z);
+    $f['zaehler_alter_s'] = is_file($z) ? max(0, time() - (int) filemtime($z)) : -1;
+    $f['alter_s'] = tb_alter();
+    $f['schranke_s'] = tb_altersschranke($cfg);
+    $st = tb_stand();
+    $f['ok'] = !empty($st['ok']);
+    $f['fehler'] = (isset($st['fehler']) && is_string($st['fehler'])) ? $st['fehler'] : '';
+    $f['morgen_ok'] = !empty($st['morgen_ok']);
+    $w = ($f['alter_s'] >= 0) ? tb_werte() : array('CUR' => null);
+    $f['cur'] = $w['CUR'];
+    $f['pulse_soll'] = !empty($cfg['pulse_ein']) && tb_dienst_soll();
+    $f['pulse_laeuft'] = $f['pulse_soll'] ? (tb_dienst_pid() !== 0) : null;
+    $f['v2'] = tb_v2_haken_lage($cfg);
+    $f['haus'] = (!empty($cfg['haus_strompreis_ein']) && !empty($cfg['mqtt_ein'])) ? tb_haus_testzeile($cfg) : null;
+    return $f;
+}
+
+/**
+ * Das Urteil (rein): array(Status, Text) - 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis (Regeln/03 :73-78).
+ * Geurteilt wird ueber das ALTER, nie ueber einen einzelnen Abruf: ohne Token 6 "nicht eingerichtet"; Lebenszeichen
+ * (data/plugins/<ordner>/zaehler) aelter als 10 min -> 3 (der Minutenlauf steht); letzter gelungener Abruf aelter
+ * als die Altersschranke -> 3 bei Fehlertext, sonst 4; noch nie abgerufen -> 4; Konfiguration nicht 0600 -> 4;
+ * Pulse soll laufen, laeuft nicht -> 4; Gateway V2: Haken fehlen -> 4; Anbieter haus/strompreis gescheitert
+ * (Testzeile 0) -> 4.
+ */
+function tb_gesund_urteil(array $f)
+{
+    if (empty($f['token'])) {
+        return array(6, 'Nicht eingerichtet: es ist kein Tibber-Zugangstoken hinterlegt (Reiter Einstellungen).');
+    }
+    $status = 5;
+    $befunde = array();
+    $setze = function ($s, $t) use (&$status, &$befunde) {
+        if ($s === 3 || ($s === 4 && $status === 5)) { $status = $s; }
+        $befunde[] = $t;
+    };
+    if ($f['zaehler_alter_s'] < 0 || $f['zaehler_alter_s'] > 600) {
+        $setze(3, 'Der Minutenlauf steht: das Lebenszeichen ist '
+            . ($f['zaehler_alter_s'] < 0 ? 'nicht vorhanden' : (int) round($f['zaehler_alter_s'] / 60) . ' Minuten alt'));
+    }
+    if ($f['alter_s'] < 0) {
+        $setze(4, 'Es hat noch kein Preisabruf stattgefunden');
+    } elseif (!$f['ok'] && $f['fehler'] !== '' && $f['alter_s'] > $f['schranke_s']) {
+        $setze(3, 'Der Preisabruf misslingt: ' . $f['fehler'] . ' (letzter gelungener Abruf vor '
+            . (int) round($f['alter_s'] / 60) . ' Minuten)');
+    } elseif ($f['alter_s'] > $f['schranke_s']) {
+        $setze(4, 'Der letzte gelungene Preisabruf ist ' . (int) round($f['alter_s'] / 60) . ' Minuten her');
+    } elseif (!$f['ok'] && $f['fehler'] !== '') {
+        $setze(4, 'Der letzte Preisabruf ist misslungen (' . $f['fehler'] . '); die Preise sind '
+            . (int) round($f['alter_s'] / 60) . ' Minuten alt und gelten noch');
+    }
+    if ($f['rechte'] !== '' && $f['rechte'] !== '0600') {
+        $setze(4, 'Die Konfiguration traegt die Rechte ' . $f['rechte'] . ' statt 0600');
+    }
+    if ($f['pulse_soll'] && $f['pulse_laeuft'] === false) {
+        $setze(4, 'Der Pulse-Dienst soll laufen, laeuft aber nicht');
+    }
+    if (is_array($f['v2']) && $f['v2'][0] === 0) {
+        $setze(4, 'Gateway V2: ' . $f['v2'][1]);
+    }
+    if (is_array($f['haus']) && $f['haus'][0] === 0) {
+        $setze(4, 'Anbieter haus/strompreis: ' . $f['haus'][1]);
+    }
+    if ($status === 5) {
+        $t = 'Preise sind aktuell (' . (int) round($f['alter_s'] / 60) . ' Minuten alt)';
+        if ($f['cur'] !== null) { $t .= ', laufende Scheibe ' . $f['cur'] . ' ct/kWh'; }
+        if ($f['morgen_ok']) { $t .= ', Preise fuer morgen liegen vor'; }
+        return array(5, $t . '.');
+    }
+    return array($status, implode('; ', $befunde) . '.');
 }

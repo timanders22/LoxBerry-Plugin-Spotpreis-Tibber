@@ -696,6 +696,27 @@ function tb_pruefungen($voll = false)
         $pgrenzen ? sprintf(tb_t('TEST.PLANER_GRENZEN_FEHL'), tb_e(implode('; ', $pgrenzen)))
                   : sprintf(tb_t('TEST.PLANER_GRENZEN'), $pzahl));
 
+    /* --- Gruppe 43 (0.9.33): Hausform ---
+     * Gateway V2 (einheitliche Pruefzeile: grau = nicht feststellbar, V1, leere Liste, noch nicht eingerichtet),
+     * Anbieter haus/strompreis mit der Anbieterregel, Speicherstand vom Speicher-Plugin, HTTP-Endpunkt. */
+    list($pv2, $pv2txt) = tb_v2_haken_lage($cfg);
+    $zeilen[] = tb_pruefzeile($pv2 === 2 ? -1 : $pv2, tb_t('TEST.F_V2'), tb_e($pv2txt));
+    list($ph, $phtxt) = tb_haus_testzeile($cfg);
+    $zeilen[] = tb_pruefzeile($ph, tb_t('TEST.F_HAUS_STROMPREIS'), tb_e($phtxt));
+    list($ps, $pstxt) = tb_speicher_testzeile($cfg);
+    $zeilen[] = tb_pruefzeile($ps, tb_t('TEST.F_HAUS_SPEICHER'), tb_e($pstxt));
+    /* Nachtrag 0.9.33: eine PV-Prognose aelter als TB_PV_HOECHSTALTER gilt nicht mehr (tb_umwelt_pv_alter()).
+     * Die Zeile steht nur in diesem Fall - sonst bleibt die Liste, wie sie war. Nur lesend, kein Netz. */
+    $ppvu = tb_umwelt();
+    if (isset($ppvu['pv_meldung']) && $ppvu['pv_meldung'] === 'ZU_ALT') {
+        $ppvts = (isset($ppvu['pv_ts']) && is_numeric($ppvu['pv_ts'])) ? (int) $ppvu['pv_ts'] : 0;
+        $zeilen[] = tb_pruefzeile(0, tb_t('TEST.F_PV_ALTER'), tb_e(sprintf(tb_t('TEST.A_PV_ZU_ALT'),
+            (int) round(TB_PV_HOECHSTALTER / 3600),
+            $ppvts > 0 ? (string) (int) floor(max(0, time() - $ppvts) / 3600) : '?')));
+    }
+    $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_HTTP_ENDPUNKT'),
+        tb_t(!empty($cfg['endpunkt_ein']) ? 'TEST.A_ENDPUNKT_EIN' : 'TEST.A_ENDPUNKT_AUS'));
+
     return $zeilen;
 }
 
