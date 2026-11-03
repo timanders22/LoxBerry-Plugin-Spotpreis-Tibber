@@ -264,6 +264,8 @@ function tb_ws_verbinden($url, $tmo = 15)
     $kopf = '';
     $frist = microtime(true) + $tmo;
     while (strpos($kopf, "\r\n\r\n") === false) {
+        /* bis 0.9.34 nur bei leerer Antwort geprueft: eine Gegenstelle, die Zeile um Zeile ohne Kopfende liefert, hielt den Dienst fest. */
+        if (microtime(true) > $frist) { break; }
         $z = @fgets($fh, 2048);
         if ($z === false || $z === '') {
             if (microtime(true) > $frist) { break; }

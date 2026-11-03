@@ -390,7 +390,8 @@ if ($tb_post && isset($_POST['speichern'])) {
     $tb_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $tb_neucfg['tts'] = ansage_formular_lesen($_POST, tb_tts($tb_cfg), $tb_tmangel, $tb_tbean,
                                               tb_ansage_opt() + array(
-                                              'ziele' => tb_mit_zielen()), tb_ansage_k(), $tb_thinw);
+                                              'ziele' => tb_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), tb_ansage_k(), $tb_thinw);
+    list($tb_neucfg['ansage_regeln']) = ansage_regeln_formular($_POST, tb_ansage_regeln($tb_cfg), array(), $tb_tmangel, $tb_tbean, tb_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($tb_tmangel as $tb_tm) { $tb_fehler[] = tb_e($tb_tm['text']); }
     foreach ($tb_tbean as $tb_tb) { $tb_falsch[] = tb_ziele_x2_name($tb_tb); }     // 0.9.33: Tabelle name[N] -> name.N
     foreach (tb_ansage_anlaesse() as $tb_as) { $tb_neucfg[$tb_as] = isset($_POST[$tb_as]) ? 1 : 0; }
@@ -424,8 +425,8 @@ if ($tb_post && isset($_POST['speichern'])) {
             if (substr($tb_an, -9) === '_loeschen') { $tb_ahk[] = $tb_an; } else { $tb_ax2[] = $tb_an; }
         }
         $tb_eingaben = tb_eingaben_sammeln('einst', array_merge(array('home_id'), $tb_einst_felder, $tb_ax2,
-                                                                array('ansage_von', 'ansage_bis')),
-            array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht'),
+                                                                array('ansage_von', 'ansage_bis', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min')),
+            array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht', 'ansage_ruhe_ein'),
                         array_values(tb_ansage_anlaesse()), $tb_ahk), $tb_falsch);
         $tb_eingaben['werte'] += tb_ziele_x2_werte();     // Welle Mehrfach-Ziele (0.9.33): die Tabelle flach als name.N
         tb_log('Einstellungen nicht gespeichert: ' . count($tb_falsch) . ' Feld(er) beanstandet.');
@@ -747,9 +748,9 @@ if ($tb_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
     if (isset($_POST['ansage_test_ziel']) && $tb_tnur === 0) {
         $tb_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($tb_tnur >= 1) {
-        $tb_tr = ansage_testansage(tb_tts(), $tb_tk, $tb_tnur);
+        $tb_tr = ansage_testansage(tb_ansage_vor_ort(), $tb_tk, $tb_tnur);
     } else {
-        $tb_tr = ansage_testansage(tb_tts(), $tb_tk);
+        $tb_tr = ansage_testansage(tb_ansage_vor_ort(), $tb_tk);
     }
     tb_log('Testansage' . ($tb_tnur >= 1 ? ' an Ziel ' . $tb_tnur : '') . ': ' . ansage_kurz($tb_tr));
     if ($tb_tr['stand'] === 1) {
@@ -1270,6 +1271,11 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => tb_mit_zielen(),
     'ziele_post' => tb_fa('einst') ? tb_ziele_x2_post($tb_eingaben['werte']) : null), tb_ansage_k()); ?>
+<?= ansage_regeln_html(tb_ansage_regeln($tb_cfg), array(), array(), array(
+    'w' => function ($n, $g) { return tb_fw('einst', $n, $g); },
+    'm' => function ($n) { return tb_fm(tb_ziele_x2_name($n)); },
+    'c' => function ($n, $g) { return tb_fh('einst', $n, $g); },
+    'token_vor_ort' => true), tb_ansage_k()) ?>
 <?php foreach (tb_ansage_anlaesse() as $tb_an => $tb_as) { ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
@@ -2312,6 +2318,7 @@ foreach ($tb_liste as $tb_tag => $tb_w) {
        ohne weitere Ziele nichts. */
     if (tb_mit_zielen()) { echo ansage_testknoepfe_html(tb_tts($tb_cfg), tb_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
+<?= tb_ansage_lage_html() ?>
 </div>
 
 <h3><?= tb_e(tb_t('TEST.H_VERLAUF')) ?></h3>
