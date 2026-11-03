@@ -7,5 +7,10 @@
 #
 # Dazu der Waechter fuer den Pulse-Dienst.
 # Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
-php "REPLACELBPBINDIR/tb_cron.php" >> "REPLACELBPLOGDIR/tibber.log" 2>&1
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+ZIEL="REPLACELBPLOGDIR/tibber.log"
+# 0.9.35 (Nachzug 01.11.2026): ist das Protokoll nicht schreibbar oder fehlt sein Ordner, braeche die Umlenkung den Takt ab,
+# BEVOR php startet - bis 0.9.34 keine Preise und keine Spur. Dann geht die Ausgabe nach /dev/null.
+( : >>"$ZIEL" ) 2>/dev/null || ZIEL=/dev/null
+php "REPLACELBPBINDIR/tb_cron.php" >> "$ZIEL" 2>&1
 "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1

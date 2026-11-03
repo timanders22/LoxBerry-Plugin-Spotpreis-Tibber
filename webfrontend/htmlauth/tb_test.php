@@ -524,7 +524,7 @@ function tb_pruefungen($voll = false)
      * Test gefragt (selftest=1, spricht nicht), der Music Server nie. Dazu die
      * Haken der Anlaesse und - Entscheidung Nr. 30 - ob gerade genug kuenftige
      * Preisstunden fuer die Ansage des guenstigsten Fensters bekannt sind. */
-    list($tb_ast, $tb_atext) = ansage_pruefzeile(tb_tts($cfg), $voll, tb_ansage_k());
+    list($tb_ast, $tb_atext) = ansage_pruefzeile(tb_ansage_pruefblock(), $voll, tb_ansage_k());
     if (tb_ansage_an($cfg)) {
         $tb_aan = array();
         foreach (tb_ansage_anlaesse() as $tb_an => $tb_as) {
