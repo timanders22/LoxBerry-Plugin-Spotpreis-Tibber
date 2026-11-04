@@ -4276,7 +4276,7 @@ function tb_ansage_token_pflegen($cfg = null)
 function tb_ansage_vor_ort($cfg = null)
 {
     if ($cfg === null) { $cfg = tb_config(); }
-    return ansage_token_fuer_lauf(tb_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), tb_ansage_k());
+    return ansage_tafel_einreihen(ansage_token_fuer_lauf(tb_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), tb_ansage_k()), tb_ansage_regeln($cfg), tb_ansage_k(), true);     // Stamm 1.4.0: die Tafel, wenn sie bereitsteht
 }
 
 /** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
