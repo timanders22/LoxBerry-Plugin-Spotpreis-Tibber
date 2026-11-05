@@ -1328,6 +1328,7 @@ if ($tb_auto) {
          * rechnet die Hysterese ohne Zutun mit. */
         $tb_fpjetzt = time() - (time() % (int) $tb_fpplan['slotlen']);
         tb_laufend_fortschreiben($tb_fpplan['regeln'], $tb_fpjetzt);
+        plan_frist_schreiben(tb_paths()['datadir'] . '/frist.json', $tb_fpplan['regeln'], $tb_fpjetzt);   // 0.9.38 (OC-1)
     }
 }
 

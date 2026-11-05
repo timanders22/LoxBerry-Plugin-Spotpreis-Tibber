@@ -2698,6 +2698,7 @@ function tb_fahrplan($st = null)
         'neg'      => !empty($st['neg']) ? 1 : 0,
         'mittel'   => $mittel,
         'laufend'  => tb_laufend_lesen(),
+        'frist'    => plan_frist_lesen(tb_paths()['datadir'] . '/frist.json'),   // 0.9.38 (OC-1)
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],

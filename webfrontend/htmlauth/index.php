@@ -394,6 +394,8 @@ if ($tb_post && isset($_POST['speichern'])) {
                                               tb_ansage_opt() + array(
                                               'ziele' => tb_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), tb_ansage_k(), $tb_thinw);
     list($tb_neucfg['ansage_regeln']) = ansage_regeln_formular($_POST, tb_ansage_regeln($tb_cfg), array(), $tb_tmangel, $tb_tbean, tb_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 0.9.38: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.37 ueberschrieb es der naechste Abgleich.
+    $tb_neucfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($tb_cfg['ansage_token_herkunft']) ? $tb_cfg['ansage_token_herkunft'] : array());
     foreach ($tb_tmangel as $tb_tm) { $tb_fehler[] = tb_e($tb_tm['text']); }
     foreach ($tb_tbean as $tb_tb) { $tb_falsch[] = tb_ziele_x2_name($tb_tb); }     // 0.9.33: Tabelle name[N] -> name.N
     foreach (tb_ansage_anlaesse() as $tb_as) { $tb_neucfg[$tb_as] = isset($_POST[$tb_as]) ? 1 : 0; }
@@ -427,8 +429,8 @@ if ($tb_post && isset($_POST['speichern'])) {
             if (substr($tb_an, -9) === '_loeschen') { $tb_ahk[] = $tb_an; } else { $tb_ax2[] = $tb_an; }
         }
         $tb_eingaben = tb_eingaben_sammeln('einst', array_merge(array('home_id'), $tb_einst_felder, $tb_ax2,
-                                                                array('ansage_von', 'ansage_bis', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min')),
-            array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht', 'ansage_ruhe_ein'),
+                                                                array('ansage_von', 'ansage_bis', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min', 'ansage_tafel_namen', 'ansage_homepod_geraet')),     // 0.9.38: Tafel und HomePod dazu
+            array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht', 'ansage_ruhe_ein', 'ansage_tafel_ein', 'ansage_homepod_ein'),
                         array_values(tb_ansage_anlaesse()), $tb_ahk), $tb_falsch);
         $tb_eingaben['werte'] += tb_ziele_x2_werte();     // Welle Mehrfach-Ziele (0.9.33): die Tabelle flach als name.N
         tb_log('Einstellungen nicht gespeichert: ' . count($tb_falsch) . ' Feld(er) beanstandet.');
