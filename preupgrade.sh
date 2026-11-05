@@ -51,7 +51,7 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wurde nichts angelegt, nichts gesichert und kein Dienst angehalten."
-    exit 1
+    exit 2
 fi
 
 PCONFIG="$BASE/config/plugins/$PFOLDER"
@@ -105,6 +105,30 @@ else
     echo "<FAIL> die Einstellungen beiseite. Dieses Skript endet mit Rueckgabewert 2."
     exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    [ "$TB_MARKE_VORHER" = 1 ] || rm -f "$MARKE" 2>/dev/null
+    [ -f "$LIEF" ] && : > "$BASE/data/plugins/$PFOLDER/soll_laufen"
+    exit 2
+}
 
 # Laufenden Pulse-Dienst anhalten - er haelt eine Verbindung offen.
 #
@@ -234,7 +258,7 @@ for PAAR in "tibber.json:.backup.json" "token.json:.backup.token.json"; do
             echo "<WARNING> Zweitschrift $(basename "$ZIEL") bleibt und wird nach dem Update zurueckgespielt."
             continue
         fi
-        if cp -p "$QUELLE" "$ZIEL" && chmod 600 "$ZIEL"; then
+        if zs_hinlegen "$QUELLE" "$ZIEL"; then
             if [ "$TB_L" = 2 ]; then
                 echo "<OK> $(basename "$QUELLE") gesichert (Rechte 0600; ohne PHP nicht auf Lesbarkeit geprueft)."
             else
@@ -242,6 +266,7 @@ for PAAR in "tibber.json:.backup.json" "token.json:.backup.token.json"; do
             fi
         else
             echo "<FAIL> $(basename "$QUELLE") liess sich nicht sichern."
+            ZS_FEHL="$ZS_FEHL $(basename "$QUELLE")"
         fi
     fi
 done
@@ -271,6 +296,7 @@ if [ "$TB_MARKE_VORHER" = "0" ] && { [ -e "$TB_SICHER" ] || [ -L "$TB_SICHER" ];
     if [ -e "$TB_SICHER" ] || [ -L "$TB_SICHER" ]; then
         echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $TB_SICHER"
         echo "<FAIL> postinstall.sh spielte sie sonst zurueck. Dieses Skript endet mit Rueckgabewert 2."
+        rm -f "$MARKE" 2>/dev/null
         exit 2
     fi
     echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt: $TB_SICHER"
@@ -309,6 +335,8 @@ if [ -d "$TB_DATEN" ]; then
         echo "<INFO> Es gab keinen Preisverlauf und keine Merker zu sichern."
     else
         echo "<WARNING> Nicht alles liess sich sichern ($TB_SICHER) - Preisverlauf oder Merker koennten nach dem Update fehlen."
+        ZS_FEHL="$ZS_FEHL Preisverlauf"
     fi
 fi
+zs_schluss
 exit 0
