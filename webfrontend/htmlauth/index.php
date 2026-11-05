@@ -234,6 +234,7 @@ if (isset($_POST['activetab']) && is_string($_POST['activetab'])
 /* ---------------- Loxone-Vorlage herunterladen ---------------- */
 if ($tb_post && isset($_POST['vorlage'])) {
     list($tb_name, $tb_inhalt) = tb_vorlage();
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/xml; charset=utf-8');
     // Die Anfuehrungszeichen um den Dateinamen sind Pflicht - ohne sie bricht
     // jeder Name, der ein Leerzeichen enthaelt.
@@ -270,6 +271,7 @@ if ($tb_post && isset($_POST['verlauf_holen'])) {
         $tb_csv .= date('Y-m-d H:i:s', $tb_e['ts']) . ';' . $tb_e['ts'] . ';'
                  . number_format($tb_e['ct'], 3, ',', '') . "\r\n";
     }
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="spotpreis_tibber_verlauf_'
            . date('Ymd_His') . '.csv"');
@@ -784,6 +786,7 @@ if ($tb_post && isset($_POST['tb_sichern'])) {
     $tb_js = json_encode(tb_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($tb_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="spotpreis_tibber_einstellungen_'
                . date('Ymd_His') . '.json"');
