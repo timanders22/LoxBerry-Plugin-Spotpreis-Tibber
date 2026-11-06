@@ -1467,6 +1467,7 @@ if (($tb_fpumw['pv_meldung'] === 'NICHT_ERREICHBAR')
   <label for="pv_url"><?= tb_e(tb_t('FP.L_PV_URL')) ?></label>
   <input data-role="none" type="text" id="pv_url" name="pv_url" value="<?= tb_e($tb_fpz['pv_url']) ?>"<?= tb_fm('pv_url') ?> placeholder="https://api.forecast.solar/estimate/48.1/11.6/30/0/9.9">
   <div class="sm-hilfe"><?= tb_t('FP.H_PV_URL') ?></div>
+  <div class="sm-hilfe"><a href="https://azimut.polka-umwelt.de/" target="_blank" rel="noopener"><?= tb_e(tb_t('FP.AZIMUT_LINK')) ?></a>. <?= tb_e(tb_t('FP.AZIMUT_PV')) ?></div>
 </div>
 <div class="sm-reihe">
   <div class="sm-feld">
