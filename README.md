@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.38
+Version 0.9.39
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -10,6 +10,10 @@ tokengeschützten HTTP-Endpunkt (der Weg der Baustein-Listen) oder über MQTT
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.39
+
+- PV-Prognose: Unter der Adresse der PV-Prognose steht ein Link zum Azimut-Werkzeug (azimut.polka-umwelt.de). Dort das Haus im Luftbild suchen und mit „Orthogonales Messen“ am First entlang klicken. Die angezeigte Gradzahl („Abweichung von Süden“, 0 = Süden, Osten negativ, Westen positiv) zählt wie forecast.solar und kommt unverändert an die Stelle „Ausrichtung“ in der Adresse.
 
 ## Neu in 0.9.38
 
