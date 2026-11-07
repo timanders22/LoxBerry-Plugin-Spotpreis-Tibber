@@ -1142,7 +1142,7 @@ function tb_selbsttest()
  * Verglichen werden die DATEINAMEN, nicht die aufgeloesten Pfade. Ein
  * realpath()-Vergleich sieht plausibel aus und faellt auseinander, sobald
  * der Aufrufpfad anders geschrieben ist als __FILE__ - unter Windows etwa
- * in der kurzen Form (ABCDEF~1). Der Waechter hielt den Lauf dann fuer ein
+ * in der kurzen Form (etwa ABCDEF~1). Der Waechter hielt den Lauf dann fuer ein
  * Einbinden und kehrte zurueck: Rueckgabewert 0, keine Ausgabe, nichts
  * getan. Am 27.08.2026 hat das eine ganze Eichung wertlos gemacht, weil
  * jeder Rueckbau 'gruen' meldete, ohne dass etwas gelaufen waere.
