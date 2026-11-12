@@ -299,7 +299,7 @@ if ($tb_post && isset($_POST['speichern'])) {
     $tb_falsch = array();
     $tb_einst_felder = array('aufschlag', 'guenstig', 'teuer', 'fensterstunden', 'festpreis',
                              'grundpreis', 'preistakt', 'verbrauchstakt', 'zeitueberschreitung',
-                             'verlauf_tage');
+                             'verlauf_tage', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre');
 
     /* Das Tibber-Token. Ein LEERES Feld loescht nichts - sonst stuende
      * irgendwann ein leeres Token in der Datei, ohne dass es jemand merkt.
@@ -379,6 +379,7 @@ if ($tb_post && isset($_POST['speichern'])) {
     }
 
     $tb_neucfg['verbrauch_ein'] = isset($_POST['verbrauch_ein']) ? 1 : 0;
+    $tb_neucfg['schwelle_ein'] = isset($_POST['schwelle_ein']) ? 1 : 0;   // Schwellen-Push (0.9.43)
     $tb_neucfg['pulse_ein']     = isset($_POST['pulse_ein']) ? 1 : 0;
     $tb_neucfg['monatsbericht'] = isset($_POST['monatsbericht']) ? 1 : 0;
 
@@ -430,7 +431,7 @@ if ($tb_post && isset($_POST['speichern'])) {
         }
         $tb_eingaben = tb_eingaben_sammeln('einst', array_merge(array('home_id'), $tb_einst_felder, $tb_ax2,
                                                                 array('ansage_von', 'ansage_bis', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min', 'ansage_tafel_namen', 'ansage_homepod_geraet')),     // 0.9.38: Tafel und HomePod dazu
-            array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht', 'ansage_ruhe_ein', 'ansage_tafel_ein', 'ansage_homepod_ein'),
+            array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht', 'schwelle_ein', 'ansage_ruhe_ein', 'ansage_tafel_ein', 'ansage_homepod_ein'),
                         array_values(tb_ansage_anlaesse()), $tb_ahk), $tb_falsch);
         $tb_eingaben['werte'] += tb_ziele_x2_werte();     // Welle Mehrfach-Ziele (0.9.33): die Tabelle flach als name.N
         tb_log('Einstellungen nicht gespeichert: ' . count($tb_falsch) . ' Feld(er) beanstandet.');
@@ -1219,6 +1220,31 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
   <div class="sm-hilfe"><?= tb_t('EINST.H_' . strtoupper($tb_f)) ?></div>
 </div>
 <?php } ?>
+
+
+<h2><?= tb_e(tb_t('SCHWELLE.TITEL')) ?></h2>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="schwelle_ein" value="1" <?= tb_fh('einst', 'schwelle_ein', $tb_cfg['schwelle_ein']) ? 'checked' : '' ?>>
+    <?= tb_e(tb_t('SCHWELLE.EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= tb_t('SCHWELLE.H_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="schwelle_ct"><?= tb_e(tb_t('EINST.L_SCHWELLE_CT')) ?></label>
+  <input data-role="none" type="<?= tb_ftyp('schwelle_ct') ?>" id="schwelle_ct" name="schwelle_ct" value="<?= tb_e(tb_fw('einst', 'schwelle_ct', $tb_cfg['schwelle_ct'])) ?>" min="-100" max="200" step="0.01"<?= tb_fm('schwelle_ct') ?>>
+  <div class="sm-hilfe"><?= tb_t('SCHWELLE.H_CT') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="schwelle_hyst"><?= tb_e(tb_t('EINST.L_SCHWELLE_HYST')) ?></label>
+  <input data-role="none" type="<?= tb_ftyp('schwelle_hyst') ?>" id="schwelle_hyst" name="schwelle_hyst" value="<?= tb_e(tb_fw('einst', 'schwelle_hyst', $tb_cfg['schwelle_hyst'])) ?>" min="0" max="50" step="0.01"<?= tb_fm('schwelle_hyst') ?>>
+  <div class="sm-hilfe"><?= tb_t('SCHWELLE.H_HYST') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="schwelle_sperre"><?= tb_e(tb_t('EINST.L_SCHWELLE_SPERRE')) ?></label>
+  <input data-role="none" type="<?= tb_ftyp('schwelle_sperre') ?>" id="schwelle_sperre" name="schwelle_sperre" value="<?= tb_e(tb_fw('einst', 'schwelle_sperre', $tb_cfg['schwelle_sperre'])) ?>" min="0" max="1440" step="1"<?= tb_fm('schwelle_sperre') ?>>
+  <div class="sm-hilfe"><?= tb_t('SCHWELLE.H_SPERRE') ?></div>
+</div>
 
 <h2><?= tb_e(tb_t('EINST.H_VERBRAUCH')) ?></h2>
 <div class="sm-feld">

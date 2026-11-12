@@ -714,6 +714,13 @@ function tb_pruefungen($voll = false)
             (int) round(TB_PV_HOECHSTALTER / 3600),
             $ppvts > 0 ? (string) (int) floor(max(0, time() - $ppvts) / 3600) : '?')));
     }
+    /* Schwellen-Push (0.9.43): die Logik an einer festen Preisreihe (Unterschreiten, Hysterese, Sperrzeit,
+     * Wiederkehr), dann die Wirkung - rechnet der Minutenlauf, und passt der abgelegte Zustand zum Preis, den
+     * er gesehen hat? Ausgeschaltet oder ohne gueltigen Preis ein Strich. Beides schreibt nichts. */
+    list($tb_swl, $tb_swlt) = tb_schwelle_selbstpruefung();
+    $zeilen[] = tb_pruefzeile($tb_swl === 1 ? 1 : 0, tb_t('TEST.SCHWELLE_LOGIK'), tb_e($tb_swlt));
+    list($tb_sw, $tb_swt) = tb_schwelle_lage();
+    $zeilen[] = tb_pruefzeile($tb_sw === 2 ? -1 : ($tb_sw === 1 ? 1 : 0), tb_t('TEST.SCHWELLE'), tb_e($tb_swt));
     $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_HTTP_ENDPUNKT'),
         tb_t(!empty($cfg['endpunkt_ein']) ? 'TEST.A_ENDPUNKT_EIN' : 'TEST.A_ENDPUNKT_AUS'));
 

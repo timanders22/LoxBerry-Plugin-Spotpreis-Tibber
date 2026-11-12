@@ -1383,6 +1383,15 @@ if (tb_token_lesen() === '') {
     tb_notify('token', 'ok', 'Es ist ein Zugangstoken hinterlegt.');
 }
 
+/* Schwellen-Push (0.9.43, ab Werk aus): ein Schritt je Minutenlauf mit dem Preis zur Lesezeit (W1, OK nach
+ * Alter W2), VOR dem MQTT-Versand - das Meldefenster geht im selben Lauf hinaus. Ein Fehler darin darf den
+ * Minutenlauf nicht aufhalten. */
+try {
+    tb_schwelle_pruefen(tb_stand_jetzt(tb_stand(), tb_config()));
+} catch (Throwable $tb_e) {
+    tb_log('Schwellen-Push abgebrochen (' . get_class($tb_e) . ': ' . $tb_e->getMessage()
+        . ') - der Minutenlauf ist davon nicht betroffen.');
+}
 list($tb_v, $tb_f, $tb_lage, $tb_behalten) = tb_veroeffentlichen();
 /* Beide Zahlen getrennt. Ein 'n Werte versendet' ohne die Zahl der
  * Fehlschlaege ist eine Zusammenfassung, die besser aussieht als ihr

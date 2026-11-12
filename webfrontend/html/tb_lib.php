@@ -494,6 +494,13 @@ function tb_vorgaben()
         'haus_strompreis_ein' => 0,
         'haus_speicher_ein'   => 0,
         'endpunkt_ein'        => 0,
+        /* Schwellen-Push (0.9.43, ab Werk aus): eine Meldung, wenn CUR unter schwelle_ct faellt, eine, wenn er
+         * wieder ueber schwelle_ct + schwelle_hyst steigt; je Richtung hoechstens eine in schwelle_sperre
+         * Minuten (tb_schwelle_schritt()). Dieselben Schluessel wie Spotpreis aWATTar und Octopus Dynamic. */
+        'schwelle_ein'     => 0,
+        'schwelle_ct'      => 20.0,
+        'schwelle_hyst'    => 1.0,
+        'schwelle_sperre'  => 60,
         'festpreis'        => 34.0,    // ct/kWh zum Vergleich
         'grundpreis'       => 12.0,    // Euro im Monat, nur fuer die Anzeige
         'monatsbericht'    => 1,
@@ -743,6 +750,11 @@ function tb_fahrplan_normieren(array $cfg)
     $cfg['budget2_von'] = max(0,   min(23,      (int)   $cfg['budget2_von']));
     $cfg['budget2_bis'] = max(0,   min(23,      (int)   $cfg['budget2_bis']));
     $cfg['hysterese']   = empty($cfg['hysterese']) ? 0 : 1;
+    /* Schwellen-Push (0.9.43): beim Lesen gekappt mit den Grenzen aus tb_feldregeln(). */
+    $cfg['schwelle_ein']    = empty($cfg['schwelle_ein']) ? 0 : 1;
+    $cfg['schwelle_ct']     = max(-100.0, min(200.0, (float) $cfg['schwelle_ct']));
+    $cfg['schwelle_hyst']   = max(0.0,    min(50.0,  (float) $cfg['schwelle_hyst']));
+    $cfg['schwelle_sperre'] = max(0,      min(1440,  (int)   $cfg['schwelle_sperre']));
     if (!in_array($cfg['pv_quelle'], array('', 'forecast_solar', 'objekt', 'liste'), true)) {
         $cfg['pv_quelle'] = '';
     }
@@ -2008,6 +2020,11 @@ function tb_status_felder()
          * "mindestens einen Tag alt". Ungedeckelt waeren nach zwei Tagen
          * ohne Pulse 172800 hinausgegangen - mehr, als die Vorlage zusagt. */
         'PULSE_ALTER'    => $f('s',      'PULSE_ALTER',    0,      86400),
+        /* Schwellen-Push (0.9.43): Zustand und die beiden Meldefenster - digital. Ueber MQTT heissen sie
+         * schwelle/unter, schwelle/meldung_unter, schwelle/meldung_ueber (tb_mqtt_feldthema()). */
+        'SCHWELLE_UNTER'         => $f('', 'SCHWELLE_UNTER',         0, 1, 0),
+        'SCHWELLE_MELDUNG_UNTER' => $f('', 'SCHWELLE_MELDUNG_UNTER', 0, 1, 0),
+        'SCHWELLE_MELDUNG_UEBER' => $f('', 'SCHWELLE_MELDUNG_UEBER', 0, 1, 0),
         'VERBR_GESTERN'  => $f('kWh',    'VERBR_GESTERN',  0,      1000),
         'KOSTEN_GESTERN' => $f('EUR',    'KOSTEN_GESTERN', 0,      1000),
         'VERBR_MONAT'    => $f('kWh',    'VERBR_MONAT',    0,      10000),
@@ -2238,6 +2255,11 @@ function tb_werte()
      * weniger als 12 Preisstunden (Nr. 30): "kein Rang". Das trifft den Fall ohne
      * jeden Stand (noch nie abgerufen) und einen Stand, der keinen Rang traegt. */
     if ($w['RANK'] === null) { $w['RANK'] = -1; }
+    /* Schwellen-Push (0.9.43): aus dem Zustand des Minutenlaufs; ohne gueltigen Preis ist SCHWELLE_UNTER 0. */
+    $tb_sw = tb_schwelle_werte($st);
+    $w['SCHWELLE_UNTER'] = $tb_sw['unter'];
+    $w['SCHWELLE_MELDUNG_UNTER'] = $tb_sw['meld_u'];
+    $w['SCHWELLE_MELDUNG_UEBER'] = $tb_sw['meld_o'];
 
     /* Der Laufzaehler wird zur LESEZEIT geholt, nicht beim Schreiben
      * eingefroren - genauso wie ALTER. Ein eingefrorenes Lebenszeichen kann
@@ -3707,7 +3729,7 @@ function tb_mqtt_paare(array $w, $cfg = null)
     foreach ($w as $k => $v) {
         // ALTER, PULSE_ALTER, ZAEHLER und PH00 ... PH23 nicht unter eigenem Namen (tb_mqtt_ausgeschlossen()).
         if (in_array($k, $aus, true)) { continue; }
-        $t = strtolower($k);
+        $t = tb_mqtt_feldthema($k);
         if (($v === null || $v === '') && isset($angeboten[$t], $felder[$k]) && $felder[$k]['min'] >= -1) {
             // Schaltsignal/Merker (digital, 'analog' => 0): 0, nie -1 - -1 waere am Eingang "Ein". Siehe oben.
             $v = empty($felder[$k]['analog']) ? 0 : -1;
@@ -3783,6 +3805,9 @@ function tb_mqtt_retain($thema)
         $tab = array();
         foreach (array(
             'fix',
+            /* 0.9.43, Auftrag des Hausherrn vom 12.11.2026: der Zustand des Schwellen-Pushs. Aus und ohne
+             * gueltigen Preis geht er als 0 hinaus; stirbt der Dienst, sagt es das Lebenszeichen. */
+            'schwelle/unter',
         ) as $t) { $tab[$t] = true; }
     }
     /* BERICHTIGT in 0.9.14: status/ts und status/pulse_ts standen in 0.9.13
@@ -3834,7 +3859,7 @@ function tb_mqtt_themen()
     $aus = tb_mqtt_ausgeschlossen();
     foreach (tb_status_felder() as $f => $info) {
         if (in_array($f, $aus, true)) { continue; }
-        $out[strtolower($f)] = $info['text'];
+        $out[tb_mqtt_feldthema($f)] = $info['text'];
     }
     $out['stunde/N/ct'] = 'TB_MQTT.STUNDE';
     return $out;
@@ -4664,6 +4689,11 @@ function tb_feldregeln()
         'haus_strompreis_ein' => array('art' => 'haken'),
         'haus_speicher_ein'   => array('art' => 'haken'),
         'endpunkt_ein'        => array('art' => 'haken'),
+        // Schwellen-Push (0.9.43)
+        'schwelle_ein'        => array('art' => 'haken'),
+        'schwelle_ct'         => array('art' => 'komma', 'min' => -100, 'max' => 200),
+        'schwelle_hyst'       => array('art' => 'komma', 'min' => 0,    'max' => 50),
+        'schwelle_sperre'     => array('art' => 'zahl',  'min' => 0,    'max' => 1440),
         'mqtt_topic'          => array('art' => 'thema'),
         'aktionstoken'        => array('art' => 'merkwort'),
         'ansage_fenster'      => array('art' => 'haken'),
@@ -5157,6 +5187,12 @@ function tb_sicherung_lesen($roh)
                 $ohne_g43[] = $fk;
                 continue;
             }
+            /* 0.9.43: eine Sicherung bis 0.9.42 kennt den Schwellen-Push nicht - es gilt der geltende Stand. */
+            if (in_array($fk, array('schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre'), true)) {
+                if ($geltend === null) { $geltend = tb_config(); }
+                $neu[$fk] = $geltend[$fk];
+                continue;
+            }
             if ($fk === 'ansage_token_herkunft') {     // 0.9.35: der Vermerk bleibt der geltende, ohne Hinweis
                 if ($geltend === null) { $geltend = tb_config(); }
                 $neu[$fk] = isset($geltend[$fk]) ? $geltend[$fk] : array();
@@ -5246,6 +5282,11 @@ function tb_v2_haken($cfg = null)
         $bedingt[$f] = !empty($cfg['verbrauch_ein']);
     }
     for ($i = 1; $i <= TB_REGELN; $i++) { $bedingt['R' . $i . 'CT'] = $i <= $nregeln; }
+    /* 0.9.43: die Themen des Schwellen-Pushs nur eingeschaltet - sonst verlangte die Hakenliste nach dem Update
+     * auf jeder bestehenden Anlage drei Haken fuer Themen, die niemand braucht. */
+    foreach (array('SCHWELLE_UNTER', 'SCHWELLE_MELDUNG_UNTER', 'SCHWELLE_MELDUNG_UEBER') as $f) {
+        $bedingt[$f] = !empty($cfg['schwelle_ein']);
+    }
     $aus = array();
     foreach (tb_mqtt_themen() as $t => $bez) {
         if ($t === 'status/ts' || $t === 'status/pulse_ts') { continue; }
@@ -5256,7 +5297,7 @@ function tb_v2_haken($cfg = null)
             }
             continue;
         }
-        $f = strtoupper($t);
+        $f = strtoupper(str_replace('/', '_', $t));   // 0.9.43: schwelle/unter -> SCHWELLE_UNTER
         if (isset($bedingt[$f]) && !$bedingt[$f]) { continue; }
         $th = $pf . '/' . $t;
         $aus[] = array('thema' => $th, 'name' => tb_gateway_name($th),
@@ -6032,6 +6073,347 @@ function tb_speicher_testzeile($cfg)
     }
     $wie = $seit > 0 ? sprintf(tb_t('HAUS.S_SEIT'), (int) round(max(0, time() - $seit) / 60)) : tb_t('HAUS.S_NIE');
     return array(-1, sprintf(tb_t($q[0] === 'url' ? 'HAUS.S_URL' : 'HAUS.S_KEINE'), $wie));
+}
+
+/* ==================================================================
+ * Schwellen-Push (neu in 0.9.43, ab Werk aus)
+ * ==================================================================
+ *
+ * Eine Meldung, wenn der Preis unter die eingestellte Schwelle FAELLT, und
+ * eine, wenn er wieder ueber Schwelle + Hysterese STEIGT - unabhaengig von
+ * Stunden, Ansagezeiten und Meldefenstern, die diese Linie sonst kennt (die
+ * bleiben, wie sie sind). Den Push verschickt wie bei jeder Meldung dieser
+ * Linie der Miniserver: das Plugin setzt ein Meldefenster fuer fuenf Minuten
+ * auf 1 (Feld SCHWELLE_MELDUNG_UNTER bzw. SCHWELLE_MELDUNG_UEBER, MQTT schwelle/meldung_unter bzw.
+ * schwelle/meldung_ueber), ein Benachrichtigungsbaustein in Loxone reagiert
+ * auf die steigende Flanke. Der Zustand selbst (SCHWELLE_UNTER, MQTT
+ * schwelle/unter, zurueckbehalten) sagt "der Preis liegt unter der
+ * Schwelle".
+ *
+ * Hysterese: "unter", sobald der Preis kleiner als die Schwelle ist; "wieder
+ * ueber" erst, wenn er groesser als Schwelle + Hysterese ist. Sperrzeit: je
+ * Richtung hoechstens eine Meldung in dieser Zeit; ein Wechsel innerhalb der
+ * Sperrzeit aendert den Zustand, meldet aber nicht (Protokollzeile
+ * "gesperrt").
+ *
+ * Ohne bekannten Ausgangszustand - erster Lauf nach dem Einschalten, nach
+ * einer Aenderung von Schwelle oder Hysterese, nach einem Update, das den
+ * Datenordner abraeumt - wird der Zustand OHNE Meldung uebernommen: gemeldet
+ * wird ein Uebergang, nicht ein Stand. Ohne gueltigen Preis (Abruf
+ * gescheitert, Ersatzwert) wird nicht gerechnet; der Zustand bleibt, nach
+ * aussen geht "unter" als 0.
+ */
+
+/** Die Einstellungen des Schwellen-Pushs aus der Konfiguration (geprueft und gekappt beim Lesen). */
+function tb_schwelle_einstellung($cfg = null) {
+    if ($cfg === null) {
+        $cfg = tb_config();
+    }
+    return array(
+        'ein' => empty($cfg['schwelle_ein']) ? 0 : 1,
+        'ct' => (float) $cfg['schwelle_ct'],
+        'hyst' => max(0.0, (float) $cfg['schwelle_hyst']),
+        'sperre' => max(0, (int) $cfg['schwelle_sperre']),
+    );
+}
+
+/** Ein Meldefenster: 1 in den fuenf Minuten nach dem Zeitpunkt $t (0 = nie gemeldet). */
+function tb_schwelle_fenster($t, $jetzt) {
+    $t = (int) $t;
+    $jetzt = (int) $jetzt;
+    return ($t > 0 && $jetzt >= $t && $jetzt - $t < 300) ? 1 : 0;
+}
+
+/**
+ * Ein Schritt der Schwellenpruefung - ohne Datei, ohne Uhr, ohne Protokoll;
+ * deshalb im Reiter Test und im Pruefstand mit einer Preisreihe nachrechenbar.
+ * $z bisheriger Zustand (leer = unbekannt), $preis in ct/kWh, $gueltig: der
+ * Preis der laufenden Zeit liegt vor, $e die Einstellung, $jetzt Unix-Zeit.
+ * Rueckgabe array(Zustand, Ereignis); Ereignis '' (nichts), 'aus',
+ * 'ungueltig', 'start', 'unter', 'unter_gesperrt', 'ueber', 'ueber_gesperrt'.
+ */
+function tb_schwelle_schritt($z, $preis, $gueltig, array $e, $jetzt) {
+    $leer = array('unter' => -1, 'ct' => null, 'hyst' => null, 'meld_u' => 0, 'meld_o' => 0, 'seit' => 0);
+    $z = is_array($z) ? $z + $leer : $leer;
+    $jetzt = (int) $jetzt;
+    if (empty($e['ein'])) {
+        $war = (int) $z['unter'] !== -1 || (int) $z['meld_u'] > 0 || (int) $z['meld_o'] > 0;
+        return array($leer, $war ? 'aus' : '');
+    }
+    if (!$gueltig || !is_numeric($preis) || !is_finite((float) $preis)) {
+        return array($z, 'ungueltig');
+    }
+    $x = (float) $e['ct'];
+    $h = max(0.0, (float) $e['hyst']);
+    $p = (float) $preis;
+    $sperre = max(0, (int) $e['sperre']) * 60;
+    /* Frei, wenn noch nie gemeldet, die Sperrzeit um ist - oder die Uhr
+     * zurueckgestellt wurde: eine Meldung "in der Zukunft" sperrt nicht. */
+    $frei = function ($t) use ($jetzt, $sperre) {
+        $t = (int) $t;
+        return $t <= 0 || $t > $jetzt || $jetzt - $t >= $sperre;
+    };
+    if ($z['ct'] === null || $z['hyst'] === null || abs((float) $z['ct'] - $x) > 1e-9
+        || abs((float) $z['hyst'] - $h) > 1e-9 || !in_array((int) $z['unter'], array(0, 1), true)) {
+        $z['unter'] = $p < $x ? 1 : 0;
+        $z['ct'] = $x;
+        $z['hyst'] = $h;
+        $z['seit'] = $jetzt;
+        return array($z, 'start');
+    }
+    if ((int) $z['unter'] === 0 && $p < $x) {
+        $z['unter'] = 1;
+        $z['seit'] = $jetzt;
+        if ($frei($z['meld_u'])) {
+            $z['meld_u'] = $jetzt;
+            return array($z, 'unter');
+        }
+        return array($z, 'unter_gesperrt');
+    }
+    if ((int) $z['unter'] === 1 && $p > $x + $h) {
+        $z['unter'] = 0;
+        $z['seit'] = $jetzt;
+        if ($frei($z['meld_o'])) {
+            $z['meld_o'] = $jetzt;
+            return array($z, 'ueber');
+        }
+        return array($z, 'ueber_gesperrt');
+    }
+    return array($z, '');
+}
+
+/** Der Zustand liegt im Datenordner (uebersteht einen Neustart; ein Update raeumt ihn ab - dann wird der
+ *  Ausgangszustand ohne Meldung uebernommen). Geschrieben wird er nur bei einer Aenderung. */
+function tb_schwelle_datei() {
+    return tb_schwelle_datadir() . '/schwelle.json';
+}
+
+/** Der Puls (Zeit, gesehener Preis, Ereignis) liegt im fluechtigen Zwischenspeicher und wird bei jedem
+ *  Minutenlauf geschrieben - die Pruefzeile im Reiter Test misst daran, ob der Minutenlauf rechnet. */
+function tb_schwelle_pulsdatei() {
+    return tb_schwelle_tmpdir() . '/schwelle_puls.json';
+}
+
+function tb_schwelle_json_lesen($f) {
+    if (!is_file($f)) {
+        return array();
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    return is_array($d) ? $d : array();
+}
+
+/** Erst in eine Nebendatei, dann umbenennen - niemand liest einen halben Zustand. */
+function tb_schwelle_ablegen($f, array $d) {
+    $neu = $f . '.neu';
+    $j = json_encode($d);
+    if ($j === false || @file_put_contents($neu, $j . "\n") === false) {
+        @unlink($neu);
+        return false;
+    }
+    if (!@rename($neu, $f)) {
+        @unlink($neu);
+        return false;
+    }
+    return true;
+}
+
+/** Eine Zahl fuer Protokoll und Reiter Test: zwei Nachkommastellen, Komma. */
+function tb_schwelle_zahl($v) {
+    return number_format((float) $v, 2, ',', '');
+}
+
+/**
+ * Minutenlauf: einen Schritt rechnen, den Zustand ablegen, je Ausloesung eine
+ * Protokollzeile. $st ist der Zustand der Linie (ok, cur, cur_fehlt).
+ * Rueckgabe das Ereignis (fuer den Pruefstand), 'schreibfehler', wenn der
+ * Zustand nicht abgelegt werden konnte - dann ging auch keine Meldung hinaus,
+ * und der naechste Lauf versucht es noch einmal.
+ */
+function tb_schwelle_pruefen($st, $jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $e = tb_schwelle_einstellung();
+    $f = tb_schwelle_datei();
+    $alt = tb_schwelle_json_lesen($f);
+    if (!$e['ein'] && !$alt) {
+        if (is_file(tb_schwelle_pulsdatei())) {
+            @unlink(tb_schwelle_pulsdatei());
+        }
+        return '';
+    }
+    $gueltig = is_array($st) && !empty($st['ok']) && empty($st['cur_fehlt']);
+    $preis = (is_array($st) && isset($st['cur'])) ? $st['cur'] : null;
+    list($neu, $ereignis) = tb_schwelle_schritt($alt, $preis, $gueltig, $e, $jetzt);
+    if ($ereignis === 'aus') {
+        @unlink($f);
+        @unlink(tb_schwelle_pulsdatei());
+        tb_log('Schwellen-Push ausgeschaltet - Zustand verworfen, es geht keine Meldung mehr hinaus.');
+        return 'aus';
+    }
+    tb_schwelle_ablegen(tb_schwelle_pulsdatei(),
+        array('ts' => $jetzt, 'preis' => $gueltig ? (float) $preis : null, 'ereignis' => $ereignis));
+    if ($neu != $alt && !tb_schwelle_ablegen($f, $neu)) {
+        tb_log('Schwellen-Push: Zustand nicht schreibbar (' . $f . ') - keine Meldung, der naechste Lauf versucht es noch einmal.');
+        return 'schreibfehler';
+    }
+    $p = tb_schwelle_zahl($preis);
+    $x = tb_schwelle_zahl($e['ct']);
+    $bis = function ($t) use ($e) {
+        return date('d.m. H:i', (int) $t + $e['sperre'] * 60);
+    };
+    switch ($ereignis) {
+        case 'start':
+            tb_log(sprintf('Schwellen-Push: Ausgangszustand uebernommen - Preis %s ct/kWh liegt %s der Schwelle %s ct/kWh. Keine Meldung; gemeldet wird erst ein Wechsel.',
+                $p, (int) $neu['unter'] === 1 ? 'unter' : 'nicht unter', $x));
+            break;
+        case 'unter':
+            tb_log(sprintf('Schwellen-Push: Preis %s ct/kWh unter der Schwelle %s ct/kWh - Meldung "unter Schwelle" (SCHWELLE_MELDUNG_UNTER=1 fuer 5 Minuten).', $p, $x));
+            break;
+        case 'unter_gesperrt':
+            tb_log(sprintf('Schwellen-Push: Preis %s ct/kWh unter der Schwelle %s ct/kWh - keine Meldung, gesperrt bis %s (letzte Meldung %s).',
+                $p, $x, $bis($neu['meld_u']), date('d.m. H:i', (int) $neu['meld_u'])));
+            break;
+        case 'ueber':
+            tb_log(sprintf('Schwellen-Push: Preis %s ct/kWh wieder ueber %s ct/kWh (Schwelle %s + Hysterese %s) - Meldung "wieder ueber" (SCHWELLE_MELDUNG_UEBER=1 fuer 5 Minuten).',
+                $p, tb_schwelle_zahl($e['ct'] + $e['hyst']), $x, tb_schwelle_zahl($e['hyst'])));
+            break;
+        case 'ueber_gesperrt':
+            tb_log(sprintf('Schwellen-Push: Preis %s ct/kWh wieder ueber %s ct/kWh - keine Meldung, gesperrt bis %s (letzte Meldung %s).',
+                $p, tb_schwelle_zahl($e['ct'] + $e['hyst']), $bis($neu['meld_o']), date('d.m. H:i', (int) $neu['meld_o'])));
+            break;
+    }
+    return $ereignis;
+}
+
+/**
+ * Was nach Loxone geht: unter (Zustand), meld_u und meld_o (Meldefenster,
+ * fuenf Minuten nach einer Meldung). Aus, ohne Zustand oder ohne gueltigen
+ * Preis ist unter 0 - ein zurueckbehaltenes 1 bliebe sonst stehen.
+ */
+function tb_schwelle_werte($st = null, $jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $aus = array('unter' => 0, 'meld_u' => 0, 'meld_o' => 0);
+    $e = tb_schwelle_einstellung();
+    $z = tb_schwelle_json_lesen(tb_schwelle_datei());
+    if (!$e['ein'] || !$z) {
+        return $aus;
+    }
+    $gueltig = !is_array($st) || (!empty($st['ok']) && empty($st['cur_fehlt']));
+    $aus['unter'] = ($gueltig && isset($z['unter']) && (int) $z['unter'] === 1) ? 1 : 0;
+    $aus['meld_u'] = tb_schwelle_fenster(isset($z['meld_u']) ? $z['meld_u'] : 0, $jetzt);
+    $aus['meld_o'] = tb_schwelle_fenster(isset($z['meld_o']) ? $z['meld_o'] : 0, $jetzt);
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Logik" im Reiter Test (und im Pruefstand): eine feste
+ * Preisreihe - Unterschreiten, Hysterese, Sperrzeit je Richtung, Wiederkehr
+ * nach der Sperrzeit, ungueltiger Preis, geaenderte Schwelle, Ausschalten -
+ * und die Meldefenster. Schreibt nichts. Rueckgabe array(0|1, Klartext).
+ */
+function tb_schwelle_selbstpruefung() {
+    $e = array('ein' => 1, 'ct' => 10.0, 'hyst' => 1.0, 'sperre' => 60);
+    $e8 = array('ct' => 8.0) + $e;
+    $aus = array('ein' => 0) + $e;
+    $t0 = 1700000000;
+    $reihe = array(
+        array(0, 12.0, true, $e, 'start'),
+        array(60, 9.5, true, $e, 'unter'),
+        array(120, 10.5, true, $e, ''),
+        array(180, 11.5, true, $e, 'ueber'),
+        array(240, 9.0, true, $e, 'unter_gesperrt'),
+        array(300, 11.5, true, $e, 'ueber_gesperrt'),
+        array(4000, 9.0, true, $e, 'unter'),
+        array(4060, 50.0, false, $e, 'ungueltig'),
+        array(4120, 11.5, true, $e, 'ueber'),
+        array(4180, 7.5, true, $e8, 'start'),
+        array(4240, 9.5, true, $e8, 'ueber_gesperrt'),
+        array(4300, 7.0, true, $aus, 'aus'),
+    );
+    $z = array();
+    $falsch = array();
+    foreach ($reihe as $i => $r) {
+        list($z, $ev) = tb_schwelle_schritt($z, $r[1], $r[2], $r[3], $t0 + $r[0]);
+        if ($ev !== $r[4]) {
+            $falsch[] = sprintf('%d: %s statt %s', $i + 1, $ev === '' ? '-' : $ev, $r[4] === '' ? '-' : $r[4]);
+        }
+    }
+    if (tb_schwelle_fenster($t0 + 60, $t0 + 160) !== 1 || tb_schwelle_fenster($t0 + 60, $t0 + 360) !== 0
+        || tb_schwelle_fenster(0, $t0) !== 0) {
+        $falsch[] = 'Meldefenster';
+    }
+    if ($falsch) {
+        return array(0, sprintf(tb_t('TEST.SCHWELLE_LOGIK_FALSCH'), implode('; ', $falsch)));
+    }
+    return array(1, sprintf(tb_t('TEST.SCHWELLE_LOGIK_OK'), count($reihe)));
+}
+
+/**
+ * Pruefzeile "Wirkung" im Reiter Test: rechnet der Minutenlauf die Schwelle,
+ * und passt der abgelegte Zustand zu dem Preis, den er dabei gesehen hat?
+ * Rueckgabe array(0|1|2, Klartext). Schreibt nichts.
+ */
+function tb_schwelle_lage($jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $e = tb_schwelle_einstellung();
+    if (!$e['ein']) {
+        return array(2, tb_t('TEST.SCHWELLE_AUS'));
+    }
+    $puls = tb_schwelle_json_lesen(tb_schwelle_pulsdatei());
+    if (!isset($puls['ts'])) {
+        return array(0, tb_t('TEST.SCHWELLE_NIE'));
+    }
+    $alter = $jetzt - (int) $puls['ts'];
+    if ($alter > 900) {
+        return array(0, sprintf(tb_t('TEST.SCHWELLE_ALT'), (int) round($alter / 60)));
+    }
+    if (!isset($puls['preis']) || !is_numeric($puls['preis'])) {
+        return array(2, sprintf(tb_t('TEST.SCHWELLE_OHNE_PREIS'), max(0, $alter)));
+    }
+    $z = tb_schwelle_json_lesen(tb_schwelle_datei());
+    if (!isset($z['ct']) || !is_numeric($z['ct']) || abs((float) $z['ct'] - $e['ct']) > 1e-9
+        || !isset($z['hyst']) || !is_numeric($z['hyst']) || abs((float) $z['hyst'] - $e['hyst']) > 1e-9) {
+        return array(2, tb_t('TEST.SCHWELLE_NEU'));
+    }
+    $p = (float) $puls['preis'];
+    $u = isset($z['unter']) ? (int) $z['unter'] : -1;
+    $passt = ($u === 1 && $p <= $e['ct'] + $e['hyst']) || ($u === 0 && $p >= $e['ct']);
+    $wann = function ($t) {
+        return (int) $t > 0 ? date('d.m. H:i', (int) $t) : tb_t('TEST.SCHWELLE_NIE_GEMELDET');
+    };
+    if (!$passt) {
+        return array(0, sprintf(tb_t('TEST.SCHWELLE_WIDERSPRUCH'), tb_schwelle_zahl($p), $u,
+            tb_schwelle_zahl($e['ct']), tb_schwelle_zahl($e['hyst'])));
+    }
+    return array(1, sprintf(tb_t('TEST.SCHWELLE_OK'), tb_schwelle_zahl($p), tb_schwelle_zahl($e['ct']),
+        tb_schwelle_zahl($e['hyst']), tb_t($u === 1 ? 'TEST.SCHWELLE_JA' : 'TEST.SCHWELLE_NEIN'),
+        $wann(isset($z['meld_u']) ? $z['meld_u'] : 0), $wann(isset($z['meld_o']) ? $z['meld_o'] : 0),
+        (int) $e['sperre'], max(0, $alter)));
+}
+
+/** Thema eines Feldes der Statuszeile: klein geschrieben wie bisher; die Felder des Schwellen-Pushs (0.9.43)
+ *  heissen wie in Spotpreis aWATTar und Octopus Dynamic schwelle/... - SCHWELLE_MELDUNG_UNTER ->
+ *  schwelle/meldung_unter. Fuer jedes andere Feld aendert sich nichts. */
+function tb_mqtt_feldthema($feld)
+{
+    $t = strtolower((string) $feld);
+    return strpos($t, 'schwelle_') === 0 ? 'schwelle/' . substr($t, 9) : $t;
+}
+
+/** Ablageorte des Schwellen-Pushs: Zustand im Datenordner (uebersteht einen Neustart), Puls im Zwischenspeicher
+ *  /tmp/<ordner> (fluechtig, wie die uebrigen Merker der Linien). */
+function tb_schwelle_datadir()
+{
+    $d = tb_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    return $d;
+}
+
+function tb_schwelle_tmpdir()
+{
+    $p = tb_paths();
+    $d = $p['home'] !== '' ? '/tmp/' . $p['plugin'] : $p['datadir'] . '/tmp';
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    return $d;
 }
 
 /* ---------- G3/Sicherung: neue Schluessel dieser Fassung ---------- */

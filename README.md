@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.42
+Version 0.9.43
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -10,6 +10,13 @@ tokengeschützten HTTP-Endpunkt (der Weg der Baustein-Listen) oder über MQTT
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.43
+
+- **Schwellen-Push** (ab Werk aus), im Reiter *Einstellungen* unter „Schwellen-Push (unabhängig von den Stunden)“: eine Meldung, wenn der Preis `CUR` unter eine eigene Schwelle fällt, und eine, wenn er wieder über Schwelle + Hysterese steigt – unabhängig von `LEVEL`/`TLEVEL` und den Ansagezeiten. Je Richtung kommt in der Sperrzeit (Vorgabe 60 Minuten) höchstens eine Meldung. Nach dem Einschalten und nach jeder Änderung von Schwelle oder Hysterese wird der Ausgangszustand ohne Meldung übernommen; gemeldet wird ein Wechsel. Ohne gültigen Preis (Abruf zu alt, keine Preise) wird nicht gerechnet.
+- Neue Felder der Statuszeile `SCHWELLE_UNTER` (1 = Preis unter der Schwelle), `SCHWELLE_MELDUNG_UNTER` und `SCHWELLE_MELDUNG_UEBER` (je fünf Minuten 1 nach einer Meldung); über MQTT `schwelle/unter` (zurückbehalten), `schwelle/meldung_unter` und `schwelle/meldung_ueber` – dieselben Namen wie in Spotpreis aWATTar und Octopus Dynamic. Den Push verschickt der Miniserver: einen Benachrichtigungsbaustein an `SCHWELLE_MELDUNG_UNTER` hängen. Unter Gateway V2 stehen die drei Themen nur bei eingeschaltetem Schwellen-Push in der Hakenliste.
+- Jede Auslösung steht als Zeile im Protokoll, auch eine gesperrte. Der Reiter *Test* rechnet die Zustandsfolge an einer Preisreihe nach und prüft, ob der Minutenlauf die Schwelle rechnet und der abgelegte Zustand zum Preis passt.
+- Eine Sicherung aus 0.9.42 oder früher wird weiter angenommen; die vier neuen Einstellungen behalten dann ihren geltenden Wert.
 
 ## Neu in 0.9.42
 
