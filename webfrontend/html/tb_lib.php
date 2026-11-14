@@ -391,6 +391,10 @@ require_once __DIR__ . '/planer.php';
  * Mehrfach-Ziele). Liegt neben dieser Datei; sie schuetzt sich selbst gegen
  * doppeltes Laden und antwortet auf einen direkten Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 0.9.44: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
+ * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
+ * anderen Linien. Die Beschreibung dieser Linie steht in tb_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 /* Gruppe 43 (0.9.33): die Anbieterregel fuer haus/strompreis und haus/speicher - gemeinsames Stueck, byte-gleich in
  * allen Anbieter-Linien (haus_anbieter.php, hanb_*(); nur reine Funktionen). Liegt neben dieser Datei. */
 require_once __DIR__ . '/haus_anbieter.php';
@@ -4876,353 +4880,150 @@ function tb_config_kreuzpruefen(array $cfg)
 }
 
 /**
- * Welche gespeicherten Werte wuerde das eigene Zurueckspielen abweisen?
- * Rueckgabe: Liste der Schluesselnamen (nie Werte). Fuer die gelbe Warnung am
- * Knopf und den Kopf '_warnung' der Sicherung (Bauliste K6, X-3).
+ * 0.9.44: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul (sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026, Welle 1 Gruppe 2b). Lesen, Pruefen, Verwerfen, Zurueckspielen und den Kopf der Datei macht seither das
+ * Modul, nach denselben Regeln wie in den anderen Linien (Regeln/05). Bis 0.9.43 stand hier eine eigene Schleife
+ * (tb_sicherung_lesen()): ein unbekannter Schluessel - oben oder in einer Schaltregel - wies die ganze Datei ab, und
+ * eine Datei ganz ohne _plugin wurde angenommen ("aelter als 0.9.7"). Seither: Unbekanntes wird verworfen und mit
+ * Namen gemeldet, oben und in den Bloecken (regeln, tts, ansage_regeln); eine Datei ohne Kennzeichen wird abgewiesen
+ * (Entscheidung des Hausherrn 12.11.2026: Sicherungen ganz ohne Kopf werden abgewiesen; jede Fassung im Arbeitsordner
+ * ab 0.9.7 schreibt _plugin = 'spotpreistibber', gemessen 14.11.2026); ein leerer Wert ueberschreibt keinen
+ * bestehenden.
+ *
+ * Was diese Linie bestimmt:
+ *  - Kennzeichen 'spotpreistibber' (seit 0.9.7, bleibt).
+ *  - Das Tibber-Zugangstoken steht als Teil 'tibber_token' in der Datei und geht beim Zurueckspielen in seine eigene
+ *    Datei (0600), nicht in die Konfiguration; ein leeres laesst das geltende stehen.
+ *  - Nie aus einer Datei und nie in eine Datei ('nie_aus_datei', Modul 1.2.1: behalten ihren geltenden Wert): der
+ *    Vermerk ansage_token_herkunft der Sprachausgabe und der Merker _haus_frueher ("war Anbieter", Gruppe 43).
+ *  - Die Sprechtoken im Block tts stehen nie in der Datei ('sichern'); eine Datei, die eines traegt, wird abgewiesen
+ *    (tb_sicherung_tts_pruefen(), am Wert, wie er in der Datei steht); die geltenden setzt der Knopf zurueck.
+ *  - Was fehlen darf ('fehlt' => 'behalten', Regeln/05 Punkt 6): tb_neue_schluessel_0933(), die vier Schluessel des
+ *    Schwellen-Pushs (0.9.43) und tb_ansage_neue_schluessel() (tts, ansage_regeln, die Anlaesse, Ansagezeit) - wie
+ *    bis 0.9.43, jetzt mit dem Satz des Moduls statt eigener Hinweise -, dazu neu die Schluessel des Fahrplaners
+ *    (seit 0.9.11; bis 0.9.43 wies ihr Fehlen eine Sicherung aus 0.9.7 bis 0.9.10 ab).
+ *  - Werte werden gespeichert, wie das Formular sie speichert: Leerraum am Rand faellt (K5, Nr. 19), die
+ *    Schaltregeln in der Normalform von tb_regeln_pruefen(), tts in der von ansage_wert_pruefen().
  */
-function tb_sicherung_maengel($cfg = null)
+function tb_sicherung_beschreibung()
 {
-    if (!is_array($cfg)) { $cfg = tb_config(); }
-    $namen = array();
-    foreach (tb_vorgaben() as $k => $vorgabe) {
-        if (!array_key_exists($k, $cfg)) { continue; }
-        $v = $cfg[$k];
-        if ($k === 'ansage_token_herkunft' || $k === 'ansage_regeln') { continue; }     // 0.9.35: eigene Pruefung beim Zurueckspielen
-        if ($k === 'tts') {
-            /* Nr. 36 b: geprueft wie beim Zurueckspielen, ohne Sprechtoken (die
-             * Sicherung traegt keine). Nur Namen, nie Werte. */
-            foreach (ansage_sicherung_x3($v, tb_ansage_modi()) as $tn) { $namen[$tn] = true; }
-            continue;
+    $tts = array_merge(array_keys(ansage_vorgaben()), tb_mit_zielen() ? array('ziele') : array(), ansage_geheim());
+    $tts_knoten = in_array('ziele', $tts, true)
+        ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
+    $schluessel = array(
+        'regeln' => sicherung_liste(array_keys(tb_regel_vorgabe())) + array(
+            'pruefen' => function ($w) { list(, $m) = tb_regeln_pruefen($w); return $m; },
+            'wandeln' => function ($w) { list($rein) = tb_regeln_pruefen($w); return $rein; }),
+        'tts'    => sicherung_block($tts, $tts_knoten) + array(
+            'sichern' => 'ansage_sicherung_bereinigen',
+            'pruefen' => 'tb_sicherung_tts_pruefen',
+            'wandeln' => function ($w) {
+                $g = '';
+                $p = ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, tb_ansage_modi());
+                return is_array($p) ? $p : $w;
+            }),
+        /* S2 (0.9.35): ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+            'pruefen' => function ($w) {
+                $g = '';
+                return ansage_regeln_wert($w, $g) === null ? sprintf(tb_t('EINST.SICH_FREMD'), 'ansage_regeln') : '';
+            },
+            'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); }),
+    );
+    /* Dazu die Schluessel des Fahrplaners (seit 0.9.11): Schaltregeln, Hysterese, PV- und Speicherquelle und die
+     * globalen Planerwerte (plan_global_vorgabe()). Eine Sicherung aus 0.9.7 bis 0.9.10 kennt sie nicht; bis 0.9.43
+     * wurde sie deshalb abgewiesen (gemessen 14.11.2026 mit dem Pruefstand, --alt alle). */
+    $spaet = array_merge(tb_neue_schluessel_0933(), array('schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre'),
+                         tb_ansage_neue_schluessel(),
+                         array('regeln', 'hysterese', 'pv_quelle', 'pv_url', 'pv_pfad', 'pv_zeitfeld', 'pv_wertfeld',
+                               'pv_einheit', 'soc_url', 'soc_pfad'), array_keys(plan_global_vorgabe()));
+    foreach (tb_vorgaben() as $k => $v) {
+        if (!isset($schluessel[$k])) { $schluessel[$k] = array(); }
+        if (in_array($k, $spaet, true)) { $schluessel[$k]['fehlt'] = 'behalten'; }
+        /* Leerraum am Rand faellt wie im Formular (K5, Nr. 19); geprueft wird mit trim() (tb_wert_pruefen()). */
+        if (!is_array($v) && !isset($schluessel[$k]['wandeln'])) {
+            $schluessel[$k]['wandeln'] = function ($w) { return is_string($w) ? trim($w) : $w; };
         }
-        if ($k === 'regeln') {
-            $rp = tb_regeln_pruefen($v);
-            if ($rp[1]) { $namen[$k] = true; }
-            continue;
-        }
-        if (!tb_wert_taugt($v) || tb_wert_pruefen($k, $v) !== '') { $namen[$k] = true; }
     }
-    foreach (tb_config_kreuzpruefen($cfg) as $m) {
-        foreach ($m['felder'] as $f) { $namen[$f] = true; }
+    return array(
+        'kennzeichen' => 'spotpreistibber',
+        'hinweis' => 'Sicherung des LoxBerry-Plugins Spotpreis Tibber. '
+                   . 'Enthaelt das persoenliche Tibber-Zugangstoken und das Merkwort '
+                   . 'fuer den Loxone-Endpunkt - wie ein Passwort behandeln. '
+                   . 'Die Sprechtoken der Sprachausgabe sind nie enthalten.',
+        'fassung' => 'tb_fassung',
+        'vorgaben' => tb_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', '_haus_frueher'),
+        'teile' => array('tibber_token' => 'tb_sicherung_token_lesen'),
+        'pruefen' => function ($k, $w) {
+            if (!tb_wert_taugt($w)) {
+                return sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'), htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            }
+            return tb_wert_pruefen($k, $w);
+        },
+        'quer' => function ($neu) {
+            /* Dieselben Kreuzregeln wie im Formular (Bauliste K5). */
+            $aus = array();
+            foreach (tb_config_kreuzpruefen($neu) as $km) {
+                $aus[] = array(implode(',', $km['felder']), $km['text']);
+            }
+            return $aus;
+        },
+        'jetzt' => function () { return tb_config(); },
+        't' => 'tb_t',
+        'e' => 'tb_e',
+        'log' => 'tb_log',
+    );
+}
+
+/** Der Teil 'tibber_token' einer Sicherung: das persoenliche Zugangstoken. Es gehoert NICHT in die Konfiguration,
+ *  sondern in seine eigene Datei (0600). Leerraum am Rand faellt wie im Formular (K5, Nr. 19); ein leeres Token heisst
+ *  "keins gesichert" - das geltende bleibt. Beurteilt wird nur die Form, nie der Wert. Rueckgabe fuer das
+ *  Sicherungsmodul: array(Token|'', Beanstandungen[]). */
+function tb_sicherung_token_lesen($w)
+{
+    if (!tb_wert_taugt($w)) {
+        return array(null, array(sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'), 'tibber_token')));
     }
-    return array_keys($namen);
+    $w = trim((string) $w);
+    $grund = tb_token_form($w);
+    if ($w !== '' && $grund !== '') {
+        return array(null, array(tb_t($grund)));
+    }
+    return array($w, array());
+}
+
+/** Der Block tts: die Sprechtoken am Wert, wie er in der Datei steht ($roh, Modul 1.2.0 - ein leerer Wert, den Regel
+ *  3 durch das geltende Token ersetzt, ist kein gesichertes Token), die uebrigen Werte wie im Formular (Heimnetz). */
+function tb_sicherung_tts_pruefen($w, $k, $neu, $roh)
+{
+    $tm = ansage_sicherung_mangel($roh);
+    if ($tm) {
+        return sprintf(tb_t('EINST.SICH_TTS_TOKEN'), tb_e(implode(', ', $tm)));
+    }
+    $g = '';
+    if (ansage_wert_pruefen(is_array($w) ? ansage_sicherung_bereinigen($w) : $w, $g, tb_ansage_modi()) === null) {
+        return sprintf(tb_t('EINST.SICH_TTS'), tb_e(ansage_kennung_text($g, tb_ansage_k())));
+    }
+    return '';
 }
 
 /**
- * Die Sicherungsdatei bauen.
+ * Die Sicherungsdatei bauen (0.9.44: ueber das gemeinsame Sicherungsmodul).
  *
- * Sie traegt BEIDE Geheimnisse - das Aktionstoken fuer den Loxone-Endpunkt
- * UND das persoenliche Tibber-Zugangstoken. Ohne das zweite stuenden nach dem
- * Zurueckspielen alle Felder richtig, und das Plugin kaeme trotzdem nicht an
- * die Anlage: bis 0.9.6 war die Datei fuer ihren eigentlichen Zweck - den
- * UMZUG auf einen zweiten LoxBerry - damit unbrauchbar. Wer den Token
- * auslaesst, hat kein Sicherheitsmerkmal eingebaut, sondern die Funktion
- * halbiert.
- *
- * Das Formularmerkmal gehoert ausdruecklich NICHT hinein: es lebt eine
- * Sitzung und wird aus dem Aktionstoken abgeleitet. Wer beide verwechselt,
- * baut aus einer Umzugshilfe ein Leck.
- *
- * Der lesbare Kopf beginnt mit '_'. Wer die Datei in einem Jahr findet, muss
- * erkennen koennen, was sie ist - und die Leseseite unten uebergeht genau
- * diese Schluessel.
+ * Sie traegt BEIDE Geheimnisse - das Aktionstoken fuer den Loxone-Endpunkt UND das persoenliche Tibber-Zugangstoken.
+ * Ohne das zweite stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin kaeme trotzdem nicht an die
+ * Anlage: bis 0.9.6 war die Datei fuer ihren eigentlichen Zweck - den UMZUG auf einen zweiten LoxBerry - damit
+ * unbrauchbar. Vollstaendig aus den Vorgaben heraus. Nicht darin: das Formularmerkmal (es lebt eine Sitzung), die
+ * Sprechtoken und die Vermerke (Beschreibung). Was das eigene Zurueckspielen abwiese, sagt die Datei in _warnung
+ * (X-3, nur Namen).
  */
 function tb_sicherung_bauen()
 {
-    $daten = array(
-        '_hinweis' => 'Sicherung des LoxBerry-Plugins Spotpreis Tibber. '
-                    . 'Enthaelt das persoenliche Tibber-Zugangstoken und das Merkwort '
-                    . 'fuer den Loxone-Endpunkt - wie ein Passwort behandeln. '
-                    . 'Die Sprechtoken der Sprachausgabe sind nie enthalten.',
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_plugin'  => 'spotpreistibber',
-        '_fassung' => tb_fassung(),
-    );
     $token = tb_token_lesen();
-    if ($token !== '') { $daten['tibber_token'] = $token; }
-    // Vollstaendig aus den Vorgaben heraus: ein Schluessel, der in der
-    // Sicherung fehlt, kaeme beim Zurueckspielen aus der Vorgabe - und das
-    // ist genau dann falsch, wenn der Anwender ihn bewusst auf den
-    // Vorgabewert gesetzt hatte und die Vorgabe sich spaeter aendert.
-    $cfg = tb_config();
-    foreach (tb_vorgaben() as $k => $vorgabe) {
-        $daten[$k] = array_key_exists($k, $cfg) ? $cfg[$k] : $vorgabe;
-    }
-    /* X-3 (Bauliste K6): die Sicherung bleibt vollstaendig, traegt aber einen
-     * lesbaren Hinweis, wenn das eigene Zurueckspielen sie abweisen wuerde -
-     * nur die Namen, nie die Werte. Bis 0.9.24 merkte man das erst beim Umzug
-     * (Oberflaechenpruefer Nr. 9). */
-    /* Nr. 36 b (seit 0.9.28): die Sprechtoken der Sprachausgabe gehen nie in eine
-     * Sicherung - anders als Tibber-Token und Merkwort: sie gehoeren einem anderen
-     * Plugin auf demselben LoxBerry und sind dort jederzeit neu zu holen. */
-    if (isset($daten['tts']) && is_array($daten['tts'])) {
-        $daten['tts'] = ansage_sicherung_bereinigen($daten['tts']);
-    }
-    unset($daten['ansage_token_herkunft']);     // 0.9.35
-    $maengel = tb_sicherung_maengel($cfg);
-    if ($maengel) {
-        $daten = array_merge(array_slice($daten, 0, 4, true), array(
-            '_warnung' => 'Diese Sicherung enthaelt Werte, die beim Zurueckspielen abgewiesen '
-                        . 'wuerden: ' . implode(', ', $maengel) . '. Vorher in der Oberflaeche '
-                        . 'berichtigen und neu sichern.',
-        ), array_slice($daten, 4, null, true));
-    }
-    return $daten;
-}
-
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Der lesbare Kopf ('_hinweis', '_stand', …) wird UEBERGANGEN, nicht
- * beanstandet. Ohne diese drei Zeilen wuerde die Funktion genau die Datei
- * ablehnen, die tb_sicherung_bauen() zwei Zeilen weiter oben erzeugt - der
- * Fall ist am 26.08.2026 im WiFi-Scanner-Plugin aufgetreten.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
- *                  Tibber-Token|null).
- *
- * Die Reihenfolge ist die HAUSFORM, und der Zusatz steht hinten. Das ist
- * nicht Geschmack: Werkzeuge/sicherung_wirkung.py erkennt die Bauart daran,
- * dass an Stelle 1 die Maengelliste steht - ein Token an dieser Stelle liess
- * es auf "andere Bauart, von Hand ansehen" fallen, und damit hatte das
- * Werkzeug NICHT gemessen, statt etwas zu finden. Spotpreis Octopus reicht
- * seine Zugangsdaten aus demselben Grund als VIERTEN Wert heraus.
- */
-function tb_sicherung_lesen($roh)
-{
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(tb_t('EINST.SICH_KEIN_JSON')), 0, null);
-    }
-    /* Der lesbare Kopf ist nicht nur Zierat - er wird GEPRUEFT.
-     *
-     * Die Schwesterplugins Spotpreis aWATTar und Spotpreis Octopus tragen
-     * absichtlich dieselben Schluesselnamen (guenstig, teuer, mqtt_topic, ...).
-     * Deren Sicherungsdatei lief bis 0.9.9 hier ohne eine einzige Beanstandung
-     * durch: "4 Werte uebernommen" - und die uebrigen dreizehn Einstellungen
-     * standen danach auf Werk, das Merkwort war weg, und jeder virtuelle
-     * Eingang in Loxone bekam eine Abweisung. Gemessen am 02.09.2026.
-     *
-     * Fehlt der Kopf ganz, ist die Datei aelter als 0.9.7 - die wird
-     * angenommen, sonst waere ein Rueckspielen aus einer alten Sicherung
-     * unmoeglich. Steht ein FREMDER Name darin, wird abgewiesen. */
-    if (isset($daten['_plugin']) && is_string($daten['_plugin'])
-        && $daten['_plugin'] !== '' && $daten['_plugin'] !== 'spotpreistibber') {
-        return array(null, array(sprintf(tb_t('EINST.SICH_FREMDES_PLUGIN'),
-                                 tb_e((string) $daten['_plugin']))), 0, null);
-    }
-    $neu = tb_vorgaben();
-    $bekannt = array_keys($neu);
-    $token = null;
-    $anzahl = 0;
-    // Hinweise, die nichts abweisen, aber gesagt werden muessen (K2).
-    $hinweise = array();
-    $tb_tsspaet = array();     // Welle Mehrfach-Ziele (0.9.33): tts.ziele, wenn die Sicherung die Liste nicht kannte
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        if ($k !== '' && $k[0] === '_') { continue; }    // lesbarer Kopf
-        if ($k === 'tibber_token') {
-            if (!tb_wert_taugt($w)) {
-                $mangel[] = sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'), tb_e($k));
-                continue;
-            }
-            // Leerraum am Rand still, wie im Formular (K5, Nr. 19).
-            $w = trim((string) $w);
-            $grund = tb_token_form($w);
-            if ($w !== '' && $grund !== '') {
-                $mangel[] = tb_t($grund);
-                continue;
-            }
-            $token = $w;
-            $anzahl++;
-            continue;
-        }
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) { $mangel[] = sprintf(tb_t('EINST.SICH_FREMD'), 'ansage_regeln'); continue; }
-            $neu['ansage_regeln'] = $s2_r;
-            $anzahl++;
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(tb_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars($k, ENT_QUOTES, 'UTF-8'));
-            continue;
-        }
-        /* Die Schaltregeln sind der einzige Schluessel, dessen Wert ein FELD
-         * ist. tb_wert_taugt() weist Felder ab - zu Recht, denn jeder andere
-         * Wert dieser Konfiguration geht irgendwann in eine Zeile, und ein
-         * Feld haette dort nichts zu suchen. Also bekommt dieser eine
-         * Schluessel seine eigene Pruefung, und sie ist nicht laxer, sondern
-         * enger: jedes Feld jeder Regel wird einzeln beurteilt.
-         *
-         * Ohne diesen Zweig waere die Sicherung fuer den Fahrplaner wertlos -
-         * genau die Halbierung, die diese Datei bei den Zugangsdaten schon
-         * einmal hatte. */
-        if ($k === 'regeln') {
-            list($rein, $rmangel) = tb_regeln_pruefen($w);
-            if ($rmangel) {
-                foreach ($rmangel as $m) { $mangel[] = $m; }
-                continue;
-            }
-            $neu[$k] = $rein;
-            $anzahl++;
-            continue;
-        }
-        /* Nr. 36 b (seit 0.9.28): der Block der Sprachausgabe. Eine Sicherung dieses
-         * Plugins traegt nie ein Sprechtoken - traegt die Datei eines (auch als Liste,
-         * Zahl oder null), stammt sie nicht aus "Einstellungen sichern" und wird
-         * abgewiesen. Die Werte werden wie im Formular geprueft (Heimnetz); die
-         * geltenden Sprechtoken bleiben. */
-        if ($k === 'tts') {
-            $tm = ansage_sicherung_mangel($w);
-            if ($tm) {
-                $mangel[] = sprintf(tb_t('EINST.SICH_TTS_TOKEN'), tb_e(implode(', ', $tm)));
-                continue;
-            }
-            $tg = '';
-            $tp = ansage_wert_pruefen($w, $tg, tb_ansage_modi());
-            if ($tp === null) {
-                $mangel[] = sprintf(tb_t('EINST.SICH_TTS'), tb_e(ansage_kennung_text($tg, tb_ansage_k())));
-                continue;
-            }
-            $tj = tb_tts();
-            /* Welle Mehrfach-Ziele (0.9.33): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
-             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
-            $tb_tsneu = array('tts' => $tp);
-            $tb_tsjetzt = array('tts' => $tj);
-            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-             * heisst "keine weiteren Ziele" und wird so uebernommen. */
-            $tb_spaete = array();
-            if (is_array($tb_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                list($tb_tsneu['tts'], $tb_spaete) = ansage_sicherung_spaet($tb_tsneu['tts'],
-                    (isset($tb_tsjetzt['tts']) && is_array($tb_tsjetzt['tts'])) ? $tb_tsjetzt['tts'] : null);
-            }
-            foreach ($tb_spaete as $tb_sn) { $tb_tsspaet[] = $tb_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-            list($tv) = ansage_vervollstaendigen($tb_tsneu['tts'] + $tj);
-            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
-            $anzahl++;
-            continue;
-        }
-        if (!tb_wert_taugt($w)) {
-            $mangel[] = sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'),
-                                 htmlspecialchars($k, ENT_QUOTES, 'UTF-8'));
-            continue;
-        }
-        $grund = tb_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            $mangel[] = $grund;
-            continue;
-        }
-        /* Ein LEERES Aktionstoken nimmt das geltende nicht weg (Bauliste K2).
-         * Bis 0.9.24 wurde danach still ein neues Merkwort gewuerfelt, und
-         * jeder virtuelle Eingang in Loxone bekam 403 (Codepruefer Nr. 6,
-         * Oberflaechenpruefer Nr. 6). Es bleibt das geltende - mit Hinweis. */
-        if ($k === 'aktionstoken' && trim((string) $w) === '') {
-            $geltend = tb_config();
-            $neu[$k] = is_string($geltend['aktionstoken']) ? $geltend['aktionstoken'] : '';
-            $hinweise[] = tb_t('EINST.SICH_TOKEN_LEER_BEHALTEN');
-            continue;
-        }
-        /* Gespeichert wird der GEPRUEFTE Wert: Leerraum am Rand still
-         * abgeschnitten wie im Formular (Bauliste K5, Nr. 19). Bis 0.9.24
-         * pruefte die Funktion trim($w), speicherte aber $w - ein Merkwort
-         * " abc " stand danach mit Leerzeichen in der Datei, und die
-         * angezeigte Adresse bekam 403 (Oberflaechenpruefer Nr. 7). */
-        $neu[$k] = is_string($w) ? trim($w) : $w;
-        $anzahl++;
-    }
-    if ($anzahl === 0) {
-        $mangel[] = tb_t('EINST.SICH_LEER');
-    }
-    /* Dieselben Kreuzregeln wie im Formular (Bauliste K5). */
-    if (!$mangel) {
-        foreach (tb_config_kreuzpruefen($neu) as $km) { $mangel[] = $km['text']; }
-    }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    /* Nr. 36 b (seit 0.9.28): eine Sicherung aus einer Fassung OHNE Sprachausgabe
-     * traegt den Block tts und die Haken der Anlaesse noch nicht. Sie wird
-     * angenommen; fuer diese Schluessel gilt weiter, was eingestellt ist - nicht
-     * die Vorgabe, sonst schaltete das Zurueckspielen einer alten Sicherung eine
-     * eingerichtete Ausgabe still ab -, und ein Hinweis sagt es. */
-    $ohne = array();
-    $ohne_g43 = array();
-    $geltend = null;
-    foreach (array_keys(tb_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
-            /* Gruppe 43: eine Sicherung aus 0.9.32 oder frueher kennt die neuen Haken nicht - es gilt weiter, was
-             * eingestellt ist (Hinweis EINST.SICH_OHNE_G43), nichts wird abgewiesen. */
-            if (in_array($fk, tb_neue_schluessel_0933(), true)) {
-                if ($geltend === null) { $geltend = tb_config(); }
-                $neu[$fk] = $geltend[$fk];
-                $ohne_g43[] = $fk;
-                continue;
-            }
-            /* 0.9.43: eine Sicherung bis 0.9.42 kennt den Schwellen-Push nicht - es gilt der geltende Stand. */
-            if (in_array($fk, array('schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre'), true)) {
-                if ($geltend === null) { $geltend = tb_config(); }
-                $neu[$fk] = $geltend[$fk];
-                continue;
-            }
-            if ($fk === 'ansage_token_herkunft') {     // 0.9.35: der Vermerk bleibt der geltende, ohne Hinweis
-                if ($geltend === null) { $geltend = tb_config(); }
-                $neu[$fk] = isset($geltend[$fk]) ? $geltend[$fk] : array();
-                continue;
-            }
-            if (in_array($fk, tb_ansage_neue_schluessel(), true)) {
-                if ($geltend === null) { $geltend = tb_config(); }
-                $neu[$fk] = ($fk === 'tts') ? tb_tts($geltend) : $geltend[$fk];
-                $ohne[] = $fk;
-                continue;
-            }
-            $fehlend[] = $fk;
-        }
-    }
-    if ($ohne) {
-        $hinweise[] = sprintf(tb_t('EINST.SICH_OHNE_ANSAGE'), tb_e(implode(', ', $ohne)));
-    }
-    if ($tb_tsspaet) {     // Welle Mehrfach-Ziele (0.9.33): Spaetliste
-        $hinweise[] = sprintf(tb_t('EINST.SICH_SPAET'), tb_e(implode(', ', $tb_tsspaet)));
-    }
-    if ($ohne_g43) {
-        $hinweise[] = sprintf(tb_t('EINST.SICH_OHNE_G43'), tb_e(implode(', ', $ohne_g43)));
-    }
-    if ($fehlend) {
-        $mangel[] = sprintf(tb_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-    }
-    /* Fuenfter Wert: Hinweise (K2). Die Hausform der ersten vier bleibt -
-     * Werkzeuge/sicherung_wirkung.py erkennt die Bauart an Stelle 1. */
-    return array($mangel ? null : $neu, $mangel, $anzahl, $token, $hinweise);
+    return sicherung_bauen(tb_sicherung_beschreibung(), tb_config(),
+                           $token !== '' ? array('tibber_token' => $token) : array());
 }
 
 /* ==================================================================
@@ -6419,7 +6220,8 @@ function tb_schwelle_tmpdir()
 /* ---------- G3/Sicherung: neue Schluessel dieser Fassung ---------- */
 
 /** Schluessel, die 0.9.33 neu einfuehrt. Eine Sicherung ohne sie wird angenommen; fuer die fehlenden gilt weiter,
- *  was eingestellt ist (Hinweis EINST.SICH_OHNE_G43). endpunkt_ein ab Werk 0, beim Update 1 (postinstall.sh). */
+ *  was eingestellt ist (seit 0.9.44 nennt das Sicherungsmodul sie, 'fehlt' => 'behalten' in
+ *  tb_sicherung_beschreibung()). endpunkt_ein ab Werk 0, beim Update 1 (postinstall.sh). */
 function tb_neue_schluessel_0933()
 {
     return array('haus_strompreis_ein', 'haus_speicher_ein', 'endpunkt_ein');

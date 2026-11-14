@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.43
+Version 0.9.44
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -10,6 +10,20 @@ tokengeschützten HTTP-Endpunkt (der Weg der Baustein-Listen) oder über MQTT
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.44
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul (1.2.2) wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - **Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem Modul und sind in allen Plugins dieser Reihe gleich.
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und in den Blöcken (Schaltregeln, Sprachausgabe, Regeln für die Ansagen). Die übrigen Einstellungen werden zurückgespielt. Bis 0.9.43 wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bis 0.9.43 galt das nur für das Aktionstoken; ein leeres MQTT-Thema etwa wies die ganze Datei ab.
+  - Eine Datei ohne das Kennzeichen `_plugin` wird als Ganzes abgewiesen; bis 0.9.43 wurde sie als Sicherung einer Fassung vor 0.9.7 angenommen. Jede Sicherung dieses Plugins seit 0.9.7 trägt das Kennzeichen `spotpreistibber`; es bleibt.
+  - Fehlt in einer Sicherung einer älteren Fassung eine später hinzugekommene Einstellung, behält sie wie bisher ihren geltenden Wert; die Meldung nennt sie jetzt mit dem Satz des Moduls. Neu gilt das auch für die Einstellungen des Fahrplaners (Schaltregeln, Hysterese, PV- und Speicherquelle, Budgets): Sicherungen aus 0.9.7 bis 0.9.10, die sie noch nicht kannten, wurden bis 0.9.43 abgewiesen und werden jetzt angenommen.
+  - Ein Vermerk, der nie aus einer Sicherungsdatei kommt (dass ein Sprechtoken aus einem Nachbar-Plugin übernommen wurde), behält beim Zurückspielen seinen geltenden Wert, auch wenn eine Datei einen anderen trägt. Bis 0.9.43 fiel er dann auf leer.
+  - Die Warnung am Knopf „Einstellungen sichern“ (Werte, die das Zurückspielen abweisen würde) entsteht jetzt aus derselben Prüfung wie beim Zurückspielen.
+- **Gateway-Aussage berichtigt** (Reiter *Einbindung in Loxone*, Schritt 1): Die Virtuellen Eingänge für den MQTT-Weg legt man in Loxone Config mit genau dem Titel aus der Tabelle an; das Gateway ordnet nur über den Namen zu. Bis 0.9.43 stand dort, das Gateway erzeuge die Namen der Eingänge selbst.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt. Das Aktionstoken und das Tibber-Zugangstoken gehören in die Datei, die Sprechtoken nicht; das Zugangstoken geht beim Zurückspielen in seine eigene Datei. Der Merker „war Anbieter“ für `haus/strompreis` bleibt, die Zweitschrift zieht mit, und die Meldung sagt, was mit dem Pulse-Dienst geschah.
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen aller 37 Vorfassungen von 0.9.7 bis 0.9.43 (alle angenommen); am Gerät nicht gemessen.
 
 ## Neu in 0.9.43
 

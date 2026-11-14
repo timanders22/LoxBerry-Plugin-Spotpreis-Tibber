@@ -786,9 +786,9 @@ if ($tb_post && isset($_POST['selbsttest'])) {
  * Damit traegt sie ein Geheimnis, und der Warnhinweis am Knopf sagt das. Das
  * FORMULARMERKMAL gehoert ausdruecklich nicht hinein - es lebt eine Sitzung. */
 if ($tb_post && isset($_POST['tb_sichern'])) {
-    $tb_js = json_encode(tb_sicherung_bauen(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($tb_js !== false) {
+    /* 0.9.44: Kopf und volle Konfiguration baut das gemeinsame Sicherungsmodul (tb_sicherung_bauen()). */
+    $tb_js = sicherung_json(tb_sicherung_bauen());
+    if ($tb_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="spotpreis_tibber_einstellungen_'
@@ -802,74 +802,82 @@ if ($tb_post && isset($_POST['tb_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+ * 0.9.44: ueber das gemeinsame Sicherungsmodul (sicherung.php, Modul 1.2.2), in jeder Linie gleich. Den Eingang
+ * prueft sicherung_eingang(): zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann
+ * is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die Groessengrenze des Moduls
+ * (256 kB, wie bisher hier). Lesen, Pruefen und Speichern macht sicherung_zurueckspielen() nach der Beschreibung
+ * tb_sicherung_beschreibung(); eine halb gueltige Datei aendert nichts, alle Beanstandungen werden gesammelt (eine
+ * nach der anderen zu zeigen, schickte den Anwender in eine Schleife). Die Schritte dieser Linie davor und danach
+ * stehen in den Rueckrufen - dieselben wie bis 0.9.43. */
 if ($tb_post && isset($_POST['tb_zurueck'])) {
-    if (!isset($_FILES['tb_sicherung']) || !is_array($_FILES['tb_sicherung'])
-        || !isset($_FILES['tb_sicherung']['tmp_name'])
-        || !is_string($_FILES['tb_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['tb_sicherung']['tmp_name'])) {
-        $tb_fehler[] = tb_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['tb_sicherung']['size'] > 262144) {
-        $tb_fehler[] = tb_t('EINST.SICH_ZU_GROSS');
+    $tb_b = tb_sicherung_beschreibung();
+    list($tb_roh, $tb_ab) = sicherung_eingang($tb_b, $_POST, $_FILES, 'tb_sicherung');
+    if ($tb_ab !== null) {
+        $tb_r = $tb_ab;
     } else {
-        $tb_sl = array_pad(tb_sicherung_lesen(
-            (string) @file_get_contents($_FILES['tb_sicherung']['tmp_name'])), 5, array());
-        list($tb_neu, $tb_mangel, $tb_n, $tb_tok, $tb_hin) = $tb_sl;
-        if ($tb_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. Wer nur die erste zeigt, schickt den Anwender in eine
-             * Schleife aus je einem Fund pro Anlauf. */
-            $tb_fehler[] = tb_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $tb_mangel);
-        } elseif (($tb_rs_alt = tb_config()) !== null
-                  && tb_config_speichern($tb_neu + (!empty($tb_rs_alt['_haus_frueher']) ? array('_haus_frueher' => 1) : array()))) {
-            $tb_meldungen[] = sprintf(tb_t('EINST.SICH_UEBERNOMMEN'), $tb_n);
-            /* Gruppe 43: der Merker "war Anbieter" gehoert nicht in eine Sicherung und bleibt; schaltet die
-             * Sicherung den Anbieter aus, raeumt tb_haus_folgen() ab (nur wenn diese Installation Anbieter war). */
-            list($tb_hm, $tb_ha) = tb_haus_folgen($tb_rs_alt, $tb_neu);
-            if ($tb_hm !== '') {
-                if ($tb_ha === 'ok') { $tb_meldungen[] = tb_e($tb_hm); } else { $tb_hinweise[] = tb_e($tb_hm); }
+        $tb_tsspaet = array();
+        $tb_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$tb_tsspaet) {
+            /* Nr. 36 b: die Sprechtoken stehen nie in einer Sicherung - eine Datei, die eines traegt, hat die Pruefung
+             * abgewiesen; die geltenden bleiben. Welle Mehrfach-Ziele (0.9.33): fehlt die Liste der weiteren Ziele
+             * (Sicherung einer aelteren Fassung), gelten die jetzigen weiter - genannt im Hinweis. Was der Block der
+             * Datei nicht traegt, gilt weiter wie eingestellt (ansage_vervollstaendigen(), wie bis 0.9.43). */
+            if (isset($neu['tts']) && is_array($neu['tts'])) {
+                $tj = tb_tts($jetzt);
+                list($neu['tts'], $tb_tsspaet) = ansage_sicherung_spaet($neu['tts'], $tj);
+                list($tv) = ansage_vervollstaendigen($neu['tts'] + $tj);
+                $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
             }
-            if ($tb_tok !== null && $tb_tok !== array() && $tb_tok !== '' && tb_token_speichern($tb_tok)) {
-                $tb_meldungen[] = tb_t('EINST.SICH_TOKEN_UEBERNOMMEN');
+            return $neu;
+        };
+        $tb_b['speichern'] = function ($neu) { return tb_config_speichern($neu); };
+        $tb_b['zweitschrift'] = function () { $p = tb_paths(); return array($p['config'], $p['sicherung']); };
+        $tb_b['nachziehen'] = function ($neu, $jetzt, $r) use (&$tb_tsspaet, &$tb_fehler, &$tb_hinweise) {
+            $h = array();
+            if ($tb_tsspaet) {     // Welle Mehrfach-Ziele (0.9.33): Spaetliste
+                $tb_hinweise[] = sprintf(tb_t('EINST.SICH_SPAET'), tb_e(implode(', ', $tb_tsspaet)));
             }
-            foreach ((array) $tb_hin as $tb_h) { $tb_hinweise[] = $tb_h; }
-            tb_log('Einstellungen aus einer Sicherung zurueckgespielt: '
-                   . $tb_n . ' Werte.');
-            /* Den Pulse-Dienst nachziehen und sagen, was mit ihm geschah
-             * (CLAUDE.md Abschnitt 9, Bauliste K7). Bis 0.9.24 lief ein Dienst
-             * nach dem Zurueckspielen mit dem alten Token weiter, ohne dass
-             * es irgendwo stand (Oberflaechenpruefer Nr. 12). Gestartet wird
-             * ein stehender Dienst NICHT von selbst - das tut auch das
-             * Speichern der Einstellungen nicht. */
-            $tb_dpid = tb_dienst_pid();
-            if (!empty($tb_neu['pulse_ein'])) {
-                if ($tb_dpid) {
-                    list($tb_dok, $tb_daus) = tb_dienst('restart');
-                    if ($tb_dok) {
-                        $tb_meldungen[] = sprintf(tb_t('EINST.SICH_DIENST_NEU'), tb_e($tb_daus));
+            /* Das Tibber-Token geht in seine eigene Datei (0600), nicht in die Konfiguration. */
+            $tok = isset($r['teile']['tibber_token']) ? $r['teile']['tibber_token'] : null;
+            if (is_string($tok) && $tok !== '' && tb_token_speichern($tok)) {
+                $h[] = tb_t('EINST.SICH_TOKEN_UEBERNOMMEN');
+            }
+            /* Gruppe 43: der Merker "war Anbieter" bleibt ('nie_aus_datei'); schaltet die Sicherung den Anbieter aus,
+             * raeumt tb_haus_folgen() ab (nur wenn diese Installation Anbieter war). */
+            list($hm, $ha) = tb_haus_folgen($jetzt, $neu);
+            if ($hm !== '') {
+                if ($ha === 'ok') { $h[] = tb_e($hm); } else { $tb_hinweise[] = tb_e($hm); }
+            }
+            /* Den Pulse-Dienst nachziehen und sagen, was mit ihm geschah (CLAUDE.md Abschnitt 9, Bauliste K7).
+             * Gestartet wird ein stehender Dienst NICHT von selbst - das tut auch das Speichern nicht. */
+            $dpid = tb_dienst_pid();
+            if (!empty($neu['pulse_ein'])) {
+                if ($dpid) {
+                    list($dok, $daus) = tb_dienst('restart');
+                    if ($dok) {
+                        $h[] = sprintf(tb_t('EINST.SICH_DIENST_NEU'), tb_e($daus));
                     } else {
-                        $tb_fehler[] = sprintf(tb_t('EINST.SICH_DIENST_NEU_FEHLER'), tb_e($tb_daus));
+                        $tb_fehler[] = sprintf(tb_t('EINST.SICH_DIENST_NEU_FEHLER'), tb_e($daus));
                     }
                 } else {
                     $tb_hinweise[] = tb_t('EINST.SICH_DIENST_STEHT');
                 }
-            } elseif ($tb_dpid) {
-                list($tb_dok, $tb_daus) = tb_dienst('stop');
-                if ($tb_dok) {
-                    $tb_meldungen[] = sprintf(tb_t('EINST.SICH_DIENST_GESTOPPT'), tb_e($tb_daus));
+            } elseif ($dpid) {
+                list($dok, $daus) = tb_dienst('stop');
+                if ($dok) {
+                    $h[] = sprintf(tb_t('EINST.SICH_DIENST_GESTOPPT'), tb_e($daus));
                 } else {
-                    $tb_fehler[] = sprintf(tb_t('EINST.SICH_DIENST_NEU_FEHLER'), tb_e($tb_daus));
+                    $tb_fehler[] = sprintf(tb_t('EINST.SICH_DIENST_NEU_FEHLER'), tb_e($daus));
                 }
             } else {
-                $tb_meldungen[] = tb_t('EINST.SICH_DIENST_AUS');
+                $h[] = tb_t('EINST.SICH_DIENST_AUS');
             }
-        } else {
-            $tb_fehler[] = tb_t('EINST.SICH_SCHREIBFEHLER');
-        }
+            return $h;
+        };
+        $tb_r = sicherung_zurueckspielen($tb_b, $tb_roh);
     }
+    $tb_m = sicherung_meldungen($tb_b, $tb_r);
+    foreach ($tb_m['fehler'] as $tb_x) { $tb_fehler[] = $tb_x; }
+    foreach ($tb_m['hinweise'] as $tb_x) { $tb_meldungen[] = $tb_x; }
     $tb_tab = 'tab-settings';
 }
 
@@ -935,8 +943,10 @@ if (is_file($tb_p['log'])) {
         0, 400);
 }
 /* X-3 (Bauliste K6): welche gespeicherten Werte wuerde das eigene
- * Zurueckspielen abweisen? Gelbe Warnung am Knopf "Einstellungen sichern". */
-$tb_sich_maengel = tb_sicherung_maengel($tb_cfg);
+ * Zurueckspielen abweisen? Gelbe Warnung am Knopf "Einstellungen sichern".
+ * Seit 0.9.44 DIESELBE Pruefung wie beim Zurueckspielen (sicherung_selbstpruefung() des
+ * Moduls) an genau der Datei, die der Knopf liefert. */
+$tb_sich_maengel = sicherung_selbstpruefung(tb_sicherung_beschreibung(), tb_sicherung_bauen(), $tb_cfg);
 
 $tb_rahmen = class_exists('LBWeb', false);
 
@@ -1376,6 +1386,7 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
 <input data-role="none" type="hidden" name="fmt" value="<?= tb_e($tb_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="tb_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(tb_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="tb_zurueck" value="1"><?= tb_e(tb_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>
