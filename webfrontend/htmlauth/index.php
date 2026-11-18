@@ -816,13 +816,17 @@ if ($tb_post && isset($_POST['tb_zurueck'])) {
         $tb_r = $tb_ab;
     } else {
         $tb_tsspaet = array();
-        $tb_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$tb_tsspaet) {
+        /* Modul 1.2.9 (Bauform des Hausherrn 15.11.2026): aus dem geltenden Block tts kommt nur, was der Knoten nennt.
+         * Bis 0.9.45 blieb ein Schluessel, den diese Fassung nicht kennt, stehen, ohne genannt zu werden; jetzt faellt er
+         * weg, und das Modul nennt ihn. */
+        $tb_tsbekannt = $tb_b['schluessel']['tts']['schluessel'];
+        $tb_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$tb_tsspaet, $tb_tsbekannt) {
             /* Nr. 36 b: die Sprechtoken stehen nie in einer Sicherung - eine Datei, die eines traegt, hat die Pruefung
              * abgewiesen; die geltenden bleiben. Welle Mehrfach-Ziele (0.9.33): fehlt die Liste der weiteren Ziele
              * (Sicherung einer aelteren Fassung), gelten die jetzigen weiter - genannt im Hinweis. Was der Block der
              * Datei nicht traegt, gilt weiter wie eingestellt (ansage_vervollstaendigen(), wie bis 0.9.43). */
             if (isset($neu['tts']) && is_array($neu['tts'])) {
-                $tj = tb_tts($jetzt);
+                $tj = array_intersect_key(tb_tts($jetzt), $tb_tsbekannt);
                 list($neu['tts'], $tb_tsspaet) = ansage_sicherung_spaet($neu['tts'], $tj);
                 list($tv) = ansage_vervollstaendigen($neu['tts'] + $tj);
                 $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
