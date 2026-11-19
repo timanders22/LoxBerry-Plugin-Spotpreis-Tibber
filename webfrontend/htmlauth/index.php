@@ -2268,7 +2268,8 @@ function tb_bausteine()
 $tb_zeilen = tb_pruefungen($tb_tab === 'tab-test');
 foreach ($tb_zeilen as $tb_z) { ?>
 <tr><td style="text-align:center;"><?php
-    if ($tb_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
+    if (isset($tb_z['uhr'])) { echo uhr_zeichen($tb_z['uhr']); }
+    elseif ($tb_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($tb_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
     else { echo '<span style="color:#888;">&#9679;</span>'; }
 ?></td><td><?= $tb_z['frage'] ?></td><td><?= $tb_z['antwort'] ?></td></tr>

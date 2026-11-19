@@ -395,6 +395,7 @@ require_once __DIR__ . '/sprachausgabe.php';
  * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
  * anderen Linien. Die Beschreibung dieser Linie steht in tb_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 /* Gruppe 43 (0.9.33): die Anbieterregel fuer haus/strompreis und haus/speicher - gemeinsames Stueck, byte-gleich in
  * allen Anbieter-Linien (haus_anbieter.php, hanb_*(); nur reine Funktionen). Liegt neben dieser Datei. */
 require_once __DIR__ . '/haus_anbieter.php';
@@ -1369,9 +1370,12 @@ function tb_gql($abfrage, $variablen = array(), $token = null)
             CURLOPT_CONNECTTIMEOUT => min(10, $tmo),
             CURLOPT_FOLLOWLOCATION => false,
         ));
+        $uhr_datum = 0;   // Uhrmodul (Frage 95)
+        curl_setopt($ch, CURLOPT_HEADERFUNCTION, uhr_kopf_rueckruf($uhr_datum));
         $antwort = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         if ($antwort === false) { $fehler = curl_error($ch); }
+        uhr_merken(tb_paths()['datadir'], $uhr_datum, (int) round(1000 * (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME)), 'api.tibber.com');
         if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } else {
         // Rueckfallebene ohne curl. Sie wird ANGEZEIGT, damit aus dem Ersatz

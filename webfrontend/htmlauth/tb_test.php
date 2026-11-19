@@ -724,6 +724,13 @@ function tb_pruefungen($voll = false)
     $zeilen[] = tb_pruefzeile(-1, tb_t('TEST.F_HTTP_ENDPUNKT'),
         tb_t(!empty($cfg['endpunkt_ein']) ? 'TEST.A_ENDPUNKT_EIN' : 'TEST.A_ENDPUNKT_AUS'));
 
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Kopfzeile Date der Cloud - nur melden. */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => $p['datadir'], 'dienst' => 'Tibber', 't' => 'tb_t'));
+    $uhr_z = tb_pruefzeile($uhr_s === 1 ? 1 : -1, htmlspecialchars(uhr_frage(array('t' => 'tb_t')), ENT_QUOTES, 'UTF-8'),
+        htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8'));
+    $uhr_z['uhr'] = $uhr_s;
+    $zeilen[] = $uhr_z;
+
     return $zeilen;
 }
 
