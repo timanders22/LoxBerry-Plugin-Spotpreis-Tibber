@@ -430,7 +430,7 @@ if ($tb_post && isset($_POST['speichern'])) {
             if (substr($tb_an, -9) === '_loeschen') { $tb_ahk[] = $tb_an; } else { $tb_ax2[] = $tb_an; }
         }
         $tb_eingaben = tb_eingaben_sammeln('einst', array_merge(array('home_id'), $tb_einst_felder, $tb_ax2,
-                                                                array('ansage_von', 'ansage_bis', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min', 'ansage_tafel_namen', 'ansage_homepod_geraet')),     // 0.9.38: Tafel und HomePod dazu
+                                                                array('ansage_von', 'ansage_bis', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_ruhe_bis_frei' /* 0.9.50, Stamm 1.5.0 */, 'ansage_sperre_min', 'ansage_tafel_namen', 'ansage_homepod_geraet')),     // 0.9.38: Tafel und HomePod dazu
             array_merge(array('verbrauch_ein', 'pulse_ein', 'monatsbericht', 'schwelle_ein', 'ansage_ruhe_ein', 'ansage_tafel_ein', 'ansage_homepod_ein'),
                         array_values(tb_ansage_anlaesse()), $tb_ahk), $tb_falsch);
         $tb_eingaben['werte'] += tb_ziele_x2_werte();     // Welle Mehrfach-Ziele (0.9.33): die Tabelle flach als name.N
