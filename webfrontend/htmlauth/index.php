@@ -293,7 +293,7 @@ if ($tb_post && isset($_POST['verlauf_holen'])) {
  * ueber die sechs Felder des Fahrplaners, die hier gar nicht stehen - jedes
  * Speichern zeigte sechs Scheinbeanstandungen mit rohen Sprachschluesseln
  * (Oberflaechenpruefer Nr. 1). */
-if ($tb_post && isset($_POST['speichern'])) {
+if ($tb_post && isset($_POST['speichern']) && !isset($_POST['meld_test'])) {     // 0.9.51: der Knopf Testmeldung (im selben Formular, verstecktes Feld speichern) speichert nicht
     $tb_cfg = tb_config();
     $tb_neucfg = $tb_cfg;
     $tb_falsch = array();
@@ -400,6 +400,12 @@ if ($tb_post && isset($_POST['speichern'])) {
     foreach ($tb_tmangel as $tb_tm) { $tb_fehler[] = tb_e($tb_tm['text']); }
     foreach ($tb_tbean as $tb_tb) { $tb_falsch[] = tb_ziele_x2_name($tb_tb); }     // 0.9.33: Tabelle name[N] -> name.N
     foreach (tb_ansage_anlaesse() as $tb_as) { $tb_neucfg[$tb_as] = isset($_POST[$tb_as]) ? 1 : 0; }
+    // 0.9.51: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $tb_mm = array();
+    $tb_mb = array();
+    $tb_neucfg['meldung'] = meld_formular_lesen($_POST, isset($tb_cfg['meldung']) ? $tb_cfg['meldung'] : null, tb_meld_anlaesse(), $tb_mm, $tb_mb, tb_meld_k(), tb_meld_haken_vorgabe());
+    foreach ($tb_mm as $tb_mx) { $tb_fehler[] = tb_e($tb_mx['text']); }
+    foreach ($tb_mb as $tb_my) { $tb_falsch[] = $tb_my; }
     /* Seit 0.9.28: die Ansagezeit (hh:mm oder leer); eine Liste statt eines Textes ist eine
      * Beanstandung, kein leeres Feld. Danach die Kreuzregel aus tb_config_kreuzpruefen(). */
     $tb_azfalsch = 0;
@@ -624,6 +630,15 @@ if ($tb_post && isset($_POST['save_mqtt'])) {
         $tb_fehler[] = tb_t('EINST.FEHLER_TOPIC');
         $tb_falsch[] = 'mqtt_topic';
     }
+    /* 0.9.51 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+     * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+     * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+    if (!in_array('mqtt_topic', $tb_falsch, true) && hb_bereich($tb_mtopic) !== ''
+        && $tb_mtopic !== (string) tb_config(false)['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        $tb_fehler[] = sprintf(tb_t('HAUSBEREICH.FEHLER'), tb_e($tb_mtopic), tb_e(hb_bereich($tb_mtopic)));
+        $tb_falsch[] = 'mqtt_topic';
+    }
     if ($tb_fehler) {
         $tb_fehler[] = tb_t('EINST.NICHTS_GESPEICHERT');
         $tb_eingaben = tb_eingaben_sammeln('mqtt', array('mqtt_topic'),
@@ -747,6 +762,12 @@ if ($tb_post && isset($_POST['test'])) {
  * Protokoll nur die Kurzform ohne Text und Token. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 0.9.51: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($tb_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = tb_meld_test();
+    if ($meld_ok) { $tb_meldungen[] = tb_e($meld_satz); } else { $tb_fehler[] = tb_e($meld_satz); }
+    $tb_tab = 'tab-test';
+}
 if ($tb_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $tb_tk = tb_ansage_k();
     $tb_tnur = (isset($_POST['ansage_test_ziel']) && tb_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -833,7 +854,8 @@ if ($tb_post && isset($_POST['tb_zurueck'])) {
             }
             return $neu;
         };
-        $tb_b['speichern'] = function ($neu) { return tb_config_speichern($neu); };
+        // 0.9.51: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $tb_b['speichern'] = function ($neu) { return tb_config_speichern($neu, false); };
         $tb_b['zweitschrift'] = function () { $p = tb_paths(); return array($p['config'], $p['sicherung']); };
         $tb_b['nachziehen'] = function ($neu, $jetzt, $r) use (&$tb_tsspaet, &$tb_fehler, &$tb_hinweise) {
             $h = array();
@@ -890,6 +912,30 @@ if ($tb_post && isset($_POST['tb_zurueck'])) {
  * JEDER POST endet hier mit 303 - auch einer, den der Wachposten abgewiesen
  * hat. Laesst sich die Einmalmeldung nicht ablegen, wird die Seite wie bis
  * 0.9.24 unmittelbar gezeigt: lieber ohne Umleitung als ohne Ergebnis. */
+/* 0.9.51: Lade-Beanstandungen - angezeigte Werte uebernehmen, nur mit Haken (Entscheidung des Hausherrn 24.11.2026,
+ * "Haken im gelben Kasten"); ohne ihn bleibt die Datei byte-gleich. Geschrieben ohne "Dateiwert behalten". Ein
+ * abgewiesener POST (Wachposten) hat $tb_post schon auf false gesetzt. */
+if ($tb_post && sicherung_lade_eingang($_POST) !== '') {
+    $tb_lb = tb_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $tb_fehler[] = tb_e(sicherung_t('K_LADE_HAKEN_FEHLT', $tb_lb));
+    } else {
+        $tb_ld = tb_lade_roh();
+        $tb_lv = tb_config(false);
+        $tb_un = array();
+        if ($tb_ld !== null) {
+            list($tb_lneu, $tb_un) = sicherung_lade_uebernehmen_stand($tb_ld, $tb_lv, sicherung_lade_beanstandungen($tb_lb, $tb_ld, $tb_lv));
+            if ($tb_un && !tb_config_speichern($tb_lneu, false)) {
+                $tb_fehler[] = tb_e(sicherung_t('K_SCHREIBFEHLER', $tb_lb));
+                $tb_un = array();
+            }
+        }
+        if ($tb_un) {
+            tb_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $tb_un)));
+            $tb_meldungen[] = sprintf(tb_e(sicherung_t('K_LADE_UEBERNOMMEN', $tb_lb)), tb_e(implode(', ', $tb_un)));
+        }
+    }
+}
 if ($tb_war_post) {
     $tb_flash = array('ts' => time(), 'meldungen' => $tb_meldungen, 'fehler' => $tb_fehler,
                       'hinweise' => $tb_hinweise, 'testausgabe' => $tb_testausgabe,
@@ -1083,11 +1129,16 @@ if ($tb_rahmen) {
 <?php foreach ($tb_fehler as $tb_f) { ?><li><?= $tb_f ?></li><?php } ?>
 </ul></div>
 <?php } ?>
+<?php /* 0.9.51: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$tb_lade = tb_lade_beanstandungen($tb_cfg);
+tb_lade_melden($tb_lade); ?>
 
 <?php if (!$tb_hat_token) { ?>
 <div class="sm-warnung"><?= tb_t('EINST.KEIN_TOKEN_HINWEIS') ?></div>
 <?php } ?>
 
+<?= sicherung_lade_kasten(tb_lade_b(true), isset($tb_lade) ? $tb_lade : tb_lade_beanstandungen($tb_cfg),
+        '<input data-role="none" type="hidden" name="fmt" value="' . tb_e($tb_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="' . tb_e($tb_tab) . '">') ?>
 <!-- ================= Statuskacheln ================= -->
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= tb_e(tb_t('ALLG.JETZT')) ?>
@@ -1322,6 +1373,7 @@ foreach ($tb_zahlfelder as $tb_f => $tb_a) { ?>
     'm' => function ($n) { return tb_fm(tb_ziele_x2_name($n)); },
     'c' => function ($n, $g) { return tb_fh('einst', $n, $g); },
     'token_vor_ort' => true), tb_ansage_k()) ?>
+<?= tb_meld_form_html($tb_cfg) ?>
 <?php foreach (tb_ansage_anlaesse() as $tb_an => $tb_as) { ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">

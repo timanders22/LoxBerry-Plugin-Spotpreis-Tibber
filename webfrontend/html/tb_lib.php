@@ -391,10 +391,12 @@ require_once __DIR__ . '/planer.php';
  * Mehrfach-Ziele). Liegt neben dieser Datei; sie schuetzt sich selbst gegen
  * doppeltes Laden und antwortet auf einen direkten Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 0.9.51)
 /* 0.9.44: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
  * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
  * anderen Linien. Die Beschreibung dieser Linie steht in tb_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 0.9.51, Regeln/07)
 require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 /* Gruppe 43 (0.9.33): die Anbieterregel fuer haus/strompreis und haus/speicher - gemeinsames Stueck, byte-gleich in
  * allen Anbieter-Linien (haus_anbieter.php, hanb_*(); nur reine Funktionen). Liegt neben dieser Datei. */
@@ -518,6 +520,7 @@ function tb_vorgaben()
         'ansage_token_herkunft' => array(),     // nie in einer Sicherung
         'ansage_fenster'   => 1,
         'ansage_stoerung'  => 1,
+        'meldung'          => meld_vorgaben(tb_meld_anlaesse(), tb_meld_haken_vorgabe()),     // 0.9.51: Meldungen an SignalBot, ab Werk aus
         /* Ansagezeit hh:mm (seit 0.9.28): ab Werk leer = immer. Ueber Mitternacht erlaubt
          * (22:00-06:00); beide oder keines, nicht gleich (tb_config_kreuzpruefen()). */
         'ansage_von'       => '',
@@ -867,9 +870,14 @@ function tb_config_vervollstaendigen($schreiben = true)
     return array(count($vorgaben), $fehlend, $fremd);
 }
 
-function tb_config_speichern($cfg)
+function tb_config_speichern($cfg, $lade_behalten = true)
 {
     $p = tb_paths();
+    /* 0.9.51 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert - jeder Speicherweg
+     * (Formulare, Merkwort, Sprechtoken, Merker _haus_frueher im Minutenlauf) liest tb_config(), aendert einen Teil und
+     * schreibt hier ganz zurueck. Nicht beim Zurueckspielen und nicht beim Knopf "Angezeigte Werte uebernehmen". */
+    if ($lade_behalten && is_array($cfg)) { $cfg = tb_lade_behalten($cfg); }
     // In dieser Datei steht KEIN Tibber-Token, aber das Aktionstoken fuer den
     // Endpunkt - deshalb 0600.
     if (!tb_json_schreiben($p['config'], $cfg, 0600)) { return false; }
@@ -887,6 +895,71 @@ function tb_config_speichern($cfg)
             . 'ein Upgrade koennte sie nicht wiederherstellen.');
     }
     return true;
+}
+
+/* ==================================================================
+ * Lade-Beanstandungen (0.9.51; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * tb_fahrplan_normieren() kappt beim Lesen, was von Hand verbogen ist (Planerwerte, Schwellen-Push, Schaltregeln) und
+ * setzt unbekannte Auswahlwerte auf ihre Vorgabe. Das bleibt - aber jede solche Ersetzung wird gemeldet (Reiter Test
+ * rot, Seite gelb, einmal ins Protokoll) und nie in die Datei zurueckgeschrieben; ebenso jeder gespeicherte Wert, den
+ * die Pruefung der Sicherung (tb_feldregeln(), tb_regeln_pruefen(), Kreuzregeln) abweisen wuerde.
+ * ================================================================== */
+
+/** Die rohen Werte von tibber.json (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function tb_lade_roh()
+{
+    $p = tb_paths();
+    clearstatcache(true, $p['config']);
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $d = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    return is_array($d) ? $d : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen; geheim sind die Sprechtoken (aktionstoken und der Teil
+ *  tibber_token immer). $maskiert = false fuer Vergleich und Schreiben; Seite und Reiter Test geben die Saetze
+ *  unmaskiert aus und nehmen deshalb die maskierte Form. */
+function tb_lade_b($maskiert = true)
+{
+    $b = tb_sicherung_beschreibung();
+    $b['geheim'] = array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim());
+    $b['e'] = $maskiert ? 'tb_e' : function ($s) { return (string) $s; };
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst tb_config(false)). */
+function tb_lade_beanstandungen($cfg = null, $maskiert = true)
+{
+    $d = tb_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(tb_lade_b($maskiert), $d, is_array($cfg) ? $cfg : tb_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function tb_lade_behalten(array $cfg)
+{
+    $d = tb_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = tb_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(tb_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function tb_lade_melden(array $beanst)
+{
+    $d = tb_paths()['datadir'];
+    if ($d === '' || (!is_dir($d) && !@mkdir($d, 0775, true))) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        tb_log(sicherung_lade_protokollzeile($beanst));
+    }
+}
+
+/** Minutenlauf (bin/tb_cron.php, Kennung P): die Lade-Beanstandungen einmal je Aenderung melden. NUR melden - die
+ *  Konfiguration wird hier nicht geschrieben (Entscheidung des Hausherrn 24.11.2026, Punkt 7). */
+function tb_dienst_pflege()
+{
+    tb_lade_melden(tb_lade_beanstandungen());
 }
 
 /* ---------------- Das Tibber-Token ----------------
@@ -968,6 +1041,10 @@ function tb_aktionstoken()
     /* Keine Zeichenkette (von Hand eine Liste eingetragen) gilt wie leer -
      * bis 0.9.24 wurde daraus "Array", und der Endpunkt nahm ?token=Array an
      * (Bauliste K3, Codepruefer Nr. 9). */
+    /* Begruendete Abweichung von Regeln/05 "neu nur, wenn der Schluessel fehlt" (Entscheidung des Hausherrn 24.11.2026,
+     * Lade-Beanstandungen Punkt 1): ein LEERES Token - oder eines, das kein Text ist - erzeugt hier ein neues, weil das
+     * Formularmerkmal (tb_formtoken()) am Token haengt; ohne Token liesse sich kein Formular mehr absenden. Ein
+     * vorhandenes Text-Token bleibt, auch ein formwidriges (gemeldet, tb_lade_beanstandungen()). */
     if (!is_string($cfg['aktionstoken'])) {
         tb_log('Das Merkwort fuer den Endpunkt war keine Zeichenkette - es wird neu erzeugt.');
         $cfg['aktionstoken'] = '';
@@ -4380,6 +4457,11 @@ function tb_ansage_senden($jetzt = null)
         $conf = tb_config();
         tb_ansage_token_pflegen($conf);
         $conf = tb_config();
+        // 0.9.51: dieselben Anlaesse an SignalBot (eigene Haken); ein Eintrag 'nur_ansage' ist dort schon gemeldet (F5)
+        tb_meld_senden(array_values(array_filter($frisch, function ($e) { return !is_array($e) || empty($e['nur_ansage']); })), $conf);
+        $frisch = tb_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
+        /* 0.9.51 (F5): ausserhalb der Ansagezeit gelegte Eintraege ('nur_meldung') gehen nur an SignalBot */
+        $frisch = array_values(array_filter($frisch, function ($e) { return !is_array($e) || empty($e['nur_meldung']); }));
         $a = ansage_regel_sprechen($frisch, tb_tts($conf), tb_ansage_regeln($conf), tb_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -4529,7 +4611,7 @@ function tb_ansage_fenster_text(array $f, $sprache)
 function tb_ansage_lauf($stoerung, $minuten, $jetzt = null)
 {
     $cfg = tb_config();
-    if (!tb_ansage_an($cfg)) { return 0; }      // ab Werk: kein Zustand, keine Datei, keine Anfrage
+    if (!tb_ansage_an($cfg) && !tb_meld_aktiv($cfg)) { return 0; }      // ab Werk: kein Zustand, keine Datei, keine Anfrage (0.9.51: auch fuer die Meldung an SignalBot)
     $p = tb_paths();
     if (!is_dir($p['datadir'])) { return 0; }
     if ($jetzt === null) { $jetzt = time(); }
@@ -4554,7 +4636,7 @@ function tb_ansage_lauf($stoerung, $minuten, $jetzt = null)
     $neu['fenster'] = array('lage' => $f['lage'],
         'seit' => ($fa !== null && $war === $f['lage'] && isset($fa['seit'])) ? (int) $fa['seit'] : $jetzt,
         'gesprochen' => $gesprochen);
-    if ($fa !== null && $f['lage'] === 1 && $war === 0 && !empty($cfg['ansage_fenster'])) {
+    if ($fa !== null && $f['lage'] === 1 && $war === 0 && tb_meld_will('fenster', $cfg)) {     // 0.9.51: Ansage oder Meldung an SignalBot
         if (!$f['rang_ok']) {
             tb_log('Ansage "guenstigstes Fenster" entfaellt: nur ' . $f['preisstunden']
                 . ' kuenftige Preisstunden bekannt, mindestens ' . PLAN_RANG_MIN_STUNDEN
@@ -4563,7 +4645,14 @@ function tb_ansage_lauf($stoerung, $minuten, $jetzt = null)
             tb_log('Ansage "guenstigstes Fenster" entfaellt: der Preisstand ist aelter als die Schranke.');
         } elseif ($zeit !== 1) {
             /* Nicht nachgeholt: "beginnt jetzt" waere zu Beginn der Ansagezeit falsch. */
-            tb_log('Ansage "guenstigstes Fenster" entfaellt: ' . $zeit_grund . '.');
+            if (!empty($cfg['ansage_fenster'])) { tb_log('Ansage "guenstigstes Fenster" entfaellt: ' . $zeit_grund . '.'); }
+            /* 0.9.51 (F5): die Ansagezeit gilt nur fuer die Ansage - die Meldung an SignalBot geht trotzdem, einmal je Fenster. */
+            if (meld_anlass_an(tb_meld_block($cfg), 'fenster')
+                && !($gesprochen > 0 && $jetzt >= $gesprochen && $jetzt - $gesprochen < $f['laenge'] * 3600)) {
+                tb_ansage_legen(array(array('schluessel' => 'fenster', 'text' => tb_ansage_fenster_text($f, $sprache), 'nur_meldung' => 1)), $jetzt);
+                $neu['fenster']['gesprochen'] = $jetzt;
+                $versuche++;
+            }
         } elseif ($gesprochen > 0 && $jetzt >= $gesprochen && $jetzt - $gesprochen < $f['laenge'] * 3600) {
             tb_log('Ansage "guenstigstes Fenster" unterdrueckt: das zuletzt angesagte Fenster laeuft noch.');
         } else {
@@ -4583,24 +4672,40 @@ function tb_ansage_lauf($stoerung, $minuten, $jetzt = null)
         $war_s = (isset($sa['lage']) && is_string($sa['lage'])) ? $sa['lage'] : '';
         $ist_s = (string) $stoerung;
         $neu['stoerung'] = array('lage' => $ist_s,
-            'gesprochen' => isset($sa['gesprochen']) ? (int) $sa['gesprochen'] : 0);
-        if ($ist_s !== '' && $war_s === '' && !empty($cfg['ansage_stoerung']) && $zeit !== 1) {
-            /* Ausserhalb der Ansagezeit wartet die Stoerung: der Eintritt wird nicht gemerkt,
-             * und haelt sie zu Beginn der Ansagezeit noch an, spricht sie dann. */
-            $neu['stoerung']['lage'] = '';
-            tb_log_gebremst('ansage_stoerung_zeit', 'Ansage "Abruf gestoert" wartet: ' . $zeit_grund . '.');
-        } elseif ($ist_s !== '' && $war_s === '' && !empty($cfg['ansage_stoerung'])) {
+            'gesprochen' => isset($sa['gesprochen']) ? (int) $sa['gesprochen'] : 0,
+            /* 0.9.51 (F5): der Eintritt ist SignalBot schon gemeldet (ausserhalb der Ansagezeit); endet mit der Stoerung */
+            'gemeldet' => ($ist_s !== '' && isset($sa['gemeldet']) && is_string($sa['gemeldet'])) ? $sa['gemeldet'] : '');
+        $stoer_text = function () use ($ist_s, $sprache, $minuten) {
             $st0 = tb_stand();
             if ($ist_s === 'token') {
-                $text = tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_TOKEN');
-            } elseif (isset($st0['fehler']) && is_string($st0['fehler'])
-                      && strpos($st0['fehler'], 'Tibber hat die Anmeldung abgewiesen') === 0) {
-                $text = tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_ANMELDUNG');
-            } else {
-                $text = sprintf(tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_ALT'), max(1, (int) $minuten));
+                return tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_TOKEN');
             }
-            tb_ansage_legen(array(array('schluessel' => 'stoerung', 'text' => $text)), $jetzt);     // 0.9.35
+            if (isset($st0['fehler']) && is_string($st0['fehler'])
+                && strpos($st0['fehler'], 'Tibber hat die Anmeldung abgewiesen') === 0) {
+                return tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_ANMELDUNG');
+            }
+            return sprintf(tb_t_in($sprache, 'TB_ANSAGE.STOERUNG_ALT'), max(1, (int) $minuten));
+        };
+        $meld_s = meld_anlass_an(tb_meld_block($cfg), 'stoerung');
+        if ($ist_s !== '' && $war_s === '' && tb_meld_will('stoerung', $cfg) && $zeit !== 1) {
+            if (!empty($cfg['ansage_stoerung'])) {
+                /* Ausserhalb der Ansagezeit wartet die Stoerung: der Eintritt wird nicht gemerkt,
+                 * und haelt sie zu Beginn der Ansagezeit noch an, spricht sie dann. */
+                $neu['stoerung']['lage'] = '';
+                tb_log_gebremst('ansage_stoerung_zeit', 'Ansage "Abruf gestoert" wartet: ' . $zeit_grund . '.');
+            }
+            /* 0.9.51 (F5): die Ansagezeit gilt nur fuer die Ansage - die Meldung an SignalBot geht sofort, einmal je Eintritt. */
+            if ($meld_s && $neu['stoerung']['gemeldet'] === '') {
+                tb_ansage_legen(array(array('schluessel' => 'stoerung', 'text' => $stoer_text(), 'nur_meldung' => 1)), $jetzt);
+                $neu['stoerung']['gemeldet'] = $ist_s;
+                $versuche++;
+            }
+        } elseif ($ist_s !== '' && $war_s === '' && tb_meld_will('stoerung', $cfg)) {
+            $e = array('schluessel' => 'stoerung', 'text' => $stoer_text());
+            if ($neu['stoerung']['gemeldet'] !== '') { $e['nur_ansage'] = 1; }     // 0.9.51: SignalBot hat ihn schon
+            tb_ansage_legen(array($e), $jetzt);     // 0.9.35
             $neu['stoerung']['gesprochen'] = $jetzt;
+            if ($meld_s) { $neu['stoerung']['gemeldet'] = $ist_s; }
             $versuche++;
         }
     }
@@ -4933,6 +5038,7 @@ function tb_sicherung_beschreibung()
                 return ansage_regeln_wert($w, $g) === null ? sprintf(tb_t('EINST.SICH_FREMD'), 'ansage_regeln') : '';
             },
             'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); }),
+        'meldung' => meld_sicherung_knoten(tb_meld_anlaesse(), tb_meld_k()),     // 0.9.51
     );
     /* Dazu die Schluessel des Fahrplaners (seit 0.9.11): Schaltregeln, Hysterese, PV- und Speicherquelle und die
      * globalen Planerwerte (plan_global_vorgabe()). Eine Sicherung aus 0.9.7 bis 0.9.10 kennt sie nicht; bis 0.9.43
@@ -4963,6 +5069,10 @@ function tb_sicherung_beschreibung()
         'pruefen' => function ($k, $w) {
             if (!tb_wert_taugt($w)) {
                 return sprintf(tb_t('EINST.SICH_WERT_UNTAUGLICH'), htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            }
+            /* 0.9.51: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if ($k === 'mqtt_topic' && is_string($w) && hb_bereich($w) !== '') {
+                return sprintf(tb_t('EINST.SICH_WERT_THEMA'), $k) . ' ' . sprintf(tb_t('HAUSBEREICH.SICH_W'), hb_bereich($w));
             }
             return tb_wert_pruefen($k, $w);
         },
@@ -6311,4 +6421,158 @@ function tb_gesund_urteil(array $f)
         return array(5, $t . '.');
     }
     return array($status, implode('; ', $befunde) . '.');
+}
+
+/**
+ * 0.9.51 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function tb_pruef_praefix_haus($cfg)
+{
+    $p = tb_praefix($cfg);
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(tb_t('HAUSBEREICH.A_AUS'), tb_e($p), tb_e($b)));
+        }
+        return array(0, sprintf(tb_t('HAUSBEREICH.A_NEIN'), tb_e($p), tb_e($b)));
+    }
+    return array(1, sprintf(tb_t('HAUSBEREICH.A_JA'), tb_e($p)));
+}
+
+/**
+ * 0.9.51: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function tb_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = tb_praefix($cfg);
+    if ($merk === null) {
+        $merk = tb_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        tb_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('tb_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (0.9.51, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (tb_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (tb_meld_will()); der Sender trennt die Wege wieder (tb_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function tb_meld_anlaesse()
+{
+    return array('fenster' => tb_t('EINST.L_ANSAGE_FENSTER'), 'stoerung' => tb_t('EINST.L_ANSAGE_STOERUNG'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function tb_meld_haken_vorgabe()
+{
+    return array('fenster' => 1, 'stoerung' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function tb_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    $anl = tb_ansage_anlaesse(); return isset($anl[$a]) && is_array($cfg) && !empty($cfg[$anl[$a]]);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function tb_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, tb_meld_anlaesse(), tb_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function tb_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, tb_meld_anlaesse(), tb_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function tb_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(tb_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function tb_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    return tb_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(tb_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function tb_meld_k()
+{
+    return tb_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function tb_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    $anl = tb_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !tb_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function tb_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    $b = tb_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, tb_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        tb_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function tb_meld_test()
+{
+    $r = meld_testmeldung(tb_meld_k());
+    tb_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function tb_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = tb_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = tb_meld_k();
+    $o = array();
+    /* 0.9.51: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(tb_meld_block($cfg), tb_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(tb_meld_block($cfg), tb_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }

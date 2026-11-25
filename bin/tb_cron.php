@@ -606,6 +606,7 @@ function tb_veroeffentlichen()
     $p = tb_paths();
     $topic = trim((string) $cfg['mqtt_topic'], '/');
     if ($topic === '') { $topic = 'tibber'; }
+    tb_praefix_haus_melden($cfg);   // 0.9.51: Praefix im gemeinsamen Bereich? melden, nicht anhalten
 
     $w = tb_werte();
     // ALTER, PULSE_ALTER und ZAEHLER gehen nicht als Wert hinaus: ueber
@@ -1214,6 +1215,7 @@ foreach (array($tb_p['datadir'], $tb_p['datadir'] . '/verlauf', $tb_p['logdir'])
     if (!is_dir($tb_d)) { @mkdir($tb_d, 0775, true); }
 }
 $tb_cfg = tb_config();
+tb_dienst_pflege();     // 0.9.51 (Punkt 7, 24.11.2026): Lade-Beanstandungen melden, ohne zu schreiben
 
 $tb_preise = in_array('--preise', $tb_argv, true);
 $tb_verbrauch = in_array('--verbrauch', $tb_argv, true);

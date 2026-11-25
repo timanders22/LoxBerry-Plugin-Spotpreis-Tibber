@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.50
+Version 0.9.51
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die
@@ -10,6 +10,13 @@ tokengeschützten HTTP-Endpunkt (der Weg der Baustein-Listen) oder über MQTT
 
 Reines PHP, kein venv, kein PEP-668-Umweg. Läuft mit PHP 7.4 und 8.x,
 LoxBerry 3.x und 4.
+
+## Neu in 0.9.51
+
+- **Themen-Präfix auf einem gemeinsamen Bereich (Entscheidung des Hausherrn 23.11.2026 „Nur gemeinsame Bereiche“):** Ein MQTT-Präfix, das einer der gemeinsamen Bereiche unter `haus/` ist oder darin beginnt (`haus/<bereich>` bzw. `haus/<bereich>/…` für abfahrt, abfuhr, alarm, ansage, anwesenheit, energie, fahrzeug, kalender, klima, pv, raumklima, sonne, speicher, strompreis, szene, tag, tuer, usv, wetter), weisen Speichern im Reiter *MQTT* und das Zurückspielen einer Sicherung jetzt mit Namen ab: Dort liefern die Plugins einander Zustände ohne eigenes Präfix. `haus` allein und andere Präfixe unter `haus/` (etwa `haus/fenster`) bleiben erlaubt; Groß und Klein zählen wie bei MQTT. Ist ein solches Präfix schon gespeichert, ändert sich am Betrieb nichts – das Plugin sendet weiter darunter, nennt es einmal im Protokoll, und der Reiter *Test* zeigt die Zeile „Liegt das Themen-Präfix außerhalb der gemeinsamen Bereiche unter haus/?“ rot. Liste und Texte kommen aus dem gemeinsamen Modul `haus_bereiche.php`.
+- **Gespeicherte Einstellungen, die beim Laden nicht gelten (Entscheidung des Hausherrn 23./24.11.2026, Regeln/05 „Lade-Beanstandungen“):** Trägt die Konfigurationsdatei einen ungültigen Wert, rechnet das Plugin weiter mit einem Wert in seinen Grenzen, sagt es aber jetzt. Ein gelber Kasten über den Reitern nennt jetzt jedes Feld mit gespeichertem und verwendetem Wert, die Selbstprüfung im Reiter *Test* zeigt die Zeile „Gelten die gespeicherten Einstellungen beim Laden so, wie sie gespeichert sind?“ rot, und das Protokoll nennt die Namen einmal je Änderung. Bis 0.9.50 geschah das still – Grenzen des Fahrplans und der Regeln wurden geklemmt, PV-Quelle und -Einheit, Art und Frist einer Regel auf die Vorgabe gesetzt –, und der Minutenlauf und jedes Speichern schrieben die bereinigte Konfiguration in die Datei. Speichern behält bei einem genannten Feld, das Sie nicht ändern, den gespeicherten Wert, und die angezeigten Werte übernimmt nur der Knopf „Angezeigte Werte übernehmen“ mit gesetztem Haken. Token und Zugangsdaten erscheinen in keiner Meldung mit ihrem Wert, das Protokoll nennt keinen Wert. Gemeinsames Sicherungsmodul 1.3.0.
+- **Meldung auch ohne geöffnete Oberfläche (Entscheidung des Hausherrn 24.11.2026):** Gespeicherte Einstellungen, die beim Laden nicht gelten, meldet jetzt auch der Minutenlauf einmal ins Protokoll – bisher erfuhr davon nur, wer die Oberfläche öffnete. Der Minutenlauf schreibt dabei nichts in die Konfiguration; ergänzt und übernommen wird weiterhin nur über die Oberfläche.
+- **Statusmeldungen an SignalBot (Auftrag des Hausherrn 23.11.2026):** Im Reiter *Einstellungen* steht unter den Sprachansagen der neue Block „Meldungen an SignalBot“, ab Werk aus. Eingeschaltet schickt das Plugin dieselben Anlässe, die es ansagen kann – je Anlass eigener Haken, auch ohne eingerichtete Ansage – als Nachricht über MQTT an das Plugin SignalBot (Thema `haus/meldung/<ordner>`, nie retained; SignalBot ab 0.9.44 mit „Meldungen unter haus/meldung annehmen“ und diesem Ordner unter „Meldungen anderer Plugins annehmen von“). Dieselbe Meldung frühestens wieder nach der eingestellten Sperre (Vorgabe 60 Minuten), „wieder da“ nur nach einer gemeldeten Störung, höchstens 10 Nachrichten je Stunde, darüber eine Sammelzeile; die Nachtruhe stellt SignalBot. Ein Text, der wie ein Zugangsdatum aussieht, geht nicht hinaus. Der Knopf „Testmeldung senden“ prüft den Weg mit Quittung, die Zeile darunter nennt die letzte. Gemeinsames Modul `meldung.php`, Texte im Abschnitt `[SIGNALMELDUNG]`.
 
 ## Neu in 0.9.50
 

@@ -241,6 +241,9 @@ function tb_pruefungen($voll = false)
         sprintf(tb_t('TEST.A_SCHWELLEN'), (float) $cfg['guenstig'], (float) $cfg['teuer']));
 
     // MQTT
+    // 0.9.51: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $tb_hb = tb_pruef_praefix_haus($cfg);
+    $zeilen[] = tb_pruefzeile($tb_hb[0], tb_e(tb_t('HAUSBEREICH.F_TEST')), $tb_hb[1]);
     $m = tb_mqtt_zustand();
     if (!$m['gefunden']) {
         $zeilen[] = tb_pruefzeile(0, tb_t('TEST.F_MQTT'), tb_t('TEST.A_MQTT_NICHT_GEFUNDEN'));
@@ -730,6 +733,12 @@ function tb_pruefungen($voll = false)
         htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8'));
     $uhr_z['uhr'] = $uhr_s;
     $zeilen[] = $uhr_z;
+    /* 0.9.51: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist. Die Saetze kommen fertig maskiert, die Texte des Moduls maskiert tb_e(). */
+    $tb_lb = tb_lade_b(true);
+    $tb_la = tb_lade_beanstandungen($cfg, true);
+    $zeilen[] = tb_pruefzeile($tb_la ? 0 : 1, tb_e(sicherung_t('K_LADE_FRAGE', $tb_lb)),
+        $tb_la ? implode(' ', sicherung_lade_saetze($tb_lb, $tb_la)) : tb_e(sicherung_t('K_LADE_KEINE', $tb_lb)));
 
     return $zeilen;
 }
