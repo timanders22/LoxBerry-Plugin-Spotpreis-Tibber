@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Spotpreis Tibber
 
-Version 0.9.51
+Version 0.9.52
 
 Holt die stündlichen Strompreise aus dem eigenen **Tibber-Konto**, dazu die
 Verbrauchshistorie samt Kosten und — mit einer **Tibber Pulse** — die

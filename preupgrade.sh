@@ -10,6 +10,10 @@
 # ueberlebt dessen Loeschung. Bewusst NICHT /tmp: das ist auf dem LoxBerry
 # eine Ramdisk und fuer jeden lesbar. In token.json steht ein Geheimnis.
 
+# [upgrade_daten] Argumente des Installers festhalten - unten sichert der gemeinsame Baustein
+# [upgrade_daten] upgrade_daten.sh (neben diesem Skript) den ganzen Datenordner.
+UPGD_ORDNER="$3"; UPGD_WURZEL="$5"
+
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-spotpreistibber}"
@@ -297,6 +301,8 @@ if [ "$TB_MARKE_VORHER" = "0" ] && { [ -e "$TB_SICHER" ] || [ -L "$TB_SICHER" ];
         echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $TB_SICHER"
         echo "<FAIL> postinstall.sh spielte sie sonst zurueck. Dieses Skript endet mit Rueckgabewert 2."
         rm -f "$MARKE" 2>/dev/null
+        # 26.11.2026: der Dienst ist oben angehalten, stop hat soll_laufen entfernt - wie zs_schluss zurueck.
+        [ -f "$LIEF" ] && : > "$BASE/data/plugins/$PFOLDER/soll_laufen" 2>/dev/null
         exit 2
     fi
     echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt: $TB_SICHER"
@@ -339,4 +345,26 @@ if [ -d "$TB_DATEN" ]; then
     fi
 fi
 zs_schluss
+# Fehlerweg fuer den gemeinsamen Baustein (unten): misslingt das Sichern des Datenordners, bricht das Update
+# mit Rueckgabe 2 ab und die bisherige Fassung bleibt. "dienst.sh stop" oben hat den Merker soll_laufen
+# entfernt; wie im eigenen Fehlerweg zs_schluss kommt er zurueck, wenn der Dienst lief, und der Minutenwaechter startet ihn wieder.
+# Die Marke entfernt der Baustein selbst.
+upgd_bei_fehler() {
+    [ -f "$LIEF" ] || return 0
+    if : 2>/dev/null > "$BASE/data/plugins/$PFOLDER/soll_laufen"; then
+        echo "<INFO> Der Dienst lief vorher - der Merker soll_laufen ist wieder angelegt, der Waechter startet ihn."
+        return 0
+    fi
+    echo "<WARNING> Der Merker soll_laufen liess sich nicht wieder anlegen - den Dienst bitte im Reiter Einstellungen starten."
+    return 1
+}
+# [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): den ganzen Datenordner
+# [upgrade_daten] neben den Ordner sichern; misslingt das, bricht die Aktualisierung mit Rueckgabe 2 ab.
+if [ -f "$(dirname "$0")/upgrade_daten.sh" ] && . "$(dirname "$0")/upgrade_daten.sh"; then
+    upgrade_daten_sichern "$UPGD_ORDNER" "$UPGD_WURZEL" || exit 2
+else
+    echo "<FAIL> Der Baustein upgrade_daten.sh fehlt neben $(basename "$0") - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt installiert."
+    exit 2
+fi
 exit 0
